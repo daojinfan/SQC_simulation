@@ -68,8 +68,8 @@ D:\claude\superconducting_simulation\superconducting-qc-sim-lab\V1\sqcsim\circui
 2. 显式保留电容网络，而不是只保存有效频率和有效耦合。
 3. 显式保留 qubit-coupler 电容和 qubit-qubit 直接电容。
 4. 显式保留 coupler 的 flux_bias_phi0，为后续调节耦合和 ZZ/XX 关断预留接口。
-5. 显式保留 truncation，为后续多 Transmon Hilbert 空间构建预留接口。
-6. 将控制通道和读出通道放入 device config，为后续真实实验式控制和校准预留接口。
+5. 将控制通道和读出通道放入 device config，为后续真实实验式控制和校准预留接口。
+6. 数值基底截断不放入 device config，留给阶段 2 的 Hamiltonian 构建配置。
 ```
 
 阶段 1 设计中已经确认的工程选择：
@@ -101,8 +101,8 @@ D:\claude\superconducting_simulation\superconducting-qc-sim-lab\V1\sqcsim\circui
 节点展开
 电容矩阵
 结参数解析
-器件 summary
-verification report
+device_artifacts.json
+verification.ipynb
 ```
 
 本阶段不包含：
@@ -179,7 +179,6 @@ device:
         rn2_ohm: 18038.0
         flux_bias_phi0: 0.10
         asymmetry: 0.0
-      truncation: 5
 
     q2:
       kind: tunable_transmon
@@ -192,7 +191,6 @@ device:
         rn2_ohm: 17423.0
         flux_bias_phi0: 0.00
         asymmetry: 0.0
-      truncation: 5
 
     c:
       kind: tunable_coupler
@@ -205,7 +203,6 @@ device:
         rn2_ohm: 6188.0
         flux_bias_phi0: 0.27
         asymmetry: 0.0
-      truncation: 4
 
     r1:
       kind: readout_resonator
@@ -298,7 +295,6 @@ rn1_ohm, rn2_ohm        ohm
 ej_GHz                  GHz
 ej_sum_GHz              GHz
 flux_bias_phi0          Phi0
-truncation              dimensionless integer
 ```
 
 第一版不允许无单位字段，例如 `frequency: 6.4` 或 `capacitance: 75`。
@@ -358,7 +354,6 @@ ComponentSpec
   capacitance_fF: float | None
   squid: SquidSpec | None
   resonator: ResonatorSpec | None
-  truncation: int | None
 ```
 
 说明：
@@ -372,11 +367,8 @@ r1, r2 使用 resonator 相关字段。
 
 ```text
 SquidSpec
-  rn1_ohm: float | None
-  rn2_ohm: float | None
-  ej1_GHz: float | None
-  ej2_GHz: float | None
-  ej_sum_GHz: float | None
+  rn1_ohm: float
+  rn2_ohm: float
   flux_bias_phi0: float
   asymmetry: float
 ```
@@ -384,9 +376,9 @@ SquidSpec
 规则：
 
 ```text
-可以通过 rn1_ohm/rn2_ohm 解析 EJ。
-也可以直接给 ej1_GHz/ej2_GHz 或 ej_sum_GHz。
-第一版要求每个 tunable component 至少能解析出 ej_sum_GHz。
+第一版只允许通过 rn1_ohm/rn2_ohm 解析 EJ。
+ej1_GHz、ej2_GHz、ej_sum_GHz 是输出字段，不是输入字段。
+每个 tunable component 必须能从 Rn 解析出 ej_sum_GHz。
 ```
 
 ### 7.4 CapacitorSpec
@@ -425,7 +417,7 @@ JunctionParameterRow
   junction: str
   rn_ohm: float | None
   ej_GHz: float
-  source: rn | explicit
+  source: rn
 
 JunctionParameterTable
   rows: tuple[JunctionParameterRow, ...]
@@ -580,18 +572,15 @@ c 不是 coupler role
 r1/r2 不是 readout role
 电容小于等于 0
 rn_ohm 小于等于 0
-ej_GHz 小于等于 0
-truncation 小于 2
 capacitor.between 不是两个节点
 capacitor 引用了不存在的节点
 channel 引用了不存在的 target
+priors 出现非白名单字段
 ```
 
 ### 11.2 应给 warning 的情况
 
 ```text
-q1/q2 truncation 小于 3
-coupler truncation 小于 3
 r1/r2 frequency_GHz 不在 4-10 GHz
 r1/r2 kappa_MHz 不在 0.01-50 MHz
 q1/q2/c capacitance_fF 不在 20-200 fF
@@ -802,7 +791,6 @@ test_requires_q1_q2_c_r1_r2
 test_reject_negative_capacitance
 test_reject_negative_rn
 test_reject_unknown_capacitor_node
-test_warn_small_truncation
 ```
 
 ### 15.3 test_device_capacitance.py
@@ -812,7 +800,7 @@ test_capacitance_matrix_node_order
 test_capacitance_matrix_is_symmetric
 test_floating_transmon_internal_capacitance
 test_grounded_coupler_capacitance
-test_readout_coupling_capacitance
+test_readout_resonator_metadata_recorded
 ```
 
 ### 15.4 test_device_junction.py
@@ -820,7 +808,6 @@ test_readout_coupling_capacitance
 ```text
 test_rn_to_ej_positive
 test_squid_ej_sum_from_two_rn
-test_explicit_ej_sum
 test_reject_unresolvable_squid
 ```
 

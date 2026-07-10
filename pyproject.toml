@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqvm"
+version = "0.1.0"
+description = "Minimal virtual superconducting quantum computer simulator"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.25",
+  "scipy>=1.11",
+  "pyyaml>=6.0",
+  "nbformat>=5.10",
+  "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["sqvm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,18 @@
+schema_version: "0.1"
+
+hamiltonian:
+  name: demo_2q1c_charge_basis
+  source_device_artifacts: output/stage_01_device_model/device_artifacts.json
+
+  basis:
+    q1:
+      charge_cutoff: 5
+    c:
+      charge_cutoff: 5
+    q2:
+      charge_cutoff: 5
+
+  solver:
+    num_eigenvalues: 12
+    method: eigh
+    tolerance: 1.0e-10

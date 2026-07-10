@@ -45,7 +45,8 @@ device.yaml schema
 结电阻和 EJ 解析
 基础验证
 参数快照
-人可读 summary
+device_artifacts.json
+verification.ipynb
 ```
 
 本阶段不包含：
@@ -173,8 +174,9 @@ warnings
 拒绝负电容
 拒绝非法结电阻
 构建指定 shape 的电容矩阵
-从 Rn 解析 EJ，或接受显式 EJ
-写出 summary artifact
+从 Rn 解析 EJ
+写出 device_artifacts.json
+生成已执行的 verification.ipynb
 ```
 
 ## 输出产物
@@ -207,13 +209,20 @@ verification.ipynb
 8. 开发日志记录结果。
 ```
 
-## 开放问题
+## 已确认的关键设计
 
-本阶段需要确定的问题：
+本阶段已经确认：
 
 ```text
-第一版 q1/q2 建模为 fixed 还是 tunable？
-EJ 默认从 Rn 计算，还是转换后显式保存？
-coupler 是否一开始就建模为 SQUID？
-r1/r2 在读出阶段前需要包含到什么程度？
+q1/q2/c 全部使用 tunable SQUID 模型。
+q1/q2 是 floating transmon。
+c 是 grounded tunable coupler。
+EJ 默认从 Rn 自动估算。
+r1/r2 只作为读出组件和 metadata 记录，不进入阶段 1 默认 2q1c 电容矩阵。
+q1-q2 直接电容支持可选，示例配置先保留。
+priors 只作为参考信息，不参与阶段 1 核心计算。
+无 error 即 ok，warning 只提示。
+论文参数只作为参考，不作为阶段 1 严格范围约束。
+配置字段第一版强制带单位。
+阶段 1 默认输出 device_artifacts.json 和已执行的 verification.ipynb。
 ```
