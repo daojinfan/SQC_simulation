@@ -29,8 +29,8 @@ def _model():
 
 def test_hamiltonian_shape_and_hermitian():
     _, _, _, _, model = _model()
-    assert model.basis.hilbert_dimension == 1331
-    assert model.matrix.shape == (1331, 1331)
+    assert model.basis.hilbert_dimension == 3375
+    assert model.matrix.shape == (3375, 3375)
     assert (model.matrix - model.matrix.getH()).nnz == 0
 
 
@@ -46,3 +46,17 @@ def test_charge_basis_convergence_payload():
     payload = charge_basis_convergence(ec.matrix_GHz, junctions, config.basis.charge_cutoffs)
     assert len(payload["rows"]) == 3
     assert all(np.isfinite(row["drift_GHz"]) for row in payload["rows"])
+
+
+def test_repeated_flux_override_build_is_identical():
+    config = load_hamiltonian_config(CONFIG)
+    device = load_device_artifacts(ARTIFACTS)
+    mode_cap = build_mode_capacitance_matrix(device, build_mode_transform(device))
+    ec = build_ec_matrix(mode_cap)
+    overrides = {"c": 0.3125}
+
+    first = build_hamiltonian(config, ec.matrix_GHz, resolve_effective_junctions(device, overrides))
+    second = build_hamiltonian(config, ec.matrix_GHz, resolve_effective_junctions(device, overrides))
+
+    assert first.effective_junctions == second.effective_junctions
+    assert (first.matrix != second.matrix).nnz == 0

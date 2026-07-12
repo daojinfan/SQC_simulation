@@ -1,0 +1,16 @@
+{
+  "artifact_type": "stage_04_control_signal_design_freeze",
+  "artifact_version": "0.1",
+  "blocking_findings": [],
+  "decision": "approved",
+  "document_sha256": {
+    "docs/decisions/2026-07-11-stage4-control-signal-scope.md": "602D3E6DA61219284AE6BE58E74BF9681977D563C7F524A768DE802FA8941765",
+    "docs/designs/04_control_signal_design.md": "56F5ED6CA1A10634F4D2D9D87507C056E5FC26CF9F875D30D1BC879C52FFA2DB",
+    "docs/stages/04_0_control_channel_rebaseline_plan.md": "FD8A18D3FA28DA98C2FC2CAA271FC6C38F83B80521CBAC54E568FA35D4D3D1B6",
+    "docs/stages/04_control_signal_plan.md": "166DB399B0F875C435B9E635CDC894A83447487D422371C36B7D942280640659"
+  },
+  "review_record_path": "docs/decisions/2026-07-11-stage4-design-freeze-review.md",
+  "review_record_sha256": "FBE6C28CAEEA8179389F8E67C6626B66A7CA2EC95DA66059C5AF23D8A6469BB9",
+  "reviewer_role": "independent_design_review_ai",
+  "schema_version": "0.1"
+}

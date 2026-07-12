@@ -6,11 +6,11 @@ hamiltonian:
 
   basis:
     q1:
-      charge_cutoff: 5
+      charge_cutoff: 7
     c:
-      charge_cutoff: 5
+      charge_cutoff: 7
     q2:
-      charge_cutoff: 5
+      charge_cutoff: 7
 
   solver:
     num_eigenvalues: 12

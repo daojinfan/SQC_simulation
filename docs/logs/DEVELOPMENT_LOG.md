@@ -887,6 +887,51 @@ charge_cutoff N -> N+2 最大 gap 漂移约 0.0317 GHz。
 若认可阶段 2 输出，再决定是否提交并进入阶段 3 静态能谱与 dressed-state 分析设计。
 ```
 
+## 2026-07-10：阶段 3 静态能谱详细设计
+
+阶段：
+
+```text
+阶段 3 设计
+```
+
+目标：
+
+```text
+设计从阶段 2 Hamiltonian 进入静态能谱、dressed-state 标记、频率、非谐性和 residual ZZ 类指标的分析流程。
+```
+
+完成的修改：
+
+```text
+新增 docs/stages/03_static_spectrum_plan.md。
+新增 docs/designs/03_static_spectrum_design.md。
+明确阶段 3 输入、输出、公开接口、VSCode runner、verification notebook、测试设计和验收标准。
+```
+
+设计决定：
+
+```text
+阶段 3 通过阶段 2 API 重建 Hamiltonian 并求 eigenvectors，不依赖阶段 2 artifact 保存完整矩阵。
+阶段 3 不直接解析 device.yaml，也不直接读取 Hamiltonian YAML 内部字段；source_hamiltonian_config 只作为阶段 2 API 输入。
+bare basis 使用各模式单模 Hamiltonian 的本征态，而不是 charge number basis。
+dressed-state assignment 第一版使用 bare product state overlap，低 overlap 或冲突给 warning。
+频率、anharmonicity 和 ZZ 指标都基于 dressed labels。
+Notebook 只读取 static_spectrum_artifacts.json。
+```
+
+运行的测试：
+
+```text
+未运行代码测试。本条日志只记录阶段 3 设计文档新增。
+```
+
+下一步：
+
+```text
+复查阶段 3 设计；确认后开始实现 configs/spectra、scripts/run_stage_03_static_spectrum.py 和 sqvm.spectrum 模块。
+```
+
 ## 2026-07-09：阶段 2 设计审查与修订
 
 阶段：
@@ -994,4 +1039,474 @@ C:\...\codex-primary-runtime\dependencies\python\python.exe -m pytest -q：38 pa
 ```text
 人工确认 output/stage_02_hamiltonian/verification.ipynb 后正式收尾阶段 2，
 进入阶段 3（静态能谱与 dressed-state 分析）。阶段 3 前再评估 demo 耦合几何。
+```
+
+## 2026-07-10：阶段 3 设计收敛与 AI 团队职责
+
+阶段：
+
+```text
+阶段 3 设计
+```
+
+目标：
+
+```text
+把阶段 3 草案收敛成开发 AI 可直接实现、测试 AI 可独立验收的设计，并固化 AI 团队职责分离。
+```
+
+完成的修改：
+
+```text
+更新 docs/10_development_process.md，增加设计 AI、开发 AI、测试 / 审查 AI和用户的职责边界，
+并把旧五阶段文档目录修正为当前十阶段路线图。
+更新 docs/stages/03_static_spectrum_plan.md 和 docs/designs/03_static_spectrum_design.md。
+新增 docs/decisions/2026-07-10-stage3-design-review.md，作为开发和独立测试交接清单。
+```
+
+设计决定：
+
+```text
+阶段 3 强制包含 coupler flux scan 与 q1-c / c-q2 avoided-crossing 指标。
+dressed-state assignment 使用全局最大 overlap 一一匹配，不使用贪心。
+flux scan 使用相邻 eigenvector overlap 的全局匹配跟踪 adiabatic branch。
+mode participation 定义为 bare-energy basis 下的模式平均激发数和归一化 fraction。
+关键频率、anharmonicity、ZZ 和 crossing splitting 必须通过逐模 cutoff refinement；超容差阻塞 verify。
+默认 cutoff 第一候选为 q1=7、c=7、q2=7，不允许通过放宽容差隐藏三个模式的已知漂移。
+flux override 通过阶段 2 接口的向后兼容参数在内存中传入，不修改 artifact 或 YAML。
+```
+
+运行的测试：
+
+```text
+未运行代码测试。本次只修改设计、流程和交接文档。
+已用 rg 检查阶段 3 文档中不存在“flux scan 可选”“单点 only”“贪心 assignment”等旧约定。
+```
+
+下一步：
+
+```text
+由独立审查 AI 对阶段 3 计划、详细设计和交接清单做一致性审查。
+设计问题关闭后冻结 v0.1 接口，再交给开发 AI实现。
+```
+
+## 2026-07-11：阶段 3 首次独立设计审查处置
+
+阶段：
+
+```text
+阶段 3 设计修订
+```
+
+目标：
+
+```text
+处理独立审查提出的 4 个阻塞项和 2 个中等项，消除未解析 crossing 仍可能通过、
+spectator 收敛遗漏、Stage 2 provenance 不足、接口表达不足、运行预算过期和扫描不确定性。
+```
+
+完成的修改：
+
+```text
+新增 docs/stages/02_1_hamiltonian_rebaseline_plan.md，定义 Stage 2 API / cutoff / artifact 变更后的正式重基线门。
+更新 docs/10_development_process.md 和 docs/20_roadmap.md，加入已验收阶段 rebaseline 规则。
+更新阶段 3 plan / detailed design / AI handoff checklist。
+```
+
+设计决定：
+
+```text
+q1-c 和 c-q2 必须都 resolved，StageGateDecision 才允许 ready_for_stage4。
+geometry_too_weak 是可记录的物理诊断，但 report.ok=false、CLI exit 1、stage4_ready=false。
+每个 crossing 分别提高 q1、c、q2 cutoff，三个 splitting 绝对漂移之和形成保守 cutoff 不确定度。
+每个 flux 点保存三条单激发 branch 的 q1/c/q2 participation，并用 character exchange 作为 crossing 必要证据。
+Stage 2.1 使用 config、device artifact、Stage 2 model source tree 和 Stage 2 artifact SHA-256；
+确定性 manifest 与独立 rebaseline approval 分离，approval 绑定 manifest / artifact SHA-256；
+阶段 3 重建最低 12 gaps 与新 artifact 差异 <= 1e-9 GHz，失败为 error。
+新增 StaticSpectrumResult 统一聚合对象，crossing convergence 显式消费 FluxScanResult 的 final bracket 和 branch identity。
+flux key 固定 Decimal 12 位 ROUND_HALF_EVEN；level bracket、端点复用和终止规则全部确定化。
+dimension 更新为 3375；acceptance 预算 1800 秒，smoke 预算 90 秒且不可验收。
+超预算只允许已独立验证的 eigsh fallback，否则失败。
+```
+
+设计预算与后续用户阶段门：
+
+```text
+设计负责人采纳阶段 3 v0.1 暂定误差预算：frequency 0.50 MHz、anharmonicity 1.00 MHz、
+ZZ / crossing 0.01 MHz、crossing relative 5%、participation fraction 0.02。
+若实际结果为 geometry_too_weak，用户决定调整器件几何，或正式修改项目物理目标。
+```
+
+运行的测试：
+
+```text
+未运行代码测试。本次只修改设计和流程文档。
+完成后运行 git diff --check、Markdown fence 平衡检查和旧约定搜索。
+```
+
+下一步：
+
+```text
+由独立审查 AI进行第二轮设计审查。
+第二轮批准前不冻结设计、不交开发 AI。
+```
+
+## 2026-07-11：阶段 3 第二轮独立审查处置
+
+阶段：
+
+```text
+阶段 3 设计再修订
+```
+
+审查结论：
+
+```text
+第二轮仍不批准冻结。新增 4 个阻塞项、2 个高优先级项和 2 个中等项。
+```
+
+完成的设计修订：
+
+```text
+解除 Stage 2.1 循环 gate：由 Stage 2.1 自包含函数重建最低 12 gaps，阶段 3 后续再重复。
+增加 legacy_baseline_anchor.json 和 previous_stage2_artifacts_sha256；当前旧 artifact hash 等待用户确认。
+refined cutoff 改为在固定 character evidence domain 独立求解，以 bare participation 锚定 A_like/B_like，
+禁止跨不同 Hilbert dimension 做 eigenvector overlap。
+minimum 移出 baseline bracket / evidence domain 都定义为 crossing convergence 失败。
+crossing flux drift 用 local gap slope 转为 U_flux(MHz)，并纳入 U_total。
+逐 flux 保存 bare transition frequencies / detunings，以容差化 sign-change 证据定义 geometry_too_weak。
+baseline / refined dimensions 更新为 3375 / 4275；保守 acceptance 上限更新为 509 solves。
+增加 dense_pilot、solver_validation artifact + approval、validated eigsh acceptance 和 dimension-specific ExecutionPlan。
+Stage 3 同时检查 Stage 2 schema_version=0.2 / artifact_version=0.2。
+加强 roadmap 的 Stage 3 验收门。
+```
+
+设计预算：
+
+```text
+设计负责人采纳 v0.1 预算：frequency 0.50 MHz、anharmonicity 1.00 MHz、
+ZZ / crossing 0.01 MHz、crossing relative 5%、participation 0.02。
+```
+
+仍在等待：
+
+```text
+用户确认 legacy Stage 2 artifact SHA-256：
+222E9B7B3A0A3A8CEE7499E6E55AC167898877580EEC57A6B6E343E932D4E77C。
+第三轮独立设计审查结论。
+```
+
+运行的测试：
+
+```text
+未运行实现测试；只修改设计 / 流程文档。
+git diff --check 通过。
+```
+
+## 2026-07-11: Stage 3 third-review disposition and external AI channels
+
+Review result:
+
+```text
+The third independent review did not approve freeze. Four high-priority and two medium findings were dispositioned.
+```
+
+Design corrections:
+
+```text
+Bound exact eigsh spec, Stage 3 solver source-tree SHA-256, environment fingerprint, deterministic v0,
+and repeatability evidence to ValidatedSolverSpec and every acceptance solve.
+Separated the Stage 2.1 dense 12-state 1e-9 GHz provenance check from acceptance eigsh validation.
+Changed ExecutionPlan to adaptive remaining-job upper bounds; conservative acceptance ceiling is 509 solves.
+Defined deterministic U_flux slope stencils and forced baseline final-bracket keys into refined evidence grids.
+Removed the Stage 2.1/Stage 3 circular wording from the roadmap.
+```
+
+External AI channels:
+
+```text
+Review: 019f4cba-6ef4-7160-ba5b-7f74ea5b31d8
+Development: 019f4ec0-b12f-7b83-b3ff-c75dc7b93b52
+Independent test/acceptance: 019f4ec2-530b-7ce0-98f1-9885e123c020
+Development and test remain on hold until design freeze.
+```
+
+Remaining gate:
+
+```text
+User confirmation of legacy Stage 2 artifact SHA-256:
+222E9B7B3A0A3A8CEE7499E6E55AC167898877580EEC57A6B6E343E932D4E77C.
+No implementation, artifact overwrite, formal rebaseline, or gate approval is authorized before the relevant gate.
+Fifth independent design review is pending.
+```
+
+## 2026-07-11: Stage 3 fourth-review disposition
+
+Review result:
+
+```text
+NOT APPROVED: three high and one medium design-contract findings.
+```
+
+Corrections:
+
+```text
+Raised the conservative acceptance ceiling from 491 to 509 solves by counting up to three forced
+baseline-bracket keys in every refined initial grid.
+Defined dense-reference near-degenerate partitioning, ambiguity/truncation failures, fixed index mapping,
+and spectral matrix 2-norm projector gates for dense/eigsh and repeat comparisons.
+Defined sha256_counter_v1 canonical seed bytes and a normative seed/block-0 digest test vector.
+Restricted pre-anchor work to the Stage 2.1 gate and non-mutating Stage 2.1 fixtures; Stage 3 implementation
+cannot start until Stage 2.1 is approved.
+```
+
+Status:
+
+```text
+Development and independent test remain on hold.
+Legacy Stage 2 artifact user confirmation remains a separate external gate.
+Fifth independent design review is required before freeze.
+```
+
+## 2026-07-11: Stage 3 v0.1 design freeze approval
+
+Independent review:
+
+```text
+Fifth review decision: APPROVED.
+No blocking, high-priority, or medium-priority findings remain.
+Reviewer task: 019f4f05-aaa2-7fe2-8769-8eece01ecc08.
+```
+
+Freeze result:
+
+```text
+Stage 3 v0.1 design is frozen.
+Development may begin only with the Stage 2.1 gate implementation and non-mutating Stage 2.1 fixtures.
+Formal rebaseline, old artifact overwrite, Stage 2.1 approval, and all Stage 3 implementation remain blocked
+until the user confirms the legacy Stage 2 artifact trust anchor.
+```
+
+Remaining external gate:
+
+```text
+Candidate legacy SHA-256:
+222E9B7B3A0A3A8CEE7499E6E55AC167898877580EEC57A6B6E343E932D4E77C.
+Independent review confirmed the bytes hash but did not substitute for user acceptance.
+```
+
+## 2026-07-11: Stage 2.1 rebaseline approved
+
+Result:
+
+```text
+Stage 2.1 gate decision: APPROVED.
+Development full regression: 107 passed.
+Independent regression: 105 passed, 2 production-runner tests deselected and reviewed against developer evidence.
+Dense 12-gap rebuild max difference: 0.0 GHz.
+N=7 to N=9 drifts: q1=0.000386739774 MHz, c=0.097365327832 MHz, q2=0.001101029277 MHz.
+All three convergence drifts pass the 0.50 MHz gate.
+```
+
+Approved hash chain:
+
+```text
+previous artifact: 222E9B7B3A0A3A8CEE7499E6E55AC167898877580EEC57A6B6E343E932D4E77C
+accepted anchor: FE489B2476FA3AE3121BEBB1FA06BF5EF1B74DEDAD4546458C7687EA7431C88D
+candidate artifact: DB17729D2C75BF3BAE90382BA78F6F3015C8C870B57DE12448FE339E57B9EE66
+manifest: 4368B50235E1755F9E03F1016084B7099CD5D2EC5D68BC8A0D7B6E963D4CEB8D
+approval: CA2A799A01212C8FCF72ED5A9A046A9C9A3671A93A8C41C026512B28983CEBA9
+independent review record: 5776B27ECFFE6D1E2D59520F19288C6CB9835B6BFDA9706305E22B06E17D8A55
+```
+
+Next:
+
+```text
+Start Stage 3 implementation from the frozen v0.1 design.
+Development must first produce the implementation, smoke evidence, dense pilot, and solver-validation candidate.
+Independent test/review must approve the solver backend before the formal Stage 3 acceptance run.
+```
+
+## 2026-07-11: Stage 3 C2 blocked by non-finite diagnostic serialization
+
+Result:
+
+```text
+C2 formal acceptance: BLOCKED (implementation_error).
+The run exited after about 32.5 seconds with canonical JSON rejecting an Infinity value.
+This was not a runtime-budget failure, and no numerical or geometry conclusion is approved.
+No formal Stage 3 artifact or verification notebook was written; Stage 4 remains blocked.
+```
+
+Disposition:
+
+```text
+The C2.1 clarification preserves zero as 0.0 and encodes unavailable diagnostics as null plus explicit
+availability/status/reason fields. Resolved and geometry_too_weak both require valid finite uncertainty inputs.
+NaN/Infinity remain forbidden, and artifact serialization gains a non-mutating finite preflight and atomic write.
+No physical model, tolerance, scan, cutoff, or frozen design contract changes are authorized.
+```
+
+Required sequence:
+
+```text
+Implement and test C2.1 without rerunning formal acceptance.
+Regenerate solver validation because the Stage 3 source-tree hash changes.
+Obtain a new independent solver approval.
+Then run one formal C2 acceptance attempt and hand its artifact to independent test.
+```
+
+## 2026-07-11: Stage 3 formal diagnostic delivery completed; Stage 4 blocked
+
+Independent disposition:
+
+```text
+ANALYSIS APPROVED / STAGE4 REJECTED.
+Stage 3 implementation and formal diagnostic delivery are complete.
+The Stage 3 gate did not pass: status=unresolved_crossing, stage4_ready=false.
+No implementation or artifact-integrity finding remains.
+```
+
+Formal evidence:
+
+```text
+artifact: 7D6D3D8DAD7187217F0559D324653B3E5A87E3AE623FA94A0F90715D0A4F5DE2
+notebook: 0A5CAC7779ABECBEF5DFF8A365AAEE74EEAF30AE240EAB1E7EFBC34FBE8F578E
+independent review: D3B0DEAAB09065A8E043B6CA7E607465E8721C6A7E023A05AABB36A54BCECE21
+runtime: 31.695474300009664 seconds, 81 solver evaluations, within the 1800-second budget
+safe regression: 307 passed, 3 production-runner tests deselected
+```
+
+Gate blockers:
+
+```text
+q1-c: numerically_unconverged. The level-2 minimum reached a boundary, the right character-evidence
+point was unavailable, and the required three-mode crossing refinement rows could not be formed.
+c-q2: low_continuity. Crossing location, character exchange, target-pair participation, three-mode
+uncertainty, and significance passed, but branch continuity was 0.7033494766689148 below the frozen 0.90 gate.
+```
+
+Project decision:
+
+```text
+Stage 4 must not start.
+The formal Stage 3 artifact and notebook remain immutable evidence of the current model result.
+Any new scan range/grid, tolerance, continuity rule, branch-tracking method, status rule, or device geometry
+requires a versioned Stage 3 design iteration and independent review; it must not overwrite this result.
+```
+
+## 2026-07-11: Stage 3 objective corrected to q1-q2 coupling sweep
+
+User requirement clarification:
+
+```text
+The required avoided crossing is q1-q2, not q1-c or c-q2.
+At fixed coupler flux, tune a qubit through q1-q2 resonance and observe the avoided crossing.
+Then change coupler flux, repeat the qubit-resonance scan, and verify that the q1-q2 splitting changes.
+```
+
+Disposition:
+
+```text
+The Stage 3 v0.1 implementation and formal diagnostic remain valid historical evidence but answer the
+wrong acceptance question. They do not authorize Stage 4.
+Stage 3.1 is a versioned redesign with q1 fixed at 0.10 Phi0, q2 as the inner resonance-scan axis, and
+coupler flux as the outer control axis. It reports minimum q1-q2 splitting and magnitude-only
+abs(g_eff)=splitting/2, with a hard coupler-participation gate.
+```
+
+Read-only feasibility pilot:
+
+```text
+q1-q2 resonance occurs near q2=0.099755 Phi0.
+At c=0.270 Phi0, splitting was about 4.950 MHz.
+At c=0.394 Phi0, splitting was about 4.431 MHz with about 1.23% maximum coupler participation.
+At c=0.396 Phi0, maximum coupler participation rose to about 16.46%, confirming the need to reject
+three-mode hybridized points from a pairwise q1-q2 coupling claim.
+At c=0.400 Phi0, splitting was about 5.164 MHz.
+These pilot values select the design range only and are not formal convergence evidence.
+```
+
+Next:
+
+```text
+Independently review and freeze the Stage 3.1 objective correction, design, and execution plan.
+Do not start implementation or modify the Stage 3 v0.1 formal output before design approval.
+```
+
+## 2026-07-11: Stage 3.1 design review round 1 not approved
+
+Independent result:
+
+```text
+The corrected fixed-coupler/q2-scan experiment, q2 range, acceptance anchors, full-flux v2 identity,
+normative seed vector, and 1381 formal solve ceiling were accepted in principle.
+Design freeze was rejected because the first candidate did not fully define numerical resolved
+predicates, resonance alignment for splitting/2, the schema-0.2 config, evidence-domain continuity,
+or the separation between computational gate and post-write verification.
+```
+
+Round 2 disposition:
+
+```text
+Added strict configs/spectra/2q1c_q1q2_coupling.yaml schema and provenance binding.
+Added a local |100>/<100| + |001>/<001| bare-projector gate, total-excitation bound, full-domain coupler
+participation checks, deterministic character endpoints, zero-detuning root bracket, and a 0.50 MHz
+resonance-alignment gate. Invalid pairwise/alignment evidence leaves abs_g_eff null.
+Defined U_cutoff as the sum of the three absolute splitting shifts, the exact immediate-neighbor
+U_inner_flux stencil, U_level, U_solver, and the 0.01 MHz / 5% / 5x predicates. U_delta must be finite
+and positive for modulation significance.
+Expanded solver validation from 28 to 44 cases so all three acceptance anchors have left/minimum/right
+coverage, plus idle and a three-mode diagnostic.
+Separated the computational StageGateDecision from artifact/notebook writes and the final canonical
+verification_report.json. The artifact is never rewritten.
+```
+
+## 2026-07-11: Stage 3.1 final acceptance and Stage 4 design start
+
+Stage 3.1 result:
+
+```text
+Independent final acceptance: APPROVED.
+Stage4ReadinessReport: ok=true, stage4_ready=true, blocking_reasons=[].
+Final approval SHA-256: 5BFCC41E684E8DDDD2794AF83673E12395F3F69076753C24B63B07AE8BEA851D.
+Required q1-q2 anchors at coupler flux 0.200, 0.270, and 0.385 Phi0 are resolved.
+The corresponding |g_eff| magnitudes are about 2.476254, 2.475067, and 2.436837 MHz.
+Coupler-flux modulation passed its independently recomputed uncertainty/significance gate.
+```
+
+Stage 4 design work:
+
+```text
+Added a proposed Stage 4 scope decision.
+Added a Stage 4.0 control-channel compatibility plan.
+Added the Stage 4 execution plan and detailed control-signal design.
+No implementation, config, accepted artifact, solver result, or output was modified by this design step.
+```
+
+Design decisions:
+
+```text
+Stage 4 owns a strict seven-channel control registry. It preserves the five Stage 1 channel declarations
+and adds q1_z/q2_z through an independently approved compatibility gate, without mutating the accepted
+device/Hamiltonian/spectrum chain.
+AWGs sample baseband I/Q/Z only; GHz carriers remain metadata.
+The v0.1 electronics model includes signed 16-bit DAC quantization, 2 GS/s timing, integer-sample latency,
+causal FIR response, and static XY/Z/readout mixing matrices.
+Stage 4 produces signals only. QuTiP evolution, gate fidelity, calibration updates, noise, ADC, and readout
+classification remain downstream.
+```
+
+Tests:
+
+```text
+Documentation checks are run after the draft is complete.
+No implementation or numerical acceptance test is authorized before independent design review.
+```
+
+Next:
+
+```text
+Submit the Stage 4 scope, Stage 4.0 plan, Stage 4 plan, and detailed design for independent design-freeze
+review. Keep development and the new independent test AI idle until the design is approved.
 ```

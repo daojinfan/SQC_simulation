@@ -1,0 +1,14 @@
+schema_version: "0.1"
+artifact_type: logical_pulse_schedule
+artifact_version: "0.1"
+schedule_id: stage4_reference_smoke
+scenarios:
+  - scenario_id: xy_drag
+    duration_ns: 80.0
+    pulses:
+      - {pulse_id: q1_drag, kind: xy, channel: q1_xy, start_ns: 20.0, duration_ns: 32.0, shape: drag_gaussian, amplitude_GHz: 0.015, phase_rad: 0.0, sigma_ns: 8.0, drag_beta_ns: -0.5, carrier_frequency_GHz: 5.193479909897604}
+      - {pulse_id: q2_drag, kind: xy, channel: q2_xy, start_ns: 20.0, duration_ns: 32.0, shape: drag_gaussian, amplitude_GHz: 0.014, phase_rad: 1.5707963267948966, sigma_ns: 8.0, drag_beta_ns: -0.4, carrier_frequency_GHz: 5.331633051009526}
+  - scenario_id: q2_resonance_flux
+    duration_ns: 120.0
+    pulses:
+      - {pulse_id: q2_to_resonance, kind: z, channel: q2_z, start_ns: 20.0, duration_ns: 80.0, shape: flattop_cos, target_flux_phi0: 0.0997552, rise_ns: 8.0}

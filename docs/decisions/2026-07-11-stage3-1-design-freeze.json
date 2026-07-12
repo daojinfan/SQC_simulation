@@ -1,0 +1,15 @@
+{
+  "artifact_type": "stage_03_1_design_freeze",
+  "artifact_version": "0.1",
+  "blocking_findings": [],
+  "decision": "approved",
+  "document_sha256": {
+    "docs/decisions/2026-07-11-stage3-objective-correction.md": "95A45E9E3205241265386FC9F7BDF8BB0DDB043E6A9D33D5714D7C68964BD795",
+    "docs/designs/03_1_q1_q2_coupling_sweep_design.md": "A2C9E8E28F778813818A5B76C817C54EB459D848E85678F5850FAB1451123DE5",
+    "docs/stages/03_1_q1_q2_coupling_sweep_plan.md": "5878A186A6A0673FC8FA07747D7822D022667895B9C04D78D892933A8C166F7C"
+  },
+  "review_record_path": "docs/decisions/2026-07-11-stage3-1-design-freeze-review.md",
+  "review_record_sha256": "7EB52CECF32B2692AEBECAECCFEEE0AA249B6D075E756F1B697AEF5E95B2D64D",
+  "reviewer_role": "independent_design_review_ai",
+  "schema_version": "0.1"
+}

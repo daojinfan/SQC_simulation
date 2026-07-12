@@ -1,0 +1,72 @@
+schema_version: "0.2"
+spectrum:
+  experiment_type: q1_q2_coupling_vs_coupler
+  name: demo_2q1c_q1q2_coupling
+  profile: acceptance
+  acceptance_eligible: true
+  source_hamiltonian_config: configs/hamiltonians/2q1c_charge_basis.yaml
+  source_hamiltonian_artifacts: output/stage_02_hamiltonian/hamiltonian_artifacts.json
+  source_rebaseline_manifest: output/stage_02_1_hamiltonian_rebaseline/rebaseline_manifest.json
+  source_rebaseline_approval: output/stage_02_1_hamiltonian_rebaseline/rebaseline_approval.json
+  source_design_freeze_manifest: docs/decisions/2026-07-11-stage3-1-design-freeze.json
+  eigen:
+    num_states: 48
+    solver: validated_eigsh
+    eigsh: {which: SA, tolerance: 1.0e-10, maxiter: 200000, ncv: 97, v0_rule: sha256_counter_v2}
+    solver_validation:
+      gap_dense_tolerance_GHz: 1.0e-6
+      q1_q2_splitting_dense_tolerance_GHz: 2.0e-6
+      near_degenerate_gap_threshold_GHz: 1.0e-5
+      partition_boundary_margin_GHz: 2.0e-6
+      projector_error_norm: spectral_2
+      projector_dense_tolerance: 1.0e-6
+      projector_repeat_tolerance: 1.0e-8
+  dressed_labeling:
+    max_excitations: {q1: 2, c: 2, q2: 2}
+    max_total_excitations: 2
+    min_overlap: 0.50
+    assignment: global_overlap
+  metrics: {compute_zz: true, compute_anharmonicity: true, compute_mode_participation: true, compute_target_bare_projector: true}
+  scan:
+    fixed_q1_flux_phi0: 0.10
+    inner_target: q2
+    inner_start_phi0: 0.08
+    inner_stop_phi0: 0.12
+    inner_coarse_points: 25
+    refinement_points: 11
+    min_refinement_levels: 4
+    max_refinement_levels: 8
+    flux_key_decimal_places: 12
+    coupler_flux_points_phi0: [0.200, 0.270, 0.360, 0.380, 0.385, 0.390, 0.394, 0.396, 0.400]
+    acceptance_anchor_fluxes_phi0: [0.200, 0.270, 0.385]
+    reference_coupler_flux_phi0: 0.270
+  evidence:
+    bare_detuning_evidence_tolerance_MHz: 0.50
+    resonance_alignment_tolerance_MHz: 0.50
+    endpoint_character_min_fraction: 0.80
+    character_exchange_min_delta: 0.60
+    target_bare_projector_min_weight: 0.90
+    target_total_excitation_min: 0.90
+    target_total_excitation_max: 1.10
+    coupler_fraction_max: 0.05
+    target_subspace_continuity_min: 0.90
+  convergence:
+    cutoff_increment: 2
+    crossing_refinement_coarse_points: 17
+    crossing_refinement_levels: 4
+    frequency_tolerance_MHz: 0.50
+    anharmonicity_tolerance_MHz: 1.00
+    zz_absolute_tolerance_MHz: 0.01
+    crossing_absolute_tolerance_MHz: 0.01
+    crossing_relative_tolerance: 0.05
+    splitting_significance_min_ratio: 5.0
+    modulation_significance_min_ratio: 5.0
+    splitting_level_tolerance_MHz: 0.005
+    flux_energy_resolution_MHz: 0.005
+  runtime:
+    acceptance_budget_seconds: 1800
+    smoke_budget_seconds: 90
+    conservative_solve_ceiling: 1381
+    over_budget_fallback: fail
+    solver_validation_artifact: output/stage_03_1_solver_validation/eigsh_validation.json
+    solver_validation_approval: output/stage_03_1_solver_validation/eigsh_validation_approval.json

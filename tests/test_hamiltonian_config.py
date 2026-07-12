@@ -11,7 +11,7 @@ CONFIG = Path("configs/hamiltonians/2q1c_charge_basis.yaml")
 def test_load_valid_hamiltonian_config():
     config = load_hamiltonian_config(CONFIG)
     assert config.name == "demo_2q1c_charge_basis"
-    assert config.basis.charge_cutoffs == {"q1": 5, "c": 5, "q2": 5}
+    assert config.basis.charge_cutoffs == {"q1": 7, "c": 7, "q2": 7}
     assert config.solver.method == "eigh"
 
 

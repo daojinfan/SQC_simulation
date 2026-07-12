@@ -1,0 +1,42 @@
+schema_version: "0.1"
+artifact_type: control_channel_registry
+artifact_version: "0.1"
+device_name: demo_2q1c2r
+base_device_config: configs/devices/2q1c2r.yaml
+base_device_artifact: output/stage_01_device_model/device_artifacts.json
+channels:
+  q1_xy:
+    kind: xy
+    target: q1
+    port: q1_xy
+    awg_lanes: [q1_xy_i, q1_xy_q]
+  q2_xy:
+    kind: xy
+    target: q2
+    port: q2_xy
+    awg_lanes: [q2_xy_i, q2_xy_q]
+  q1_z:
+    kind: z
+    target: q1
+    port: q1_z
+    awg_lanes: [q1_z]
+  q2_z:
+    kind: z
+    target: q2
+    port: q2_z
+    awg_lanes: [q2_z]
+  c_z:
+    kind: z
+    target: c
+    port: c_z
+    awg_lanes: [c_z]
+  r1_ro:
+    kind: readout
+    target: r1
+    port: r1_ro
+    awg_lanes: [r1_ro_i, r1_ro_q]
+  r2_ro:
+    kind: readout
+    target: r2
+    port: r2_ro
+    awg_lanes: [r2_ro_i, r2_ro_q]

@@ -29,6 +29,7 @@ from sqvm.hamiltonian.checks import (
 from sqvm.hamiltonian.config import HamiltonianConfig, load_hamiltonian_config
 from sqvm.hamiltonian.junction import resolve_effective_junctions
 from sqvm.hamiltonian.notebook import write_verification_notebook
+from sqvm.hamiltonian.provenance import build_stage2_artifact_provenance, find_repository_root
 from sqvm.hamiltonian.solver import gaps_from_eigenvalues, solve_lowest_eigenvalues
 
 
@@ -160,10 +161,17 @@ def _payload(
     analytic,
     convergence,
 ) -> dict[str, Any]:
+    resolved_config_path = config_path.resolve()
+    repository_root = find_repository_root(resolved_config_path)
     return {
-        "schema_version": config.schema_version,
+        "schema_version": "0.2",
         "artifact_type": "stage_02_hamiltonian",
-        "artifact_version": "0.1",
+        "artifact_version": "0.2",
+        "provenance": build_stage2_artifact_provenance(
+            device_artifacts_path=device_artifacts.path,
+            hamiltonian_config_path=resolved_config_path,
+            repository_root=repository_root,
+        ),
         "source_device_artifacts": str(config.source_device_artifacts),
         "hamiltonian_config": {
             "path": str(config_path),

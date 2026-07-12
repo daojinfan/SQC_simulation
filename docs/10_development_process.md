@@ -21,6 +21,41 @@
 已知限制
 ```
 
+## AI 团队角色与职责
+
+项目后续由 AI 团队执行，但设计、实现和验收必须保持职责分离：
+
+```text
+设计 AI：
+  负责阶段边界、物理假设、公开接口、数值容差、产物格式和验收标准。
+  实现开始前必须交付阶段计划和详细设计；设计变更必须写入文档和开发日志。
+
+开发 AI：
+  只按已批准设计实现代码、配置、runner 和 artifact 生成逻辑。
+  不得静默改变物理公式、单位、接口或验收严格度；偏差必须先交回设计 AI 决策。
+
+测试 / 审查 AI：
+  使用独立上下文按设计建立验收矩阵，运行自动测试、端到端验证和物理 sanity check。
+  不以开发 AI 自己编写且自己解释的测试作为唯一通过依据。
+
+用户：
+  检查 verification notebook、物理结果和产品体验，并在关键阶段给出最终接受或拒绝。
+```
+
+同一个 AI 可以在不同阶段承担不同角色，但同一项实现不得由同一上下文同时完成开发和最终批准。
+
+## 已验收阶段的重基线规则
+
+已验收阶段的公开 API、配置、数值基底、artifact schema 或物理常数发生变化时，不能直接由下游阶段消费。
+必须先插入一个显式 rebaseline gate：
+
+```text
+变更设计 -> 上游完整回归 -> 端到端 verify -> 输入/产物内容摘要 -> 数值差异报告
+         -> 独立审查 -> 新基线批准 -> 下游阶段继续
+```
+
+rebaseline 必须使用内容 SHA-256，而不是只比较文件路径。未通过 gate 的新 artifact 不具有下游可依赖性。
+
 ## 阶段计划模板
 
 每个阶段计划应包含：
@@ -74,9 +109,15 @@ docs/20_roadmap.md
 ```text
 docs/stages/01_device_model_plan.md
 docs/stages/02_hamiltonian_plan.md
-docs/stages/03_control_signal_plan.md
-docs/stages/04_experiment_runtime_plan.md
-docs/stages/05_visualization_web_plan.md
+docs/stages/02_1_hamiltonian_rebaseline_plan.md
+docs/stages/03_static_spectrum_plan.md
+docs/stages/04_control_signal_plan.md
+docs/stages/05_qutip_evolution_plan.md
+docs/stages/06_experiment_runtime_plan.md
+docs/stages/07_calibration_experiments_plan.md
+docs/stages/08_readout_model_plan.md
+docs/stages/09_web_lab_plan.md
+docs/stages/10_gate_simulation_plan.md
 ```
 
 开发日志：
@@ -111,14 +152,19 @@ docs/references/
 src/sqvm/
   device/
   hamiltonian/
+  spectrum/
   control/
   simulation/
   experiments/
   analysis/
+  readout/
   web/
 
 configs/
   devices/
+  hamiltonians/
+  spectra/
+  control/
   experiments/
 
 tests/

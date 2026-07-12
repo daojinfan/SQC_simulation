@@ -1,0 +1,48 @@
+schema_version: "0.1"
+experiment_type: control_signal_chain
+profile: smoke
+inputs:
+  stage4_design_freeze_manifest: docs/decisions/2026-07-11-stage4-design-freeze.json
+  channel_registry: configs/control/2q1c2r_channels.yaml
+  channel_registry_approval: output/stage_04_0_control_channel_rebaseline/control_channel_approval.json
+  stage3_1_artifact: output/stage_03_1_q1_q2_coupling/q1_q2_coupling_artifacts.json
+  stage3_1_approval: output/stage_03_1_q1_q2_coupling/acceptance_approval.json
+clock: {sample_rate_Hz: 2000000000, dt_ns: 0.5}
+dac: {bits: 16, full_scale_min_V: -0.33, full_scale_max_exclusive_V: 0.33, rounding: half_even}
+lane_order: [q1_xy_i, q1_xy_q, q2_xy_i, q2_xy_q, q1_z, q2_z, c_z, r1_ro_i, r1_ro_q, r2_ro_i, r2_ro_q]
+lanes:
+  q1_xy_i: {latency_samples: 24, fir: [0.8, 0.2]}
+  q1_xy_q: {latency_samples: 24, fir: [0.8, 0.2]}
+  q2_xy_i: {latency_samples: 26, fir: [0.8, 0.2]}
+  q2_xy_q: {latency_samples: 26, fir: [0.8, 0.2]}
+  q1_z: {latency_samples: 10, fir: [0.7, 0.2, 0.1]}
+  q2_z: {latency_samples: 12, fir: [0.7, 0.2, 0.1]}
+  c_z: {latency_samples: 8, fir: [0.7, 0.2, 0.1]}
+  r1_ro_i: {latency_samples: 20, fir: [0.85, 0.15]}
+  r1_ro_q: {latency_samples: 20, fir: [0.85, 0.15]}
+  r2_ro_i: {latency_samples: 22, fir: [0.85, 0.15]}
+  r2_ro_q: {latency_samples: 22, fir: [0.85, 0.15]}
+static_mixing:
+  xy:
+    input_lanes: [q1_xy_i, q1_xy_q, q2_xy_i, q2_xy_q]
+    output_coordinates: [q1_drive_i_GHz, q1_drive_q_GHz, q2_drive_i_GHz, q2_drive_q_GHz]
+    matrix: [[0.1000, 0.0020, 0.0010, 0.0000], [-0.0010, 0.0980, 0.0000, 0.0010], [0.0005, 0.0000, 0.1020, -0.0015], [0.0000, 0.0007, 0.0010, 0.0990]]
+  z:
+    input_lanes: [q1_z, q2_z, c_z]
+    output_coordinates: [q1_delta_flux_phi0, q2_delta_flux_phi0, c_delta_flux_phi0]
+    matrix: [[0.500, 0.005, 0.010], [0.004, 0.500, 0.012], [0.008, 0.006, 0.500]]
+  readout:
+    input_lanes: [r1_ro_i, r1_ro_q, r2_ro_i, r2_ro_q]
+    output_coordinates: [r1_device_i_V, r1_device_q_V, r2_device_i_V, r2_device_q_V]
+    matrix: [[0.00100, 0.00001, 0.00000, 0.00000], [-0.00001, 0.00100, 0.00000, 0.00000], [0.00000, 0.00000, 0.00102, 0.00001], [0.00000, 0.00000, -0.00001, 0.00102]]
+idle_flux_phi0: {q1: 0.10, q2: 0.00, c: 0.27}
+acceptance:
+  max_condition_number: 100.0
+  max_xy_area_relative_error: 0.005
+  max_readout_area_relative_error: 0.005
+  max_z_flat_top_error_phi0: 0.00002
+  max_phase_proxy_rad: 0.10
+  phase_proxy_window_ns: 32.0
+  max_formal_samples_per_scenario: 1000
+  analysis_runtime_budget_seconds: 2.0
+  total_runtime_budget_seconds: 10.0

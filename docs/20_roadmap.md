@@ -7,6 +7,7 @@
 ```text
 阶段 1: 器件配置与参数模型
 阶段 2: 2q1c 哈密顿量构建
+阶段 2.1: Hamiltonian 重基线门（仅在阶段 2 已验收内容发生变更时触发）
 阶段 3: 静态能谱与 dressed-state 分析
 阶段 4: 控制信号链
 阶段 5: QuTiP 时间演化
@@ -51,20 +52,45 @@ device.yaml 可以加载
 简单能谱可复现
 ```
 
-## 阶段 3: 静态表征
+## 阶段 2.1: Hamiltonian 重基线门
 
-目的：
+触发条件：
 
 ```text
-计算频率、非谐性、耦合、避免交叉，以及可获得的 residual ZZ 类指标。
+阶段 2 验收后又修改 Hamiltonian API、配置、cutoff、artifact schema 或数值实现。
 ```
 
 验收：
 
 ```text
-写出能谱表
-生成图
-sanity check 能发现不合理参数
+阶段 1/2 完整回归和端到端 verify 通过
+配置、器件 artifact、阶段 2 源码和新 artifact 由 SHA-256 内容摘要绑定
+旧基线到新基线的数值变化有明确报告
+Stage 2.1 independently rebuilds the lowest 12 gaps through Stage 2 APIs and checks the candidate artifact at error severity.
+Stage 3 repeats the same dense consistency check after implementation; it is not a prerequisite of Stage 2.1 approval.
+独立审查批准新基线
+```
+
+## 阶段 3: 静态表征与 q1-q2 耦合验证
+
+目的：
+
+```text
+计算频率、非谐性和 residual ZZ，并在固定 coupler flux 下通过 q2 flux 将 q1/q2 拉到共振，
+验证 q1-q2 avoided crossing 以及 coupler flux 对有效耦合强度的调制。
+```
+
+验收：
+
+```text
+Stage 2.1 provenance、manifest、approval 和内容 SHA-256 全部通过
+关键频率、非谐性和 ZZ 达到数值收敛预算
+在 coupler flux 0.200、0.270、0.385 Phi0 三个锚点获得 q1-q2 resonance、character exchange、
+target-subspace continuity、低 coupler participation 和三模式 cutoff convergence 证据
+三个锚点的 splitting/2 可作为 magnitude-only |g_eff|，且 coupler-flux modulation 显著通过
+acceptance 使用已批准 solver backend 并通过 runtime gate
+生成 canonical artifact、真实执行 verification notebook、report 和独立 hash-bound approval
+Stage4ReadinessReport 验证 stage4_ready=true
 ```
 
 ## 阶段 4: 控制信号链
@@ -72,15 +98,18 @@ sanity check 能发现不合理参数
 目的：
 
 ```text
-用尽量接近真实实验系统的方式表示 XY、Z 和读出控制通道。
+用尽量接近真实实验系统的方式表示 XY、Z 和读出控制通道，把物理 pulse 请求编译成
+采样 AWG 基带波形与 effective device signal。
 ```
 
 验收：
 
 ```text
 logical pulse -> AWG waveform -> effective device signal
-波形可以绘图检查
-时序和通道冲突可以检查
+q1/q2 XY、q1/q2/c Z、r1/r2 readout 通道都有严格 registry 和单位
+采样、DAC 量化、延迟、FIR、静态串扰/混频和 clipping 可检查
+波形分层绘图可检查，时序和物理通道冲突 fail closed
+独立 approval 验证 stage5_ready=true
 ```
 
 ## 阶段 5: QuTiP 演化

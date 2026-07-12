@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sqvm.hamiltonian.provenance import canonical_json_bytes
+
 
 @dataclass(frozen=True, slots=True)
 class DeviceArtifacts:
@@ -48,5 +50,5 @@ def write_hamiltonian_artifacts(payload: dict[str, Any], output_dir: str | Path)
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     path = root / "hamiltonian_artifacts.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_bytes(canonical_json_bytes(payload))
     return HamiltonianArtifactSet(root=root, hamiltonian_artifacts=path)

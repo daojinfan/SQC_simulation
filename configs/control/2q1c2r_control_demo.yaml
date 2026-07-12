@@ -1,0 +1,31 @@
+schema_version: "0.1"
+artifact_type: logical_pulse_schedule
+artifact_version: "0.1"
+schedule_id: stage4_reference
+scenarios:
+  - scenario_id: xy_drag
+    duration_ns: 80.0
+    pulses:
+      - {pulse_id: q1_drag, kind: xy, channel: q1_xy, start_ns: 20.0, duration_ns: 32.0, shape: drag_gaussian, amplitude_GHz: 0.015, phase_rad: 0.0, sigma_ns: 8.0, drag_beta_ns: -0.5, carrier_frequency_GHz: 5.193479909897604}
+      - {pulse_id: q2_drag, kind: xy, channel: q2_xy, start_ns: 20.0, duration_ns: 32.0, shape: drag_gaussian, amplitude_GHz: 0.014, phase_rad: 1.5707963267948966, sigma_ns: 8.0, drag_beta_ns: -0.4, carrier_frequency_GHz: 5.331633051009526}
+  - scenario_id: q2_resonance_flux
+    duration_ns: 120.0
+    pulses:
+      - {pulse_id: q2_to_resonance, kind: z, channel: q2_z, start_ns: 20.0, duration_ns: 80.0, shape: flattop_cos, target_flux_phi0: 0.0997552, rise_ns: 8.0}
+  - scenario_id: coupler_0_200
+    duration_ns: 120.0
+    pulses:
+      - {pulse_id: c_to_0_200, kind: z, channel: c_z, start_ns: 20.0, duration_ns: 80.0, shape: flattop_cos, target_flux_phi0: 0.200, rise_ns: 8.0}
+  - scenario_id: coupler_0_270
+    duration_ns: 120.0
+    pulses:
+      - {pulse_id: c_to_0_270, kind: z, channel: c_z, start_ns: 20.0, duration_ns: 80.0, shape: flattop_cos, target_flux_phi0: 0.270, rise_ns: 8.0}
+  - scenario_id: coupler_0_385
+    duration_ns: 120.0
+    pulses:
+      - {pulse_id: c_to_0_385, kind: z, channel: c_z, start_ns: 20.0, duration_ns: 80.0, shape: flattop_cos, target_flux_phi0: 0.385, rise_ns: 8.0}
+  - scenario_id: readout_envelopes
+    duration_ns: 860.0
+    pulses:
+      - {pulse_id: r1_readout, kind: readout, channel: r1_ro, start_ns: 20.0, duration_ns: 800.0, shape: flattop_cos, amplitude_device_V: 0.00010, phase_rad: 0.0, rise_ns: 16.0, carrier_frequency_GHz: 6.400}
+      - {pulse_id: r2_readout, kind: readout, channel: r2_ro, start_ns: 20.0, duration_ns: 800.0, shape: flattop_cos, amplitude_device_V: 0.00011, phase_rad: 0.2, rise_ns: 16.0, carrier_frequency_GHz: 6.450}

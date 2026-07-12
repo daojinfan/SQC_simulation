@@ -66,3 +66,13 @@ def test_cli_verify_device_success(tmp_path):
     assert result.returncode == 0
     assert (tmp_path / "device_artifacts.json").exists()
     assert (tmp_path / "verification.ipynb").exists()
+
+
+def test_vscode_stage1_runner_smoke():
+    result = subprocess.run(
+        [sys.executable, "scripts/run_stage_01_device.py"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

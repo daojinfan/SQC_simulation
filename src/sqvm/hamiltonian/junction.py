@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from math import cos, pi, sqrt
+from math import cos, isfinite, pi, sqrt
+from numbers import Real
 from typing import Any
 
 from sqvm.hamiltonian.artifacts import DeviceArtifacts
@@ -20,7 +22,11 @@ class EffectiveJunction:
     formula: str = "sqrt((EJ1+EJ2)^2*cos(pi*phi)^2 + (EJ1-EJ2)^2*sin(pi*phi)^2)"
 
 
-def resolve_effective_junctions(device_artifacts: DeviceArtifacts) -> tuple[EffectiveJunction, ...]:
+def resolve_effective_junctions(
+    device_artifacts: DeviceArtifacts,
+    flux_bias_overrides_phi0: Mapping[str, float] | None = None,
+) -> tuple[EffectiveJunction, ...]:
+    overrides = _validated_flux_overrides(flux_bias_overrides_phi0)
     rows_by_component: dict[str, list[dict[str, Any]]] = {"q1": [], "q2": [], "c": []}
     for row in device_artifacts.payload["junction_parameters"]:
         component = row.get("component")
@@ -38,7 +44,7 @@ def resolve_effective_junctions(device_artifacts: DeviceArtifacts) -> tuple[Effe
             raise ValueError(f"components.{mode}.squid.flux_bias_phi0 is required")
         ej1 = float(rows[0]["ej_GHz"])
         ej2 = float(rows[1]["ej_GHz"])
-        flux = float(squid["flux_bias_phi0"])
+        flux = overrides.get(mode, float(squid["flux_bias_phi0"]))
         resolved.append(
             EffectiveJunction(
                 mode=mode,
@@ -50,6 +56,26 @@ def resolve_effective_junctions(device_artifacts: DeviceArtifacts) -> tuple[Effe
             )
         )
     return tuple(resolved)
+
+
+def _validated_flux_overrides(overrides: Mapping[str, float] | None) -> dict[str, float]:
+    if overrides is None:
+        return {}
+    if not isinstance(overrides, Mapping):
+        raise ValueError("flux_bias_overrides_phi0 must be a mapping or None")
+
+    supported_modes = {"q1", "c", "q2"}
+    validated: dict[str, float] = {}
+    for mode, value in overrides.items():
+        if mode not in supported_modes:
+            raise ValueError("flux override keys must be q1, c, or q2")
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError(f"flux override for {mode} must be a finite real number")
+        converted = float(value)
+        if not isfinite(converted):
+            raise ValueError(f"flux override for {mode} must be a finite real number")
+        validated[mode] = converted
+    return validated
 
 
 def effective_ej_GHz(ej1_GHz: float, ej2_GHz: float, flux_bias_phi0: float) -> float:
