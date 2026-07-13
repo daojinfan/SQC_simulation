@@ -17,7 +17,10 @@ the detailed design, and after the existing Stage 4 exact-five validator returns
 3. Implement the unique local-number `U(t)`, counterterms, exact `U.dag H_static(phi) U` transformation of
    all Stage 2.1 charging/capacitance coupling/flux terms, XY-only RWA, carrier derivation, and one
    GHz-to-rad/ns helper. Do not apply a zero-sector projection to controlled-system physics or build a sampled
-   lab-frame carrier time series.
+   lab-frame carrier time series. Verify the complete coupling operator and the mandatory approved full-flux-
+   triple difference between `q2_resonance_flux` indexes 0 and 66 by frozen unitary invariants and common-basis
+   off-diagonal Frobenius norm, never a fixed cross-basis matrix element. Any isolated-q2 counterfactual is
+   diagnostic-only and cannot replace this approved input-chain probe.
 4. Implement physical-lab-frame initial ground and independent 16-state lab labeling/projectors, exact Decimal
    assignment tie-breaking, edge hold, interaction-frame state output, and lab-frame observable transformation.
 5. Implement the immutable QuTiP solver option/tolerance constants and solver-validation candidate, notebook,
@@ -43,7 +46,9 @@ Smoke must not write an approval and cannot be used as formal evidence. Formal e
 authorization-bound attempt identity. The formal target must not exist, authorization must be unused, and a
 parent watchdog must own the wall-clock deadline. Parent consumes fixed ordered scenario-start/complete IPC,
 enforces the earlier of 120.0 s per-scenario and 300.0 s total hard deadlines, and treats 5.0 s grace as
-termination-only. Attempts are permanently reserved by an exclusive lock and
+termination-only. `scenario_start` precedes every scenario-specific extraction/build/solve/convergence/payload
+operation and `scenario_complete` follows all of it; parent kills the complete child tree immediately for any
+IPC failure. Attempts are permanently reserved by an exclusive lock and
 audited at `output/stage_05_qutip_evolution_attempts/attempt-<authorization_sha256_lower>.json`; prior receipt,
 lock, or concurrent reservation rejects before work. Timeout/failed attempts cannot be resumed or overwritten.
 
@@ -52,16 +57,20 @@ lock, or concurrent reservation rejects before work. Timeout/failed attempts can
 1. Static contract tests: every exact JSON key set/type, canonical complex encoding, path containment, hashes,
    status precedence, forbidden signal layer, frozen carrier map, and Stage 4/Stage 5 trust chain.
 2. Physics/model tests: `U`, `-fN` counterterms, full transformed static/capacitance/flux physics, XY-only
-   RWA, coupling-element survival, q2-flux off-diagonal survival, one conversion, Hermiticity, zero hold,
+   RWA, full-operator coupling/approved-flux-triple similarity invariants, common-basis flux-difference
+   off-diagonal Frobenius survival, index-66 q1/q2/c tampering and isolated-probe substitution attacks,
+   nonunitary-U/basis-change attacks, one conversion, Hermiticity, zero hold,
    discontinuity edges, physical-lab-ground versus quasienergy-ground attack, frame conversion, exact Decimal
    label tie-breaking/projectors, and population/leakage.
 3. Solver gate tests: immutable exact solver options and tolerances; approved interpreter; Qobj/QobjEvo/
-   mesolve/sparse operations; fixed zero, discontinuity, Rabi, interaction-survival probes; norm/reference/
-   deterministic aggregate; notebook replay; and wide-tolerance, custom-expected/custom/missing-probe or
-   option, and candidate/approval reuse attacks across freeze, Stage 4, source tree, interpreter, and spec.
+   mesolve/sparse operations; fixed zero, discontinuity, Rabi, coupling, and approved-full-triple probes;
+   norm/reference/deterministic aggregate; notebook replay; and wide-tolerance, custom-expected,
+   missing/extra/reordered-probe or option, and candidate/approval reuse attacks across freeze, Stage 4,
+   source tree, interpreter, and spec.
 4. Operational tests: canonical embedding/projection and all-time convergence; stale/reused authorization;
    existing formal target; prior/concurrent attempt receipt; 121 s single-scenario timeout; total timeout;
-   missing/duplicate/reordered IPC or child-no-response; watchdog/staging cleanup; exact-four/exact-five
+   121 s before-start preprocessing; missing/malformed/duplicate/reordered IPC, complete-without-active, or
+   child-no-response/exit-before-complete; watchdog/staging cleanup; exact-four/exact-five
    attacks; report/receipt/notebook/artifact hash attacks; and Stage 6 readiness false cases.
 5. Independent test review with zero blocking findings authorizes one smoke run. Independent review of solver
    validation must pass before that smoke run. A further explicit formal authorization is required before the

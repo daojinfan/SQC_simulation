@@ -260,6 +260,13 @@ constant below, and ordered actual `probe_results`. The validator independently 
 reference, comparison, threshold, and aggregate from that constant; any missing/extra probe, differing ID/hash,
 candidate expected value, tolerance, option, or probe field fails closed.
 
+`probe_results` is exactly the ordered five-element array with IDs `zero_sparse_v1`, `piecewise_z_sparse_v1`,
+`rabi_x_sparse_v1`, `coupling_similarity_v1`, and `approved_flux_triple_similarity_v1`; each entry contains
+only its fixed-ID actual outputs and actual invariant values. Missing, extra, duplicate, or reordered entries,
+or any isolated diagnostic presented in this array, fail both candidate and approval validation. Approval binds
+the candidate raw hash and `probe_spec_sha256`; validator never accepts candidate-provided input triples,
+expected values, or tolerances as evidence.
+
 `stage5_solver_probe_v1` has this exact ordered case list and uses the immutable QuTiP options above:
 
 1. `zero_sparse_v1`: dimension 2, basis `|0>,|1>`, CSR zero Hamiltonian, tlist `[0.0,0.5,1.0]` ns, initial
@@ -270,21 +277,44 @@ candidate expected value, tolerance, option, or probe field fails closed.
    at `0.5 ns`, and the Hamiltonian is `2*pi*coefficient*sigma_z/2` rad/ns.
 3. `rabi_x_sparse_v1`: dimension 2, CSR `sigma_x`, constant `0.125 GHz`, tlist `[0.0,1.0,2.0]` ns, initial
    `|0>`, observable `P1`; expected `P1=[0.0,0.5,1.0]` from `sin^2(2*pi*0.125*t)`.
-4. `interaction_survival_v1`: reconstructs the accepted Stage 2.1 charge-basis model at the fixed Stage 4
-   initial flux and its fixed `U(t=0.125 ns)`. Select the first lexicographically indexed nonzero
-   capacitance-coupling matrix element and first lexicographically indexed nonzero q2-flux-difference
-   off-diagonal element. Expected comparisons are `abs((U.dag A U)[i,j])-abs(A[i,j])=0` and nonzero finite
-   transformed q2-flux difference; selection failure is failure.
+4. `coupling_similarity_v1`: reconstructs the accepted Stage 2.1 formal-cutoff `(7,7,7)` model, its local
+   first-flux eigenvectors, and `U(t=0.125 ns)`. The common local-energy basis is exactly
+   `W=V_q1(phi0_q1) tensor V_c(phi0_c) tensor V_q2(phi0_q2)`, where every `V` is the ascending,
+   phase-fixed local eigenvector matrix defined in Section 2.1. Define the complete capacitance-coupling
+   operator `A_coupling=4*sum_(m != n) E_C[m,n] n_m n_n` in the accepted `q1,c,q2` order; no element selection
+   is permitted. Require `||A_coupling||_F > 1e-12`.
+5. `approved_flux_triple_similarity_v1` is mandatory and uses the frozen approved full
+   `q2_resonance_flux.effective.absolute_flux_phi0` triples: index 0 is read as the current artifact's complete
+   `(q1,q2,c)` triple; index 66 must be exactly `(0.10000162139892578,0.00016910485839843748,
+   0.26999850549316406) Phi0`. Validator independently reads both arrays from current protected Stage 4 bytes,
+   verifies index 0 plus every index-66 binary64 component, and rebuilds
+   `DeltaH_approved=H_static(phi[index=66])-H_static(phi[index=0])`; candidate triples are never inputs.
+   `DeltaH_local=W.dag DeltaH_approved W` uses the same frozen W. Its off-diagonal Frobenius component is
+   exactly `sqrt(sum_(i != j) abs(DeltaH_local[i,j])^2)` and must be `>1e-12`. Missing/changed index, q1, q2,
+   or c component fails.
 
 For cases 1--3, candidate actual arrays use the canonical complex encoding. Compare real/imaginary components
 elementwise by max absolute error; zero/piecewise norm error is `max(abs(norm-1))`; Rabi error is max absolute
-population error. Each must be `<=1e-9`. For case 4, coupling magnitude error and q2-flux survival tolerance
-are `<=1e-12`, and the selected flux element magnitude must be `>1e-12`. Run the entire ordered four-case suite
-three times; repeat error is the maximum componentwise difference across the three actual-result records and
-must be `<=1e-12`. Aggregate passes iff all 12 case repetitions, all API/sparse/QobjEvo/mesolve construction
-checks, and immutable notebook replay pass. Candidate result booleans are informational only; validator
-recomputes them. Missing dependency, wrong interpreter/version/options, unexpected API, nonfinite value,
-edge disagreement, coupling/flux loss, nondeterminism, or stale binding fails closed.
+population error. Each must be `<=1e-9`. For each full operator `A` in
+`{A_coupling,DeltaH_approved}`, define `A_U=U.dag A U` and independently require: hermiticity errors
+`max(abs(A-A.dag))` and `max(abs(A_U-A_U.dag)) <=1e-12`; `abs(||A_U||_F-||A||_F)<=1e-12`; componentwise
+Decimal difference of traces `<=1e-12`; and sorted singular-value maximum difference `<=1e-12`.
+
+All invariant inputs are finite complex128 values. Each scalar comparison converts its binary64 real/imaginary
+parts through `Decimal.from_float`; absolute Decimal difference is compared to exact Decimal `1e-12`. Singular
+values are float64, sorted descending by value then original index, and compared by that Decimal rule. Trace is
+compared as separately encoded real/imaginary Decimal values. The validator additionally requires both
+`||U.dag U-I||_F<=1e-12` and `||U U.dag-I||_F<=1e-12`; it never compares a fixed `(i,j)` element across bases.
+Candidate records only actual invariant values and fixed flux indexes; validator independently rebuilds W,
+both operators, U, full approved triples, and all invariants. An isolated-q2 counterfactual may be retained only
+as a separately labeled diagnostic outside this five-case suite; it is not an approved Stage 4 input-chain point,
+cannot satisfy any solver-acceptance check, and cannot substitute for this probe. Run the ordered five-case suite
+three times; repeat
+error is the maximum componentwise difference across the three actual-result records and must be `<=1e-12`.
+Aggregate passes iff all 15 case repetitions, all API/sparse/QobjEvo/mesolve construction checks, and immutable
+notebook replay pass. Candidate result booleans are informational only; validator recomputes them. Missing
+dependency, wrong interpreter/version/options, unexpected API, nonfinite value, edge disagreement, nonunitary
+U, basis change, coupling/flux loss, nondeterminism, or stale binding fails closed.
 
 ## 6. Convergence and run-attempt lifecycle
 
@@ -319,8 +349,10 @@ lock creation; the loser fails before any numerical work.
 After termination the parent creates the receipt once by exclusive create-new, never overwrites it, and retains
 the lock. Its exact keys are `{schema_version,artifact_type,artifact_version,attempt_id,profile,
 authorization_sha256,status,elapsed_seconds,diagnostic_code,active_scenario_id,timeout_kind,
-total_deadline_monotonic_ns,scenario_deadline_monotonic_ns,ipc_transcript_sha256,formal_target_path,
-formal_target_sha256}`; target path/hash are null only for nonpublished attempts. Identity is
+attempt_start_monotonic_ns,parent_launch_monotonic_ns,active_start_receive_monotonic_ns,
+last_ipc_receive_monotonic_ns,total_deadline_monotonic_ns,scenario_deadline_monotonic_ns,
+ipc_transcript_sha256,formal_target_path,formal_target_sha256}`; target path/hash are null only for
+nonpublished attempts. Identity is
 `stage_05_qutip_attempt_receipt`, version `0.1`. Terminal status is one of `published`,
 `implementation_error`, `total_timeout`, `scenario_timeout`, `runtime_failure`, `numerical_failure`, or
 `convergence_failure`; `timeout_kind` is null or exactly `total`/`scenario`. It contains no state, controls,
@@ -330,22 +362,33 @@ non-resumable. For `published`,
 mapping `{artifact,notebook,report,receipt}` to uppercase 64-hex values; all other terminal states use null
 for both fields.
 
-Formal parent/child IPC is a newline-delimited canonical JSON pipe. Child must send immediately before each
-scenario solver construction `{"event":"scenario_start","attempt_id":string,"scenario_id":string,
-"monotonic_ns":positive_int}` and immediately after it sends the same exact keys with
-`event="scenario_complete"`. Parent records its own `time.monotonic_ns()` receive timestamp and validates
-attempt ID, exact schema, strictly ordered scenario IDs, one start/complete pair per ID, and child timestamp
-monotonicity. No start message within 5.0 s of child launch, malformed/missing/duplicate/reordered message,
-complete without active start, or child exit without complete is `implementation_error` and cannot publish.
+Formal parent/child IPC is a newline-delimited canonical JSON pipe. Child must send before **any**
+scenario-specific work `{"event":"scenario_start","attempt_id":string,"scenario_id":string,
+"monotonic_ns":positive_int}`. Scenario-specific work includes control extraction; Hamiltonian, lab-reference,
+projector, and label construction; solver construction/run; cutoff convergence; metrics/checks; and preparation
+of the scenario payload. It sends `scenario_complete` with the same keys only after all of that work is finished
+and the scenario's pending payload is complete in memory. Parent records its own `time.monotonic_ns()` receive
+timestamp and validates attempt ID, exact schema, strictly ordered scenario IDs, one start/complete pair per ID,
+and child timestamp monotonicity.
 
-Parent sets `total_deadline=parent_launch_monotonic+300.0 s` and, only on a valid start receive, sets
-`scenario_deadline=parent_receive_monotonic+120.0 s`; it always waits to the earlier deadline. At deadline it
-classifies `total_timeout` when total deadline is earlier or equal, otherwise `scenario_timeout`, terminates the
-entire child process tree using the parent-owned OS job/process group, and allows 5.0 s only to observe child
-exit and collect IPC. Grace never changes either acceptance deadline. Receipt records the active scenario,
-parent elapsed time, both deadline timestamps, timeout kind, and transcript hash. Status precedence is
-`implementation_error > total_timeout > scenario_timeout > runtime_failure > numerical_failure >
-convergence_failure > ready_for_stage6_review`; a timeout always prevents formal exact-four publication.
+Parent starts the 300.0 s total clock at immutable `attempt_start`, before any parent global preflight. Parent
+global preflight is included in that total clock and occurs before child launch. Child may do no
+scenario-specific pre-start work; any minimal child global preflight must finish and yield the first start within
+5.0 s of parent child-launch receipt. Each later start must arrive within 5.0 s of parent receipt of the prior
+complete. Child global work that cannot meet this rule belongs in parent preflight; hidden heavy preprocessing
+before start is an implementation error.
+
+On valid start receive, parent sets `scenario_deadline=parent_receive_monotonic+120.0 s`; total deadline is
+`attempt_start_monotonic+300.0 s`, and parent waits to the earlier deadline. Missing start/complete deadline,
+malformed/missing/duplicate/reordered message, complete without active scenario, or child exit before complete
+causes immediate `implementation_error`: parent terminates the entire child process tree using its OS job/process
+group. At a hard deadline it classifies `total_timeout` when total is earlier or equal, otherwise
+`scenario_timeout`, and also terminates the entire tree. In all cases 5.0 s grace only observes exit/collects
+IPC and never changes acceptance deadlines. Receipt records active scenario, IPC failure diagnostic code,
+parent receive timestamps, elapsed time, both deadlines, timeout kind, and transcript hash. Status precedence
+is `implementation_error > total_timeout > scenario_timeout > runtime_failure > numerical_failure >
+convergence_failure > ready_for_stage6_review`; every IPC failure or timeout prevents formal exact-four
+publication.
 Staging is sibling `.stage_05_qutip_evolution.staging.<attempt_id>` and is atomically renamed only after all
 checks, canonical bytes, and notebook replay pass. The parent then writes the prepared immutable success receipt
 with exclusive create-new. If that write fails, it removes only the just-created target after verifying its
@@ -357,14 +400,18 @@ output is exact-four; independent approval alone may create the fifth file.
 
 Required independent tests reject: stale/missing Stage 4 exact-five or Stage 5 freeze; AWG/logical/readout
 numeric access; carrier missing/duplicate/mismatch and phase double application; projection/deletion of any
-static, capacitance-coupling, or flux term; lost transformed coupling matrix element; lost q2-flux off-diagonal
-term; any alternate XY RWA term, counterterm, units, or edge interpolation; a physical lab ground differing
+static, capacitance-coupling, or flux term; forged single-element invariant; nonunitary U; changed common
+local-energy basis; lost coupling norm/singular-value invariant; lost approved-full-triple off-diagonal
+Frobenius component or full-operator invariant; tampered index-66 q1, q2, or c; isolated-q2 diagnostic used
+in place of the mandatory full-triple probe; any alternate XY RWA term, counterterm, units, or edge interpolation; a physical lab ground differing
 from but incorrectly replaced by an interaction-frame quasienergy ground; label ambiguity/low overlap/exact
 tie/duplicate/candidate shortage; malformed complex/ket, unknown exact key, and density representation; wrong
 approved interpreter/version/API and every solver probe; solver candidate/approval reuse across freeze, Stage 4
 artifact, or source tree; wide rtol/atol, altered nsteps/max-step/store/normalize/progress option, candidate
 expected/tolerance, custom/missing/extra probe, or falsified aggregate; cross-cutoff direct comparison, invalid
 embedding, loss of projected norm, or phase-zero overlap; reused authorization/existing target/prior receipt/
-concurrent receipt; a single scenario running 121 s while total remains below 300 s; total deadline expiry;
-missing/duplicate/reordered IPC start; child no-response; timeout/staging leak; report/receipt/hash/notebook
+concurrent receipt; a single scenario doing 121 s preprocessing before start; a scenario doing 121 s after
+start while total remains below 300 s; total deadline expiry; missing/malformed/duplicate/reordered IPC start
+or complete; complete without active scenario; child no-response/exit before complete; timeout/staging leak;
+report/receipt/hash/notebook
 tampering; smoke approval; and every failed Stage 6 readiness check.

@@ -1,0 +1,15 @@
+{
+  "artifact_type": "stage_05_qutip_evolution_design_freeze",
+  "artifact_version": "0.1",
+  "blocking_findings": [],
+  "decision": "approved",
+  "document_sha256": {
+    "docs/decisions/2026-07-12-stage5-qutip-evolution-freeze-first.md": "892A2A2918A2ACD8A7B128B63ED76A64432C7E2B22EFDC377C4B382F1FEE72FF",
+    "docs/designs/05_qutip_evolution_design.md": "0163321D7774CC0B23EB8E53F4C8431DC6A74209E031690C58278E0B2CFA8412",
+    "docs/stages/05_qutip_evolution_plan.md": "AAE4484B037D9DEF95A36DDA90160B1F41D2DAF09F66DB4C402B43D26470825E"
+  },
+  "review_record_path": "docs/decisions/2026-07-13-stage5-design-freeze-review.md",
+  "review_record_sha256": "21DB1F504FBA0769ECFA18F7373F9C5F272B176F5A37236BEB00F6738DEDCAA8",
+  "reviewer_role": "independent_design_review_ai",
+  "schema_version": "0.1"
+}

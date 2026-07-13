@@ -37,6 +37,14 @@ records only actual results and fixed spec identity/hash; its validator independ
 thresholds, and aggregates. Formal execution uses ordered parent/child IPC and hard 120.0 s scenario plus
 300.0 s total monotonic deadlines; 5.0 s grace only terminates/collects and never extends acceptance time.
 
+Interaction-survival uses no cross-representation matrix-element identity. It validates complete coupling and
+the mandatory approved full-flux-triple difference between `q2_resonance_flux` indexes 0 and 66 using unitary
+similarity invariants, and defines its off-diagonal dynamics only in the frozen common local-energy basis. An
+isolated-q2 counterfactual, if later recorded, is diagnostic-only and cannot replace the approved input-chain
+probe. Scenario IPC starts before all scenario-specific preprocessing and ends
+only after its numerical/payload work; malformed, missing, ordered-state, or child-exit failures immediately
+terminate the whole child tree and block formal publication.
+
 ## Solver Environment Decision
 
 The approved interpreter is exactly `C:\Users\fandaojin\anaconda3\python.exe`; its current read-only probe
