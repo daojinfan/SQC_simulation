@@ -1510,3 +1510,47 @@ Next:
 Submit the Stage 4 scope, Stage 4.0 plan, Stage 4 plan, and detailed design for independent design-freeze
 review. Keep development and the new independent test AI idle until the design is approved.
 ```
+
+## 2026-07-14: Stage 6 platform runtime implemented and accepted
+
+Stage:
+
+```text
+Stage 6 experiment runtime
+```
+
+Completed work:
+
+```text
+Implemented strict schema-0.1 request admission with program fixed to null.
+Implemented deterministic scan expansion, immutable registries, fake backend, lifecycle, cancellation, budgets,
+canonical event journal, raw dataset, provenance snapshots, no-replace publication, recovery, verification,
+catalog rebuild, and eight CLI operations.
+Added a versioned future Gate/Macro IR -> Pulse IR -> Stage 4 boundary without enabling instruction execution.
+Closed all development, independent-test, physics-boundary, and release-review findings.
+```
+
+Verification:
+
+```text
+Independent Stage 6 tests: 35 passed.
+Joint Stage 5/provenance/Stage 6 regression: 56 passed.
+Two formal Stage 6 smoke roots completed, independently verified, and rebuilt their catalogs.
+All deterministic request, point-table, dataset, response, device, calibration, environment, and source bytes
+matched across both roots.
+The repository-wide historical suite remains unavailable because ignored Stage 1-4 output fixtures are absent.
+```
+
+Decision:
+
+```text
+Stage 6 is accepted as a platform-only experiment runtime framework.
+It makes no physical, calibration, observation, measurement, or Stage 7 readiness claim.
+```
+
+Next:
+
+```text
+Commit and push the accepted Stage 6 implementation and evidence records.
+Begin Stage 7 detailed design only after user confirmation of its physical experiment and instruction contracts.
+```

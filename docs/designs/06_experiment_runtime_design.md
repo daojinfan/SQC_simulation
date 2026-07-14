@@ -48,6 +48,7 @@ backend_id
 device_snapshot
 calibration_snapshot
 parameters
+program
 scan
 execution
 publication
@@ -62,6 +63,12 @@ reads and validates the complete config before creating any lock, directory, dat
 
 `parameters` is an exact mapping defined by the selected built-in experiment. Values are finite JSON scalars or
 strict arrays accepted by that definition; no permissive extra field is retained.
+
+`program` is the reserved instruction-program boundary. In Stage 6 schema `0.1` its only accepted value is
+`null`; every object, array, string, or executable reference fails before reservation. The field is nevertheless
+stored in the canonical request so Stage 7 can introduce a reviewed versioned object without changing request,
+scan, lifecycle, storage, or verification ownership. Enabling a non-null value requires a new request schema
+version and an independently frozen `ExperimentInstructionSet` contract.
 
 `scan` has exactly `{axes,repetitions}`. Each axis has exactly `{name,unit,values}`. Axis names are unique IDs,
 units are nonempty ASCII registry values, and values are explicit nonempty finite scalar arrays. MVP has no
@@ -148,6 +155,7 @@ An `ExperimentDefinition` declares:
 ```text
 experiment_id
 request_schema
+program_schema
 required_backend_capabilities
 result_schema
 dataset_schema
@@ -186,6 +194,13 @@ The ordered response values are `[-2.0,0.0,2.0,-1.5,0.5,2.5]`.
 Its raw SHA-256 is `01279CD8EFD786E0F4ED0EA714EE57AF7C82BE12D7259339A5998FF7C120E1A0`.
 The variable is named `response`, has dimensions `['point']`, shape `[6]`, order `C`, dtype `<f8`, unit
 `dimensionless`, and semantic role `platform_fixture_response`.
+
+The registry implementation must pass an extension-contract test using a second test-only synthetic
+`ExperimentDefinition` with a different one-dimensional parameter/result schema. Adding that definition and
+admitting and expanding its scan may change only the test definition and registry construction; it does not
+dispatch a backend and must not modify config, scan, lifecycle, journal, dataset, storage, verification, or
+catalog modules. This proves the Stage 7 definition/scan extension boundary without publishing a second MVP
+backend or result claim.
 
 Fake claim metadata is runtime-owned and has exact values:
 
@@ -370,8 +385,9 @@ forbidden.
 Source snapshot covers the sorted raw file set under `src/sqvm/runtime/`, `src/sqvm/__main__.py`, the reused
 `src/sqvm/hamiltonian/provenance.py` canonical serializer, the exact Stage 6 experiment and calibration configs,
 `pyproject.toml`, and `requirements-stage6-lock.txt`. It also binds this plan, detailed design, platform-only entry
-decision, and the later design-freeze review record as design-authority files. The implementation task must
-create that exact lock and review file; falling back to `requirements-stage5-lock.txt` is forbidden.
+decision, program-extension amendment, and the latest hash-bound design-freeze review record as design-authority
+files. The implementation task must create that exact lock and review file; falling back to
+`requirements-stage5-lock.txt` is forbidden.
 `snapshots/source.json` lists every repository-relative POSIX path, byte length, and raw SHA-256, then binds the
 aggregate canonical SHA-256.
 Environment records Python implementation/version, exact package versions, OS/architecture, and BLAS/threading
@@ -491,6 +507,19 @@ point tables, dataset bytes, and all deterministic payloads after excluding run 
 Stage 7 may add spectroscopy/Rabi/Ramsey/DRAG/coupler/CZ definitions, fitting outputs, recommendations, and human
 accept/reject records. It cannot mutate an existing run or calibration snapshot. Enabling those physical scans
 requires formal Stage 5 qualification and a reviewed parameterized control-program boundary.
+
+That future control-program boundary uses two typed, versioned levels:
+
+```text
+Experiment/Gate IR: X2P, Y2P, CZ, and other reviewed calibrated macros
+Pulse IR: PLXY, PULSE, WAIT, FRAME_CHANGE, BARRIER, and reviewed channel primitives
+```
+
+Stage 7 binds scan coordinates through typed `scan_ref` values, never string interpolation. Macro expansion must
+bind an immutable accepted calibration snapshot; Pulse IR compilation must bind instruction-set/compiler
+versions, timing/parallel/barrier semantics, units, channels, phase/frame rules, expanded Pulse IR, Stage 4
+logical controls, and effective-waveform hashes. The runtime treats the compiled program as a hash-bound
+`BackendCommand`; the backend cannot reinterpret Gate IR or bypass the reviewed Stage 4 control chain.
 
 Stage 8 adds readout-resonator Hamiltonians, drive, dissipation/noise, measurement chain, IQ/assignment models,
 and observation payloads. Before that gate, `observation_model="absent"` and `measurement_payload=null` are

@@ -19,6 +19,8 @@ backend. It does not turn the Stage 5 smoke result into a physical experiment re
 5. `docs/decisions/2026-07-14-stage6-platform-only-entry.md`: platform-only work is permitted without opening
    the physics-capable Stage 6 entrance.
 6. `docs/designs/06_experiment_runtime_design.md`: normative Stage 6 MVP contract.
+7. `docs/decisions/2026-07-14-stage6-program-extension-amendment.md`: reserves the fail-closed instruction-program
+   boundary for Stage 7 without enabling instruction execution in the MVP.
 
 This stage does not adopt distributed schedulers, cloud storage, arbitrary plugins, adaptive calibration logic,
 readout/IQ models, or Web UI concerns.
@@ -29,6 +31,7 @@ Stage 6 includes:
 
 ```text
 strict experiment request admission
+reserved versioned instruction-program field, fixed to null in MVP
 deterministic explicit-axis scan expansion
 immutable built-in experiment and backend registries
 run reservation, lifecycle, cancellation, and crash recovery records
@@ -146,8 +149,9 @@ remain internal. Config files never name import paths or arbitrary callables.
 
 1. Freeze the Stage 6 scope and detailed design through independent review.
 2. Implement strict request/config models and duplicate-key/path admission.
-3. Implement deterministic scan expansion and point identity.
-4. Implement immutable registries and deterministic fake experiment/backend.
+3. Implement the fail-closed `program=null` boundary, deterministic scan expansion, and point identity.
+4. Implement immutable registries, deterministic fake experiment/backend, and the second-definition extension
+   contract test.
 5. Implement reservation, resource lock, event journal, cancellation, and recovery state machine.
 6. Implement raw dataset encoding, manifests, receipts, canonical JSON, and hash validation.
 7. Implement rebuildable SQLite catalog and catalog-rebuild verification.
@@ -162,7 +166,9 @@ Required tests include:
 
 ```text
 strict request schema and path attacks
+non-null program rejection and arbitrary instruction/import rejection
 explicit scan ordering, point IDs, limits, repetitions, and seed behavior
+second synthetic experiment extension without runtime-module changes
 registry/capability mismatch and arbitrary import rejection
 every allowed and forbidden lifecycle transition
 duplicate run/output and concurrent resource contention

@@ -1,0 +1,24 @@
+schema_version: "0.1"
+experiment_id: platform_deterministic_smoke_v1
+backend_id: deterministic_fake_v1
+device_snapshot: configs/devices/2q1c2r.yaml
+calibration_snapshot: configs/calibration/platform_uncalibrated_v1.json
+parameters: {}
+program: null
+scan:
+  axes:
+    - name: x
+      unit: dimensionless
+      values: [0.0, 0.5]
+    - name: y
+      unit: dimensionless
+      values: [-1.0, 0.0, 1.0]
+  repetitions: 1
+execution:
+  seed: 0
+  max_points: 6
+  point_budget_seconds: 1.0
+  run_budget_seconds: 10.0
+  fail_fast: true
+publication:
+  allow_existing_target: false
