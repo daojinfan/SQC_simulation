@@ -1,0 +1,299 @@
+"""Strict QCIS template admission and parser for the Stage 7.0 profile."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from .canonical import (
+    canonical_float,
+    parse_canonical_float,
+    parse_canonical_integer,
+    sha256_bytes,
+    tokenize_source,
+    validate_canonical_source,
+)
+from .errors import QCISCompilationError, QCISReasonCode
+from .models import (
+    BindingPosition,
+    BindingSpec,
+    ProgramEnvelope,
+    QCISInstruction,
+    QCISProgram,
+    QCISTemplate,
+    frozen_mapping,
+)
+
+
+PROGRAM_SCHEMA_VERSION = "0.1"
+INSTRUCTION_SET_ID = "qcis_stage7_calibration_v1"
+SOURCE_FORMAT = "qcis_template"
+_ENVELOPE_KEYS = frozenset(
+    {
+        "program_schema_version",
+        "instruction_set_id",
+        "template_id",
+        "template_sha256",
+        "source_format",
+        "source",
+        "bindings",
+    }
+)
+_DEFAULT_QAGENTS = frozenset({"Q1", "Q2", "C"})
+
+
+def _fail(code: QCISReasonCode, detail: str) -> None:
+    raise QCISCompilationError(code, detail)
+
+
+def _as_binding_spec(name: str, value: BindingSpec | Mapping[str, Any]) -> BindingSpec:
+    if isinstance(value, BindingSpec):
+        return value
+    if not isinstance(value, Mapping):
+        _fail(QCISReasonCode.BINDING_SET_MISMATCH, f"binding {name!r} must be an object")
+    try:
+        if not isinstance(value["unit"], str) or type(value["occurrences"]) is not int or value["occurrences"] <= 0:
+            _fail(QCISReasonCode.BINDING_SET_MISMATCH, f"binding {name!r} occurrences must be a positive integer")
+        positions = tuple(
+            BindingPosition(line=item["line"], op=item["op"], operand=item["operand"])
+            for item in value["positions"]
+        )
+        if any(type(item.line) is not int or not isinstance(item.op, str) or not isinstance(item.operand, str) for item in positions):
+            _fail(QCISReasonCode.BINDING_SET_MISMATCH, f"binding {name!r} position types are invalid")
+        return BindingSpec(
+            binding_id=name,
+            unit=value["unit"],
+            positions=positions,
+            occurrences=value["occurrences"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        _fail(QCISReasonCode.BINDING_SET_MISMATCH, f"invalid binding {name!r}: {exc}")
+
+
+def _as_template(template: QCISTemplate | Mapping[str, Any]) -> QCISTemplate:
+    if isinstance(template, QCISTemplate):
+        return template
+    if not isinstance(template, Mapping):
+        _fail(QCISReasonCode.TEMPLATE_ID_MISMATCH, "template must be an object")
+    try:
+        source = str(template["source"])
+        validate_canonical_source(source, allow_placeholders=True)
+        actual_sha = sha256_bytes(source.encode("utf-8"))
+        if "template_sha256" in template and str(template["template_sha256"]) != actual_sha:
+            _fail(QCISReasonCode.TEMPLATE_SHA_MISMATCH, "template source digest does not match")
+        bindings = {
+            str(name): _as_binding_spec(str(name), value)
+            for name, value in dict(template.get("bindings", {})).items()
+        }
+        return QCISTemplate(
+            template_id=str(template["template_id"]),
+            source=source,
+            binding_specs=frozen_mapping(bindings),
+        )
+    except KeyError as exc:
+        _fail(QCISReasonCode.TEMPLATE_ID_MISMATCH, f"template misses {exc.args[0]!r}")
+
+
+def _as_envelope(envelope: ProgramEnvelope | Mapping[str, Any]) -> ProgramEnvelope:
+    if isinstance(envelope, ProgramEnvelope):
+        return envelope
+    if not isinstance(envelope, Mapping) or set(envelope) != _ENVELOPE_KEYS:
+        _fail(QCISReasonCode.BINDING_SET_MISMATCH, "program envelope keys are not exact")
+    try:
+        return ProgramEnvelope(
+            program_schema_version=str(envelope["program_schema_version"]),
+            instruction_set_id=str(envelope["instruction_set_id"]),
+            template_id=str(envelope["template_id"]),
+            template_sha256=str(envelope["template_sha256"]),
+            source_format=str(envelope["source_format"]),
+            source=str(envelope["source"]),
+            bindings=frozen_mapping(dict(envelope["bindings"])),
+        )
+    except (KeyError, TypeError) as exc:
+        _fail(QCISReasonCode.BINDING_SET_MISMATCH, f"invalid program envelope: {exc}")
+
+
+def _placeholder_positions(source: str) -> dict[str, list[BindingPosition]]:
+    positions: dict[str, list[BindingPosition]] = {}
+    for instruction_index, tokens in enumerate(tokenize_source(source)):
+        for token_index, token in enumerate(tokens):
+            if token.startswith("$"):
+                positions.setdefault(token[1:], []).append(
+                    BindingPosition(line=instruction_index + 1, op=tokens[0], operand=str(token_index))
+                )
+    return positions
+
+
+def admit_program(
+    envelope: ProgramEnvelope | Mapping[str, Any],
+    template: QCISTemplate | Mapping[str, Any],
+) -> ProgramEnvelope:
+    """Validate the exact Stage 7.0 template envelope without materializing it."""
+
+    program = _as_envelope(envelope)
+    accepted_template = _as_template(template)
+    if program.program_schema_version != PROGRAM_SCHEMA_VERSION:
+        _fail(QCISReasonCode.BINDING_SET_MISMATCH, "unsupported program schema version")
+    if program.instruction_set_id != INSTRUCTION_SET_ID:
+        _fail(QCISReasonCode.PROFILE_AUTHORITY_HASH_MISMATCH, "wrong instruction set")
+    if program.source_format != SOURCE_FORMAT:
+        _fail(QCISReasonCode.NONCANONICAL_SOURCE, "source_format must be qcis_template")
+    validate_canonical_source(program.source, allow_placeholders=True)
+    if program.template_id != accepted_template.template_id:
+        _fail(QCISReasonCode.TEMPLATE_ID_MISMATCH, "template id is not admitted")
+    if program.template_sha256 != sha256_bytes(accepted_template.source.encode("utf-8")):
+        _fail(QCISReasonCode.TEMPLATE_SHA_MISMATCH, "template hash is not admitted")
+    if program.source != accepted_template.source:
+        _fail(QCISReasonCode.TEMPLATE_SHA_MISMATCH, "template source bytes are not admitted")
+
+    declared = {str(name): _as_binding_spec(str(name), spec) for name, spec in program.bindings.items()}
+    expected = dict(accepted_template.binding_specs)
+    if set(declared) != set(expected):
+        _fail(QCISReasonCode.BINDING_SET_MISMATCH, "binding keys differ from template")
+    found_positions = _placeholder_positions(program.source)
+    if set(found_positions) != set(expected):
+        _fail(QCISReasonCode.BINDING_SET_MISMATCH, "placeholder set differs from template")
+    for name, expected_spec in expected.items():
+        supplied = declared[name]
+        if supplied.unit != expected_spec.unit:
+            _fail(QCISReasonCode.BINDING_UNIT_MISMATCH, f"binding {name!r} unit differs")
+        if supplied.occurrences != expected_spec.occurrences:
+            _fail(QCISReasonCode.BINDING_SET_MISMATCH, f"binding {name!r} occurrence count differs")
+        if tuple(supplied.positions) != tuple(expected_spec.positions):
+            _fail(QCISReasonCode.BINDING_POSITION_FORBIDDEN, f"binding {name!r} positions differ")
+        if tuple(expected_spec.positions) != tuple(found_positions[name]):
+            _fail(QCISReasonCode.BINDING_POSITION_FORBIDDEN, f"binding {name!r} source positions differ")
+    return program
+
+
+def parse_qcis(source: str, qagents: Mapping[str, Any] | None = None) -> QCISProgram:
+    """Parse a fully materialized canonical QCIS source into an immutable AST."""
+
+    validate_canonical_source(source, allow_placeholders=False)
+    allowed_agents = frozenset(qagents or _DEFAULT_QAGENTS)
+    instructions: list[QCISInstruction] = []
+    for index, tokens in enumerate(tokenize_source(source)):
+        op = tokens[0]
+        if op == "M":
+            _fail(QCISReasonCode.MEASUREMENT_STAGE8_REQUIRED, "measurement is not executable in Stage 7")
+        if op not in {"PLSXY", "PLS", "I", "RZ", "B", "X2P", "Y2P"}:
+            _fail(QCISReasonCode.UNKNOWN_OPERATION, f"operation {op!r} is reserved or unknown")
+        instruction = _parse_instruction(index, tokens, allowed_agents)
+        instructions.append(instruction)
+    return QCISProgram(instructions=tuple(instructions))
+
+
+def _agent(token: str, allowed_agents: frozenset[str]) -> str:
+    if token not in allowed_agents:
+        _fail(QCISReasonCode.UNKNOWN_QAGENT, f"unknown qagent {token!r}")
+    return token
+
+
+def _require_arity(tokens: Sequence[str], count: int) -> None:
+    if len(tokens) != count:
+        _fail(QCISReasonCode.ARITY_MISMATCH, f"{tokens[0]} requires {count - 1} operands")
+
+
+def _integer(token: str, *, allow_minus_one: bool = False) -> int:
+    value = parse_canonical_integer(token, allow_minus_one=allow_minus_one)
+    return value
+
+
+def _number(token: str) -> float:
+    return parse_canonical_float(token)
+
+
+def _parse_instruction(index: int, tokens: Sequence[str], allowed_agents: frozenset[str]) -> QCISInstruction:
+    op = tokens[0]
+    if op == "PLSXY":
+        if len(tokens) < 3:
+            _require_arity(tokens, 10)
+        target = _agent(tokens[1], allowed_agents)
+        wave_index = -1 if tokens[2] == "-1" else _integer(tokens[2])
+        if wave_index == -1:
+            _fail(QCISReasonCode.UNSUPPORTED_NUMERIC_WAVEFORM, "numeric waveforms are not accepted")
+        if wave_index != 1:
+            _fail(QCISReasonCode.UNSUPPORTED_WAVE_INDEX, f"PLSXY wave index {wave_index}")
+        _require_arity(tokens, 10)
+        start = _integer(tokens[3], allow_minus_one=True)
+        length = _integer(tokens[4])
+        if length <= 0:
+            _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, "PLSXY length must be positive")
+        r_sigma = _number(tokens[9])
+        if r_sigma <= 0.0:
+            _fail(QCISReasonCode.NONCANONICAL_NUMBER, "PLSXY r_sigma must be positive")
+        return QCISInstruction(
+            index=index,
+            op=op,
+            fields=frozen_mapping(
+                {
+                    "target": target,
+                    "wave_index": wave_index,
+                    "t_start": start,
+                    "length": length,
+                    "amplitude": _number(tokens[5]),
+                    "frequency": _number(tokens[6]),
+                    "phase": _number(tokens[7]),
+                    "drag_alpha": _number(tokens[8]),
+                    "r_sigma": r_sigma,
+                }
+            ),
+        )
+    if op == "PLS":
+        if len(tokens) < 3:
+            _require_arity(tokens, 10)
+        target = _agent(tokens[1], allowed_agents)
+        wave_index = -1 if tokens[2] == "-1" else _integer(tokens[2])
+        if wave_index == -1:
+            _fail(QCISReasonCode.UNSUPPORTED_NUMERIC_WAVEFORM, "numeric waveforms are not accepted")
+        if wave_index != 0:
+            _fail(QCISReasonCode.UNSUPPORTED_WAVE_INDEX, f"PLS wave index {wave_index}")
+        _require_arity(tokens, 10)
+        start, length = _integer(tokens[3], allow_minus_one=True), _integer(tokens[4])
+        if length <= 0:
+            _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, "PLS length must be positive")
+        if tuple(tokens[6:9]) != ("0", "0", "0") or _integer(tokens[9]) != length:
+            _fail(QCISReasonCode.ARITY_MISMATCH, "PLS requires literal zero operands and width=length")
+        return QCISInstruction(
+            index=index,
+            op=op,
+            fields=frozen_mapping(
+                {
+                    "target": target,
+                    "wave_index": wave_index,
+                    "t_start": start,
+                    "length": length,
+                    "target_flux": _number(tokens[5]),
+                    "width": length,
+                }
+            ),
+        )
+    if op == "I":
+        _require_arity(tokens, 3)
+        length = _integer(tokens[2])
+        if length <= 0:
+            _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, "I length must be positive")
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"targets": (_agent(tokens[1], allowed_agents),), "length": length}))
+    if op == "RZ":
+        _require_arity(tokens, 3)
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": _agent(tokens[1], allowed_agents), "phase": _number(tokens[2])}))
+    if op == "B":
+        if len(tokens) < 3:
+            _fail(QCISReasonCode.ARITY_MISMATCH, "B requires at least two qagents")
+        targets = tuple(_agent(token, allowed_agents) for token in tokens[1:])
+        if len(set(targets)) != len(targets):
+            _fail(QCISReasonCode.ARITY_MISMATCH, "B qagents must be distinct")
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"targets": targets}))
+    _require_arity(tokens, 2)
+    return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": _agent(tokens[1], allowed_agents)}))
+
+
+def ast_payload(program: QCISProgram) -> dict[str, Any]:
+    """Return the frozen canonical AST payload used in the hash contract."""
+
+    rows: list[dict[str, Any]] = []
+    for instruction in program.instructions:
+        row = {"index": instruction.index, "op": instruction.op}
+        row.update(dict(instruction.fields))
+        rows.append(row)
+    return program.payload()

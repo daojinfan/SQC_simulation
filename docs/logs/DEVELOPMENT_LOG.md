@@ -1662,3 +1662,39 @@ Next:
 Commit and push the frozen design baseline.
 Assign non-overlapping implementation, physics review, independent test, and release-evidence responsibilities.
 ```
+
+## 2026-07-15: Stage 7.0 QCIS compiler tranche implemented
+
+Stage:
+
+```text
+Stage 7.0 compiler foundation
+```
+
+Completed work:
+
+```text
+Implemented strict QCIS program/template/authority admission and typed literal/scan_ref binding.
+Implemented immutable AST parsing for PLSXY, PLS, I, RZ, B, X2P, and Y2P.
+Implemented registry-driven macro resolution and deterministic Gaussian/DRAG/rectangle logical waveforms.
+Implemented half-open scheduling, frame/cursor/barrier semantics, provenance traces, and exact raw hashes.
+Implemented all-five-lane logical/effective and coefficient-inventory fail-closed verification.
+Kept Stage 4.1 electronics, Stage 5.1 QuTiP, physics scans, and calibration decisions outside this tranche.
+```
+
+Verification:
+
+```text
+99 Stage 7 QCIS acceptance tests passed.
+35 Stage 6 runtime regression tests passed.
+compileall and git diff --check passed.
+Independent test, physics, and replacement release reviewers reported no blocker/high/medium.
+The historical full suite remains limited by absent ignored Stage 1-4 output fixtures.
+```
+
+Next:
+
+```text
+Commit and push the reviewed compiler tranche.
+Continue Stage 7.0 with fake-only evidence ledger and runtime-schema 0.2 integration without opening physics gates.
+```
