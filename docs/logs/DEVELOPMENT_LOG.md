@@ -1554,3 +1554,111 @@ Next:
 Commit and push the accepted Stage 6 implementation and evidence records.
 Begin Stage 7 detailed design only after user confirmation of its physical experiment and instruction contracts.
 ```
+
+## 2026-07-14: Stage 7 calibration-experiment design drafted
+
+Stage:
+
+```text
+Stage 7 design only
+```
+
+Completed work:
+
+```text
+Drafted the Stage 7 entry/phasing decision, stage plan, and detailed design.
+Defined the Gate/Macro IR -> Pulse IR -> Stage 4.1 control pipeline and typed scan_ref binding.
+Separated model execution, analysis, recommendation, and atomic human-decision/calibration publication.
+Added explicit Stage 4.1 and Stage 5.1 rebaseline gates because the accepted APIs are fixed-profile.
+Defined a bootstrap policy that cannot use X2P/Y2P/CZ before an accepted simulation calibration exists.
+```
+
+Design result:
+
+```text
+Recommended order is Stage 7.0 compiler/evidence foundation, Stage 7.1 single-qubit calibration,
+Stage 7.2 coupler calibration, then Stage 7.3 CZ coarse scan.
+Stage 5 formal qualification and Stage 5.1 remain mandatory before any model-derived simulation scan.
+Stage 8 remains mandatory for IQ, shots, readout, assignment, and measurement claims.
+```
+
+Tests and execution:
+
+```text
+No implementation, numerical experiment, artifact, dependency, or test was created or run by this design step.
+Four independent project roles supplied architecture, physics, test, and release constraints.
+```
+
+Next:
+
+```text
+Obtain user confirmation of phasing, approval identity, single-qubit-first scope, and q1-to-q2-only CZ.
+Then submit the current design bytes for independent design-freeze review before implementation.
+```
+
+## 2026-07-14: Stage 7 QCIS architecture incorporated
+
+Stage:
+
+```text
+Stage 7 design revision only
+```
+
+Completed work:
+
+```text
+Read the user-supplied QCIS说明.md source (14192 bytes,
+SHA-256 C638A4EE10E0F2D98B20E7A6B0E7ADD6718CADFC3EA00AEFC15F87961FF15338).
+Made QCIS the sole external control-program format for all Stage 7 and later calibration experiments.
+Defined deterministic template binding, strict parsing, QAgent/configuration/waveform resolution, discrete
+timing, logical waveform generation, Stage 4.1 compilation, and Stage 5.1/QuTiP consumption boundaries.
+Mapped the earlier internal PLXY/PULSE/WAIT/FRAME_CHANGE/BARRIER concepts to QCIS PLSXY/PLS/I/RZ/B.
+Recorded incomplete source opcodes and formulas as reserved and fail-closed rather than inventing semantics.
+Recorded the QCIS-only external-program architecture as a user-confirmed product decision; detailed profile
+bytes remain proposed and do not authorize implementation.
+Added freeze-level QCIS byte-oracle vectors for template materialization, append/absolute timing, I/B/RZ trace,
+logical waveform hashes, and stable unsupported-feature rejection reasons.
+```
+
+Design result:
+
+```text
+Every recommendation-bearing calibration point must be traceable from concrete QCIS bytes through exact
+logical/effective waveform hashes to the Hamiltonian coefficients consumed by QuTiP.
+The external temporary source was mirrored byte-identically at docs/references/QCIS说明.md and hash-bound by
+docs/references/qcis_source_snapshot.json.
+No Stage 7 implementation or physics execution was authorized by this revision.
+```
+
+## 2026-07-14: Stage 7 QCIS design frozen and implementation branch opened
+
+Stage:
+
+```text
+Stage 7.0 design freeze
+```
+
+Completed work:
+
+```text
+Accepted the four-phase delivery, local approval identity, q1-before-q2 lineage, and q1-to-q2 CZ MVP choices.
+Froze the QCIS-only compiler path, typed AST, timing/frame/barrier semantics, waveform formulas, authority chain,
+Stage 4.1/5.1 boundaries, exact rejection reasons, and byte-oracle test vectors.
+Bound seven design/reference authorities by SHA-256 in the Stage 7 QCIS design-freeze decision.
+Created the dedicated codex/stage7-qcis-calibration implementation branch after the design was completed.
+```
+
+Authorization boundary:
+
+```text
+Stage 7.0 compiler, fake fixtures, and evidence-ledger work may begin.
+Stage 7.1-7.3 model-derived QuTiP scans remain closed until every prerequisite gate is independently approved.
+Formal Stage 7.0 release remains closed until independent test and release owners approve implementation evidence.
+```
+
+Next:
+
+```text
+Commit and push the frozen design baseline.
+Assign non-overlapping implementation, physics review, independent test, and release-evidence responsibilities.
+```

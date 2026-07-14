@@ -1,0 +1,18 @@
+{
+  "schema_version": "0.1",
+  "artifact_type": "stage_07_qcis_external_source_snapshot",
+  "artifact_version": "0.1",
+  "source_title": "QCIS说明.md",
+  "source_kind": "video_frame_text_extraction",
+  "source_path_at_review": "D:/Backup/xwechat_files/wxid_4v647acxz5er22_8450/temp/RWTemp/2026-07/9e20f478899dc29eb19741386f9343c8/QCIS说明.md",
+  "source_size_bytes": 14192,
+  "source_sha256": "C638A4EE10E0F2D98B20E7A6B0E7ADD6718CADFC3EA00AEFC15F87961FF15338",
+  "capture_limitations": [
+    "text_extracted_from_video_frames_only",
+    "blurred_or_unrendered_formulas_remain_incomplete",
+    "todo_sections_are_not_executable_authority"
+  ],
+  "repository_verbatim_mirror_path": "docs/references/QCIS说明.md",
+  "repository_verbatim_mirror_sha256": "C638A4EE10E0F2D98B20E7A6B0E7ADD6718CADFC3EA00AEFC15F87961FF15338",
+  "design_freeze_eligible": true
+}

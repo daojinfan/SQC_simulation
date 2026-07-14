@@ -93,3 +93,10 @@ D:\claude\superconducting_simulation\superconducting-qc-sim-lab\李 - 2022 - 超
 本阶段不直接采用或暂不处理：
 1. ...
 ```
+
+## Stage 7 QCIS source
+
+The user-supplied `QCIS说明.md` has a byte-identical repository mirror at `docs/references/QCIS说明.md`; metadata,
+source path, byte count, limitations, and raw SHA-256 are bound in `docs/references/qcis_source_snapshot.json`.
+Because it was extracted from video frames, it remains reference input rather than executable authority;
+incomplete formulas/opcodes stay fail-closed.
