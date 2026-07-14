@@ -33,3 +33,22 @@ docs/stages/01_device_model_plan.md
 docs/logs/DEVELOPMENT_LOG.md
 docs/references/README.md
 ```
+
+## Stage 5 v0.2 reproduction
+
+The recorded smoke evidence used CPython 3.12.10. From a clean PowerShell environment:
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install --upgrade pip
+.venv\Scripts\python -m pip install -r requirements-stage5-lock.txt
+.venv\Scripts\python -m pip install -e . --no-deps
+.venv\Scripts\python -m pytest -q tests/test_stage5_evolution.py
+.venv\Scripts\python -m sqvm verify-evolution `
+  configs/evolution/2q1c_qutip_smoke.yaml `
+  --output output/stage_05_qutip_evolution_smoke_v02_reproduced
+```
+
+Generated evidence remains under the ignored `output/` tree. The reviewed hashes and scope are recorded in
+`docs/results/2026-07-14-stage5-v0-2-smoke.md`. The formal profile is intentionally fail-closed in v0.2 and
+requires a separate formal-scale qualification; smoke completion is not Stage 6 readiness.

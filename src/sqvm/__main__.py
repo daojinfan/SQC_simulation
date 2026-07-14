@@ -12,6 +12,7 @@ import yaml
 from sqvm.device import verify_device
 from sqvm.hamiltonian import verify_hamiltonian
 from sqvm.control import verify_control_signal
+from sqvm.evolution import run_stage5_evolution
 from sqvm.spectrum import verify_q1_q2_coupling, verify_static_spectrum
 
 
@@ -35,6 +36,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     verify_c.add_argument("config", type=Path)
     verify_c.add_argument("schedule", type=Path)
     verify_c.add_argument("--output", type=Path, default=Path("output/stage_04_control_signal"))
+
+    verify_e = subparsers.add_parser("verify-evolution", help="run a Stage 5 QuTiP evolution profile")
+    verify_e.add_argument("config", type=Path)
+    verify_e.add_argument("--output", type=Path, default=Path("output/stage_05_qutip_evolution"))
 
     args = parser.parse_args(argv)
     if args.command == "verify-device":
@@ -80,6 +85,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if payload["profile"] == "smoke":
             return 0 if payload["execution_succeeded"] and not payload["blocking_reasons"] else 1
         return 0 if payload["acceptance_candidate_ready"] else 1
+
+    if args.command == "verify-evolution":
+        try:
+            result = run_stage5_evolution(args.config, args.output)
+        except (ValueError, FileExistsError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
+            return 1
+        payload = result.to_dict()
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if payload["status"] == "smoke_complete" else 1
 
     parser.print_help()
     return 2

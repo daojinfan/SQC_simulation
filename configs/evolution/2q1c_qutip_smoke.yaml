@@ -1,0 +1,42 @@
+schema_version: "0.2"
+experiment_type: qutip_time_evolution
+profile: smoke
+inputs:
+  device_config: configs/devices/2q1c2r.yaml
+  hamiltonian_config: configs/hamiltonians/2q1c_charge_basis.yaml
+  stage4_control_config: configs/control/2q1c2r_control.yaml
+  stage4_logical_schedule: configs/control/2q1c2r_control_demo.yaml
+  stage4_channel_registry: configs/control/2q1c2r_channels.yaml
+  user_acceptance_decision: docs/decisions/2026-07-14-stage2-stage4-user-acceptance.md
+  stage5_amendment: docs/decisions/2026-07-14-stage5-v0-2-amendment.md
+  phase_proxy_document: docs/designs/04_control_signal_design.md
+scenario_ids: [xy_drag]
+model:
+  charge_cutoffs: [1, 1, 1]
+  convergence_charge_cutoffs: null
+  smoke_window_start_index: 97
+  smoke_sample_count: 4
+  reference_state_count: 16
+frame:
+  carrier_source: stage4_approved_xy_metadata
+  rwa_projection: number_sector_v1
+solver:
+  qutip_version_spec: ">=5.1,<5.4"
+  method: vern9
+  rtol: 1.0e-13
+  atol: 1.0e-15
+  nsteps: 100000
+  max_step_ns: 0.0025
+  store_states: true
+  store_final_state: true
+  normalize_output: false
+  progress_bar: null
+tolerances:
+  label_min_overlap: 0.90
+  lab_degeneracy_GHz: 1.0e-10
+  projector_orthogonality: 1.0e-12
+  norm_error: 1.0e-9
+  population_bound: 1.0e-10
+publication:
+  output_dir: output/stage_05_qutip_evolution_smoke
+  allow_existing_target: false

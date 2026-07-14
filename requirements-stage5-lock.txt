@@ -1,0 +1,9 @@
+# Stage 5 v0.2 evidence environment (CPython 3.12.10)
+# Install this file before installing the local project with --no-deps.
+numpy==2.4.6
+scipy==1.17.1
+PyYAML==6.0.3
+nbformat==5.10.4
+matplotlib==3.10.9
+qutip==5.3.0
+pytest==9.0.3
