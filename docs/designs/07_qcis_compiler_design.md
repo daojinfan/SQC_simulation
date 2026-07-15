@@ -1,5 +1,210 @@
 # Stage 7 Detailed Design: QCIS Compiler And QuTiP Control Path
 
+## 0. v0.2 confirmed compiler contract (2026-07-15)
+
+This section supersedes conflicting v0.1 statements below. The v0.1 text remains as historical design
+evidence until its accepted hashes are migrated. The executable v0.2 profile is based on the supplied QCIS
+reference and the line-by-line design confirmations recorded on 2026-07-15.
+
+### 0.1 Opcode scope
+
+The executable set is `X`, `Y`, `X2P`, `X2M`, `Y2P`, `Y2M`, `XY`, `XY2P`, `XY2M`, `RX`, `RY`,
+`RXY`, `X12`, `PLS`, `PLSXY`, `I`, `RZ`, `Z`, `S`, `SD`, `T`, `TD`, `DTN`, `CZ`, `FSIM`, and
+`B`. `M`, `RST`, `SWD`, and `SWA` parse into the AST but do not lower until their later physical models are
+available. Pulse-implemented Z gates, quarter-turn named XY gates, and wave indices `3`, `4`, `6`, `7`, and
+`8` remain reserved.
+
+`FSIM` has source form `FSIM C`; the reference `index` operand is removed. The coupler's
+`active_fsim_setting` selects the accepted setting revision.
+
+### 0.2 Additive waveform and timing model
+
+Every logical waveform is an idle-relative increment. XY increments are complex drive values. Z increments
+are in `Phi/Phi0`. The compiler never stores an idle baseline in a source waveform and never uses last-write
+wins. All temporally overlapping source waveforms add sample by sample. Stage 4.1 adds the accepted idle point
+exactly once, then applies DAC, latency, FIR, and crosstalk processing. Bounds are checked on the sum.
+
+All intervals are half open. For PLS and PLSXY, `tStart < 0` appends at that lane's cursor and
+`tStart >= 0` is an absolute sample index. Absolute placement is not shifted by `I` or `B`; it updates the
+lane cursor only as `max(cursor,end)`. `I Q n` appends `n` zero samples independently to every existing lane of
+Q and preserves lane-length differences. `B` aligns every lane of its listed QAgents to their common maximum.
+
+Direct PLSXY `frequency` and `phase` are absolute instruction operands and do not inherit the current RZ
+frame. A high-level XY gate resolves gate phase, accepted setting phase offset, and current frame exactly once,
+then emits an internal PLSXY-equivalent pulse with an absolute phase.
+
+### 0.3 Direct waveform registry
+
+The v0.2 executable indices are:
+
+| Index | Class | PLS Z | PLSXY |
+| ---: | --- | --- | --- |
+| `0` | rectangle | yes | yes |
+| `1` | gaussian | yes | yes |
+| `2` | flattop | yes | yes |
+| `5` | acz | yes | no |
+| `-1` | numeric | yes | yes |
+
+Rectangle uses integer `1 <= width <= length` and is one on local `[0,width)`. Gaussian is the supplied
+formula and receives no endpoint subtraction, peak renormalization, or area normalization. Numeric PLS samples
+are Z increments. Numeric PLSXY has an even payload: the first half is I and the second half Q; it receives no
+additional carrier, phase, or DRAG processing.
+
+For flattop, `edge` is the sample count on each side, `2*edge <= length`, `sigma=edge/4`,
+`left=edge/2`, and `right=(length-1)-edge/2`. The raw envelope is
+`0.5*(erf((t-left)/(sqrt(2)*sigma))-erf((t-right)/(sqrt(2)*sigma)))`. Subtract the endpoint value and divide by
+the continuous-center value minus that endpoint. Set the first and last output samples to exact zero and the
+odd-length center to exact one. PLSXY DRAG uses the analytic derivative of this normalized envelope.
+
+ACZ has shape operands `thf,thi,lam2,lam3`. Let `lam1=1-lam3` and
+
+```text
+theta(s)=thi+(thf-thi)/2 * [
+  lam1*(1-cos(2*pi*s)) + lam2*(1-cos(4*pi*s)) + lam3*(1-cos(6*pi*s))
+]
+```
+
+with `0 < thi < thf < pi/2`. Define normalized physical time by the cumulative integral of `sin(theta)` and
+linearly invert it. The normalized envelope is
+`(cot(theta(t))-cot(thi))/(cot(thf)-cot(thi))`. The formula uses 4097 auxiliary points, binary64 cumulative
+trapezoids, and linear interpolation. It emits exactly `length` samples and sets both endpoints to exact zero.
+
+### 0.4 Single-qubit gates
+
+`X2P`, `X2M`, `Y2P`, and `Y2M` share `active_xy2_setting`; their phases are `0`, `pi`, `pi/2`, and
+`-pi/2`. If `xy_pi_impl=true`, X/Y use `active_xy_setting` with phase `0`/`pi/2`. Otherwise each expands to two
+identical positive half gates. Negative rotations use a phase shift of pi, never a negative amplitude.
+
+`XY`, `XY2P`, and `XY2M` add their source azimuth to the corresponding X-family phase. `RX` and `RY` lower to
+`RXY` with azimuth `0` and `pi/2`. `RXY` is
+`exp[-i*altitude*(cos(azimuth)X+sin(azimuth)Y)/2]`. Both angles normalize to `(-pi,pi]`. With a pi setting, one
+fixed-duration pulse scales the complete complex envelope by `abs(altitude)/pi`. With a half-pi setting, two
+consecutive, identical fixed-duration pulses use that same scale. A zero rotation still occupies the full
+setting duration with a zero envelope.
+
+`X12` is a calibrated pi rotation on the `|1>-|2>` transition. It resolves `active_xy12_setting`, uses
+`f12=f01+anharmonicity` plus its calibrated detuning, requires local dimension at least three, and shares the
+qubit's accumulated RZ frame. Its amplitude is calibrated rather than inferred from a matrix-element ratio.
+
+Virtual Z aliases are `Z=-pi`, `S=-pi/2`, `SD=pi/2`, `T=-pi/4`, and `TD=pi/4` under the QCIS RZ sign
+convention. They do not advance cursors. `z_gate_impl=PULSE` is not executable in v0.2.
+
+### 0.5 DTN and mappers
+
+Direct `DTN Q length amplitude` v0.2 uses a rectangle and treats amplitude as a `Phi/Phi0` increment. Its
+minimal accepted detune setting contains identity/target metadata, `control_role=z`, `envelope_class=rect`,
+`input_unit=phi_over_phi0`, lifecycle status, immutable revision/hash, and calibration run ID. Flux limits come
+from the device artifact; timing limits come from compiler/hardware policy, not the setting.
+
+`F012ZBIAS_MAPPER` belongs to each qubit setting and stores only `f01max_GHz`, `k_rad_per_phi0`, and
+`idle_flux_offset_phi0` for
+`f01(z)=f01max*sqrt(abs(cos(k*(z-idle_flux_offset))))`. Inversion enumerates analytic periodic roots, filters
+the device range, and selects the root nearest the reference point. A frequency DTN computes roots at idle f01
+and idle f01 plus the signed detune; their difference is the waveform amplitude.
+
+`G2ZBIAS_MAPPER` belongs to the coupler setting. It is a relative, monotonic, piecewise-linear table from
+`coupling_detune_GHz` to `zbias_offset_phi0`, must include `(0,0)`, and never extrapolates. Its origin is the
+current coupler bias, so no idle endpoint lookup or subtraction is performed.
+
+### 0.6 CZ and FSIM settings
+
+CZ and FSIM are fixed three-DTN composites, not arbitrary action lists. The setting contains a common duration,
+independent Q0/Q1/coupler detune waveforms, and calibrated unwrapped dynamic phases for both endpoint qubits.
+The three pulses start and end together. The gate starts at the maximum cursor of all lanes of both endpoint
+qubits and the coupler, occupies all three QAgents for the duration, then applies frame corrections derived from
+the negative calibrated dynamic phases.
+
+Each setting has `use_f012zbias_mapper` and `use_g2zbias_mapper`. When enabled, qubit detunes are signed
+`frequency_detune_GHz` values and coupler detune is signed `coupling_detune_GHz`; the required active mapper
+must exist. When disabled, the corresponding operand is `flux_offset_phi0`. Mapper revisions used by a compile
+are recorded but revision changes neither warn nor block automatically.
+
+FSIM characterization is distinct from waveform input. An accepted result records the five calibrated
+PhasedFSim parameters `theta,zeta,chi,gamma,phi` using the Cirq matrix convention, plus typed QPT/XEB fidelity,
+leakage, uncertainty, method, and characterization run provenance. The compiler never synthesizes a waveform
+from these characterization values.
+
+### 0.7 v0.2 setting records
+
+The executable records use generated `revision` and `setting_hash` fields. Users calibrate values and select an
+active setting; they do not author either identity field. A qubit owns its frequency mapper:
+
+```yaml
+mapper_id: q0_f012zbias_v4
+mapper_type: F012ZBIAS_MAPPER
+f01max_GHz: 5.52
+k_rad_per_phi0: 3.08
+idle_flux_offset_phi0: 0.017
+revision: 4
+setting_hash: GENERATED
+calibration_run_id: f01_flux_scan_0042
+status: accepted
+```
+
+A coupler owns its relative coupling mapper. Both arrays have equal length, the input array is strictly
+increasing, and `(0,0)` is present:
+
+```yaml
+mapper_id: c0_g2zbias_v3
+mapper_type: G2ZBIAS_MAPPER
+coupling_detune_GHz: [-0.08, -0.04, 0, 0.04, 0.08]
+zbias_offset_phi0: [-0.12, -0.055, 0, 0.061, 0.14]
+interpolation: piecewise_linear
+extrapolation: reject
+revision: 3
+setting_hash: GENERATED
+calibration_run_id: coupler_g_scan_0017
+status: accepted
+```
+
+CZ and FSIM settings have the same executable field shape but independent setting identities and waveform
+registries. The `q0`, `q1`, and `coupler` objects may select different waveform classes while sharing one
+duration. With a mapper switch disabled, replace the corresponding detune field by `flux_offset_phi0`.
+
+```yaml
+setting_id: c0_cz_v12
+gate_type: CZ
+target: C0
+duration_samples: 80
+use_f012zbias_mapper: true
+use_g2zbias_mapper: true
+q0:
+  frequency_detune_GHz: -0.38
+  waveform_class: acz
+  parameters: {thf: 1.31, thi: 0.21, lam2: 0.07, lam3: 0.18}
+q1:
+  frequency_detune_GHz: 0
+  waveform_class: flattop
+  edge_samples: 12
+coupler:
+  coupling_detune_GHz: 0.065
+  waveform_class: acz
+  parameters: {thf: 1.28, thi: 0.19, lam2: 0.05, lam3: 0.16}
+q0_calibrated_dynamic_phase_rad: 8.731
+q1_calibrated_dynamic_phase_rad: -2.406
+revision: 12
+setting_hash: GENERATED
+calibration_run_id: cz_cal_0108
+status: accepted
+```
+
+The five-parameter result is stored separately from that waveform setting:
+
+```yaml
+characterization_run_id: fsim_xeb_0031
+source: xeb
+theta_rad: 0.781
+zeta_rad: 0.014
+chi_rad: -0.009
+gamma_rad: 0.022
+phi_rad: 0.036
+metrics:
+  - {metric_type: xeb_cycle_fidelity, value: 0.9941, uncertainty: 0.0007}
+  - {metric_type: qpt_process_fidelity, value: 0.989, uncertainty: 0.002}
+leakage: 0.0018
+status: accepted
+```
+
 ## 1. Status and authority
 
 This document is frozen as Stage 7.0 implementation authority by the companion Stage 7 QCIS design-freeze

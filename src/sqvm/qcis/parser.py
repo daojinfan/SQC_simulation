@@ -9,6 +9,7 @@ from .canonical import (
     canonical_float,
     parse_canonical_float,
     parse_canonical_integer,
+    parse_signed_integer_token,
     sha256_bytes,
     tokenize_source,
     validate_canonical_source,
@@ -172,11 +173,14 @@ def parse_qcis(source: str, qagents: Mapping[str, Any] | None = None) -> QCISPro
     validate_canonical_source(source, allow_placeholders=False)
     allowed_agents = frozenset(qagents or _DEFAULT_QAGENTS)
     instructions: list[QCISInstruction] = []
+    accepted = {
+        "X", "Y", "X2P", "X2M", "Y2P", "Y2M", "XY", "XY2P", "XY2M",
+        "RX", "RY", "RXY", "X12", "PLS", "PLSXY", "I", "RZ", "Z", "S",
+        "SD", "T", "TD", "DTN", "CZ", "FSIM", "B", "M", "RST", "SWD", "SWA",
+    }
     for index, tokens in enumerate(tokenize_source(source)):
         op = tokens[0]
-        if op == "M":
-            _fail(QCISReasonCode.MEASUREMENT_STAGE8_REQUIRED, "measurement is not executable in Stage 7")
-        if op not in {"PLSXY", "PLS", "I", "RZ", "B", "X2P", "Y2P"}:
+        if op not in accepted:
             _fail(QCISReasonCode.UNKNOWN_OPERATION, f"operation {op!r} is reserved or unknown")
         instruction = _parse_instruction(index, tokens, allowed_agents)
         instructions.append(instruction)
@@ -199,75 +203,18 @@ def _integer(token: str, *, allow_minus_one: bool = False) -> int:
     return value
 
 
+def _signed_integer(token: str) -> int:
+    return parse_signed_integer_token(token)
+
+
 def _number(token: str) -> float:
     return parse_canonical_float(token)
 
 
 def _parse_instruction(index: int, tokens: Sequence[str], allowed_agents: frozenset[str]) -> QCISInstruction:
     op = tokens[0]
-    if op == "PLSXY":
-        if len(tokens) < 3:
-            _require_arity(tokens, 10)
-        target = _agent(tokens[1], allowed_agents)
-        wave_index = -1 if tokens[2] == "-1" else _integer(tokens[2])
-        if wave_index == -1:
-            _fail(QCISReasonCode.UNSUPPORTED_NUMERIC_WAVEFORM, "numeric waveforms are not accepted")
-        if wave_index != 1:
-            _fail(QCISReasonCode.UNSUPPORTED_WAVE_INDEX, f"PLSXY wave index {wave_index}")
-        _require_arity(tokens, 10)
-        start = _integer(tokens[3], allow_minus_one=True)
-        length = _integer(tokens[4])
-        if length <= 0:
-            _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, "PLSXY length must be positive")
-        r_sigma = _number(tokens[9])
-        if r_sigma <= 0.0:
-            _fail(QCISReasonCode.NONCANONICAL_NUMBER, "PLSXY r_sigma must be positive")
-        return QCISInstruction(
-            index=index,
-            op=op,
-            fields=frozen_mapping(
-                {
-                    "target": target,
-                    "wave_index": wave_index,
-                    "t_start": start,
-                    "length": length,
-                    "amplitude": _number(tokens[5]),
-                    "frequency": _number(tokens[6]),
-                    "phase": _number(tokens[7]),
-                    "drag_alpha": _number(tokens[8]),
-                    "r_sigma": r_sigma,
-                }
-            ),
-        )
-    if op == "PLS":
-        if len(tokens) < 3:
-            _require_arity(tokens, 10)
-        target = _agent(tokens[1], allowed_agents)
-        wave_index = -1 if tokens[2] == "-1" else _integer(tokens[2])
-        if wave_index == -1:
-            _fail(QCISReasonCode.UNSUPPORTED_NUMERIC_WAVEFORM, "numeric waveforms are not accepted")
-        if wave_index != 0:
-            _fail(QCISReasonCode.UNSUPPORTED_WAVE_INDEX, f"PLS wave index {wave_index}")
-        _require_arity(tokens, 10)
-        start, length = _integer(tokens[3], allow_minus_one=True), _integer(tokens[4])
-        if length <= 0:
-            _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, "PLS length must be positive")
-        if tuple(tokens[6:9]) != ("0", "0", "0") or _integer(tokens[9]) != length:
-            _fail(QCISReasonCode.ARITY_MISMATCH, "PLS requires literal zero operands and width=length")
-        return QCISInstruction(
-            index=index,
-            op=op,
-            fields=frozen_mapping(
-                {
-                    "target": target,
-                    "wave_index": wave_index,
-                    "t_start": start,
-                    "length": length,
-                    "target_flux": _number(tokens[5]),
-                    "width": length,
-                }
-            ),
-        )
+    if op in {"PLS", "PLSXY"}:
+        return _parse_pulse(index, tokens, allowed_agents)
     if op == "I":
         _require_arity(tokens, 3)
         length = _integer(tokens[2])
@@ -284,8 +231,95 @@ def _parse_instruction(index: int, tokens: Sequence[str], allowed_agents: frozen
         if len(set(targets)) != len(targets):
             _fail(QCISReasonCode.ARITY_MISMATCH, "B qagents must be distinct")
         return QCISInstruction(index=index, op=op, fields=frozen_mapping({"targets": targets}))
+    if op == "DTN":
+        _require_arity(tokens, 4)
+        length = _integer(tokens[2])
+        if length <= 0:
+            _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, "DTN length must be positive")
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": _agent(tokens[1], allowed_agents), "length": length, "amplitude": _number(tokens[3])}))
+    if op in {"XY", "XY2P", "XY2M"}:
+        _require_arity(tokens, 3)
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": _agent(tokens[1], allowed_agents), "phase": _number(tokens[2])}))
+    if op in {"RX", "RY"}:
+        _require_arity(tokens, 3)
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": _agent(tokens[1], allowed_agents), "altitude": _number(tokens[2])}))
+    if op == "RXY":
+        _require_arity(tokens, 4)
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": _agent(tokens[1], allowed_agents), "azimuth": _number(tokens[2]), "altitude": _number(tokens[3])}))
+    if op == "SWD":
+        _require_arity(tokens, 4)
+        length = _integer(tokens[2])
+        if length <= 0:
+            _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, "SWD length must be positive")
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": _agent(tokens[1], allowed_agents), "length": length, "value": _number(tokens[3])}))
+    if op == "SWA":
+        _require_arity(tokens, 3)
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": _agent(tokens[1], allowed_agents), "value": _number(tokens[2])}))
     _require_arity(tokens, 2)
     return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": _agent(tokens[1], allowed_agents)}))
+
+
+def _parse_pulse(index: int, tokens: Sequence[str], allowed_agents: frozenset[str]) -> QCISInstruction:
+    op = tokens[0]
+    if len(tokens) < 5:
+        _fail(QCISReasonCode.ARITY_MISMATCH, f"{op} pulse operands are incomplete")
+    target = _agent(tokens[1], allowed_agents)
+    wave_index = _signed_integer(tokens[2])
+    start = _signed_integer(tokens[3])
+    if wave_index == -1:
+        if len(tokens) < 5:
+            _fail(QCISReasonCode.ARITY_MISMATCH, f"{op} numeric payload is empty")
+        samples = tuple(_number(token) for token in tokens[4:])
+        if op == "PLSXY" and len(samples) % 2 != 0:
+            _fail(QCISReasonCode.ARITY_MISMATCH, "numeric PLSXY requires equal I and Q payloads")
+        length = len(samples) if op == "PLS" else len(samples) // 2
+        if length <= 0:
+            _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, f"{op} numeric payload is empty")
+        return QCISInstruction(index=index, op=op, fields=frozen_mapping({"target": target, "wave_index": -1, "t_start": start, "length": length, "samples": samples}))
+
+    supported = {0, 1, 2} if op == "PLSXY" else {0, 1, 2, 5}
+    if wave_index not in supported:
+        _fail(QCISReasonCode.UNSUPPORTED_WAVE_INDEX, f"{op} wave index {wave_index}")
+    expected = 13 if wave_index == 5 else 10
+    _require_arity(tokens, expected)
+    length = _integer(tokens[4])
+    if length <= 0:
+        _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, f"{op} length must be positive")
+    amplitude = _number(tokens[5])
+    frequency = _number(tokens[6])
+    phase = _number(tokens[7])
+    drag_alpha = _number(tokens[8])
+    if op == "PLS" and tuple(tokens[6:9]) != ("0", "0", "0"):
+        _fail(QCISReasonCode.ARITY_MISMATCH, "PLS frequency, phase, and drag placeholders must be literal 0")
+    if op == "PLSXY" and wave_index == 0 and tokens[8] != "0":
+        _fail(QCISReasonCode.SETTING_INVALID, "rectangle PLSXY does not support DRAG")
+
+    if wave_index in {0, 2}:
+        parameter = _integer(tokens[9])
+        if wave_index == 0 and not (1 <= parameter <= length):
+            _fail(QCISReasonCode.SETTING_INVALID, "rectangle requires 1 <= width <= length")
+        if wave_index == 2 and not (parameter > 0 and 2 * parameter <= length):
+            _fail(QCISReasonCode.SETTING_INVALID, "flattop requires edge > 0 and 2*edge <= length")
+        shape_parameter: tuple[float | int, ...] = (parameter,)
+    elif wave_index == 1:
+        parameter = _number(tokens[9])
+        if parameter <= 0.0:
+            _fail(QCISReasonCode.SETTING_INVALID, "gaussian r_sigma must be positive")
+        shape_parameter = (parameter,)
+    else:
+        shape_parameter = tuple(_number(token) for token in tokens[9:13])
+
+    return QCISInstruction(index=index, op=op, fields=frozen_mapping({
+        "target": target,
+        "wave_index": wave_index,
+        "t_start": start,
+        "length": length,
+        "amplitude": amplitude,
+        "frequency": frequency,
+        "phase": phase,
+        "drag_alpha": drag_alpha,
+        "shape_parameter": shape_parameter,
+    }))
 
 
 def ast_payload(program: QCISProgram) -> dict[str, Any]:

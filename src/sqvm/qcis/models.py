@@ -94,7 +94,7 @@ class QCISProgram:
     instructions: tuple[QCISInstruction, ...]
 
     def payload(self) -> dict[str, Any]:
-        return {"schema_version": "0.1", "instructions": [item.payload() for item in self.instructions]}
+        return {"schema_version": "0.2", "instructions": [item.payload() for item in self.instructions]}
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +111,33 @@ class QCISAuthorities:
 
 
 @dataclass(frozen=True, slots=True)
+class QCISCharacterizationMetric:
+    """One typed experimental quality result; QPT and XEB remain distinct."""
+
+    metric_type: str
+    value: float
+    uncertainty: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PhasedFSimCharacterization:
+    """Accepted five-parameter PhasedFSim result, never a waveform input."""
+
+    characterization_run_id: str
+    source: str
+    theta_rad: float
+    zeta_rad: float
+    chi_rad: float
+    gamma_rad: float
+    phi_rad: float
+    metrics: tuple[QCISCharacterizationMetric, ...]
+    leakage: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class QCISLogicalWaveformPlan:
+    """Idle-relative XY and flux increments emitted by the v0.2 compiler."""
+
     source: str
     program: QCISProgram
     ast_sha256: str

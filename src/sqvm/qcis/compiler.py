@@ -20,6 +20,7 @@ from .models import (
     frozen_mapping,
 )
 from .parser import INSTRUCTION_SET_ID, PROGRAM_SCHEMA_VERSION, SOURCE_FORMAT, parse_qcis
+from .waveforms import analytic_waveform
 
 
 _AUTHORITY_CODES = {
@@ -318,16 +319,161 @@ def compile_qcis(
     concrete = materialize_program(envelope.source, _resolve_bindings(envelope, template, scan_values))
     registry = _registry(authority_map)
     parsed = parse_qcis(concrete, registry)
-    macros = any(item.op in {"X2P", "Y2P"} for item in parsed.instructions)
-    authority_sha256 = _authority_hashes(authority_map, envelope, macros=macros)
+    macro_ops = {"X", "Y", "X2P", "X2M", "Y2P", "Y2M", "XY", "XY2P", "XY2M", "RX", "RY", "RXY", "X12", "CZ", "FSIM"}
+    macros = any(item.op in macro_ops for item in parsed.instructions)
+    authority_sha256 = _authority_hashes(authority_map, envelope, macros=macros and isinstance(authority_map.get("calibration"), Mapping))
     return _compile_plan(envelope, concrete, parsed, authority_map, registry, idle, authority_sha256, max_samples, macros)
+
+
+def _active_setting(authorities: Mapping[str, Any], target: str, key: str) -> tuple[str, Mapping[str, Any]]:
+    configuration = authorities.get("gate_configuration")
+    waveform_registry = authorities.get("waveform_registry")
+    target_configuration = configuration.get(target) if isinstance(configuration, Mapping) else None
+    settings = waveform_registry.get("settings") if isinstance(waveform_registry, Mapping) else None
+    setting_id = target_configuration.get(key) if isinstance(target_configuration, Mapping) else None
+    if not isinstance(setting_id, str) or not isinstance(settings, Mapping):
+        _fail(QCISReasonCode.SETTING_NOT_FOUND, f"{target}.{key}")
+    setting = settings.get(setting_id)
+    if not isinstance(setting, Mapping):
+        _fail(QCISReasonCode.SETTING_NOT_FOUND, setting_id)
+    targets = setting.get("targets")
+    if targets is not None and (not isinstance(targets, (list, tuple)) or target not in targets):
+        _fail(QCISReasonCode.SETTING_INVALID, f"setting {setting_id!r} does not apply to {target}")
+    return setting_id, setting
+
+
+def _finite_setting_number(record: Mapping[str, Any], names: tuple[str, ...], *, default: float | None = None) -> float:
+    for name in names:
+        if name in record:
+            if isinstance(record[name], bool):
+                break
+            try:
+                value = float(record[name])
+            except (TypeError, ValueError, OverflowError):
+                break
+            if math.isfinite(value):
+                return value
+            break
+    if default is not None:
+        return default
+    _fail(QCISReasonCode.SETTING_INVALID, f"missing finite setting field {names[0]}")
+
+
+def _xy_setting(authorities: Mapping[str, Any], registry: Mapping[str, Mapping[str, Any]], target: str, key: str) -> dict[str, Any]:
+    """Resolve both the v0.2 setting shape and the frozen v0.1 fixture shape."""
+
+    setting_id, setting = _active_setting(authorities, target, key)
+    _, _, component = _capabilities(registry, target)
+    calibration = authorities.get("calibration")
+    legacy = calibration.get(component) if isinstance(calibration, Mapping) else None
+    source = legacy if isinstance(legacy, Mapping) and key == "active_xy2_setting" else setting
+    if source is legacy:
+        _resolve_macro_setting(authorities, target, legacy)
+    waveform = source.get("waveform", source)
+    if not isinstance(waveform, Mapping):
+        _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id}.waveform")
+    length_raw = waveform.get("length_samples", waveform.get("length"))
+    length = _strict_positive_integer(length_raw, invalid_code=QCISReasonCode.SETTING_INVALID, detail=f"{setting_id}.length")
+    amplitude = _finite_setting_number(waveform, ("amplitude_GHz", "amplitude"))
+    try:
+        frequency = _finite_setting_number(waveform, ("carrier_frequency_GHz", "frequency_GHz", "frequency"))
+    except QCISCompilationError:
+        if key != "active_xy12_setting":
+            raise
+        target_record = registry[target]
+        f01 = _finite_setting_number(target_record, ("f01_GHz", "idle_f01_GHz"))
+        anharmonicity = _finite_setting_number(target_record, ("anharmonicity_GHz",))
+        frequency = f01 + anharmonicity + _finite_setting_number(waveform, ("frequency_detune_GHz", "detune_GHz"), default=0.0)
+    drag = _finite_setting_number(waveform, ("dragAlpha_samples", "drag_alpha"), default=0.0)
+    phase_offset = _finite_setting_number(waveform, ("phase_offset_rad", "phase"), default=0.0)
+    index_value = waveform.get("wave_index")
+    if index_value is None:
+        envelope_class = str(waveform.get("envelope_class", "gaussian" if "r_sigma_samples" in waveform else "rectangle"))
+        index_value = {"rectangle": 0, "rect": 0, "gaussian": 1, "flattop": 2}.get(envelope_class)
+    if type(index_value) is not int or index_value not in {0, 1, 2}:
+        _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id}.wave_index")
+    if index_value == 0:
+        shape_parameter = (int(waveform.get("width_samples", waveform.get("width", length))),)
+    elif index_value == 1:
+        shape_parameter = (_finite_setting_number(waveform, ("r_sigma_samples", "r_sigma")),)
+    else:
+        edge = waveform.get("edge_samples", waveform.get("edge"))
+        if type(edge) is not int:
+            _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id}.edge_samples")
+        shape_parameter = (edge,)
+    envelope, derivative = analytic_waveform(index_value, length, shape_parameter)
+    base = amplitude * (envelope - 1j * drag * derivative)
+    return {"setting_id": setting_id, "length": length, "frequency": frequency, "phase_offset": phase_offset, "base": base.astype("<c16")}
+
+
+def _normalized_angle(value: float) -> float:
+    result = (value + math.pi) % (2.0 * math.pi) - math.pi
+    return math.pi if result == -math.pi else result
+
+
+def _mapper_record(authorities: Mapping[str, Any], target: str, kind: str) -> tuple[str, Mapping[str, Any]]:
+    configuration = authorities.get("gate_configuration")
+    waveform_registry = authorities.get("waveform_registry")
+    target_configuration = configuration.get(target) if isinstance(configuration, Mapping) else None
+    mappers = waveform_registry.get("mappers") if isinstance(waveform_registry, Mapping) else None
+    key = f"active_{kind.lower()}_mapper"
+    raw = target_configuration.get(key) if isinstance(target_configuration, Mapping) else None
+    if isinstance(raw, Mapping):
+        return str(raw.get("mapper_id", key)), raw
+    if not isinstance(raw, str) or not isinstance(mappers, Mapping) or not isinstance(mappers.get(raw), Mapping):
+        _fail(QCISReasonCode.MAPPER_NOT_FOUND, f"{target}.{key}")
+    return raw, mappers[raw]
+
+
+def _f012_to_flux(mapper: Mapping[str, Any], detune: float, current_flux: float, bounds: tuple[float, float] | None) -> float:
+    fmax = _finite_setting_number(mapper, ("f01max_GHz",))
+    k = _finite_setting_number(mapper, ("k_rad_per_phi0",))
+    offset = _finite_setting_number(mapper, ("idle_flux_offset_phi0",))
+    if fmax <= 0.0 or k == 0.0:
+        _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, "invalid F012ZBIAS mapper parameters")
+
+    def frequency(z: float) -> float:
+        return fmax * math.sqrt(abs(math.cos(k * (z - offset))))
+
+    def nearest_root(target_frequency: float, reference: float) -> float:
+        ratio = target_frequency / fmax
+        if ratio < 0.0 or ratio > 1.0:
+            _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, f"frequency {target_frequency} GHz is outside mapper domain")
+        alpha = math.acos(ratio * ratio)
+        candidates = [offset + (sign * alpha + n * math.pi) / k for n in range(-64, 65) for sign in (-1.0, 1.0)]
+        if bounds is not None:
+            candidates = [value for value in candidates if bounds[0] <= value <= bounds[1]]
+        if not candidates:
+            _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, "F012ZBIAS has no root inside device bounds")
+        return min(candidates, key=lambda value: abs(value - reference))
+
+    z1 = nearest_root(frequency(current_flux), current_flux)
+    z2 = nearest_root(frequency(z1) + detune, z1)
+    return z2 - z1
+
+
+def _g2_to_flux(mapper: Mapping[str, Any], detune: float) -> float:
+    x = mapper.get("coupling_detune_GHz", mapper.get("g_GHz"))
+    y = mapper.get("zbias_offset_phi0", mapper.get("flux_offset_phi0"))
+    if not isinstance(x, (list, tuple)) or not isinstance(y, (list, tuple)) or len(x) != len(y) or len(x) < 2:
+        _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, "G2ZBIAS arrays are invalid")
+    try:
+        xa = np.asarray(x, dtype="<f8")
+        ya = np.asarray(y, dtype="<f8")
+    except (TypeError, ValueError, OverflowError):
+        _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, "G2ZBIAS arrays are not numeric")
+    if not np.all(np.isfinite(xa)) or not np.all(np.isfinite(ya)) or not np.all(np.diff(xa) > 0.0):
+        _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, "G2ZBIAS input must be finite and strictly increasing")
+    zero = np.flatnonzero((xa == 0.0) & (ya == 0.0))
+    if zero.size == 0 or detune < xa[0] or detune > xa[-1]:
+        _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, "G2ZBIAS requires (0,0) and forbids extrapolation")
+    return float(np.interp(detune, xa, ya))
 
 
 def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authorities: Mapping[str, Any], registry: Mapping[str, Mapping[str, Any]], idle: Mapping[str, float], authority_sha256: Mapping[str, str], max_samples: int, macros: bool) -> QCISCompilation:
     cursors: dict[str, dict[str, int]] = {}
-    intervals: dict[tuple[str, str], list[tuple[int, int]]] = {}
     frames: dict[str, float] = {}
-    events: list[tuple[str, str, int, int, dict[str, float]]] = []
+    events: list[tuple[str, str, int, np.ndarray]] = []
     steps: list[dict[str, Any]] = []
     carriers: dict[str, float] = {}
 
@@ -344,42 +490,150 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
     def reserve(target: str, lane: str, start: int, length: int) -> tuple[int, int]:
         state = lanes(target)
         cursor = state.get(lane, 0)
-        actual_start = cursor if start == -1 else start
+        actual_start = cursor if start < 0 else start
         end = actual_start + length
         if end > max_samples:
             _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, f"sample {end} exceeds budget")
-        lane_intervals = intervals.setdefault((target, lane), [])
-        if any(actual_start < prior_end and end > prior_start for prior_start, prior_end in lane_intervals):
-            _fail(QCISReasonCode.TIMING_OVERLAP, f"{target}.{lane} [{actual_start},{end})")
-        lane_intervals.append((actual_start, end))
         state[lane] = max(cursor, end)
         return actual_start, end
 
+    def record_carrier(target: str, frequency: float) -> None:
+        if target in carriers and carriers[target] != frequency:
+            _fail(QCISReasonCode.CARRIER_CHANGE_UNSUPPORTED, f"carrier changes on {target}")
+        carriers[target] = frequency
+
+    def emit_xy(target: str, setting_key: str, phase: float, scale: float, instruction_index: int, source_op: str) -> None:
+        xy, _, component = _capabilities(registry, target)
+        if not xy or component not in {"q1", "q2"}:
+            _fail(QCISReasonCode.MACRO_CALIBRATION_INCOMPLETE, f"macro target {target}")
+        setting = _xy_setting(authorities, registry, target, setting_key)
+        record_carrier(target, float(setting["frequency"]))
+        start, end = reserve(target, "xy", -1, int(setting["length"]))
+        absolute_phase = phase + float(setting["phase_offset"]) + frames[target]
+        rotation = complex(math.cos(-absolute_phase), math.sin(-absolute_phase))
+        samples = np.asarray(setting["base"], dtype="<c16") * scale * rotation
+        events.append(("xy", component, start, samples.astype("<c16")))
+        steps.append({"index": instruction_index, "op": source_op, "setting_id": setting["setting_id"], "phase": absolute_phase, "scale": scale, "emitted_interval": [start, end]})
+
+    def target_configuration(target: str) -> Mapping[str, Any]:
+        configuration = authorities.get("gate_configuration")
+        value = configuration.get(target) if isinstance(configuration, Mapping) else None
+        return value if isinstance(value, Mapping) else {}
+
+    def composite_waveform(spec: Mapping[str, Any], length: int) -> np.ndarray:
+        wave_index = spec.get("wave_index")
+        if wave_index is None:
+            wave_index = {"rectangle": 0, "rect": 0, "gaussian": 1, "flattop": 2, "acz": 5}.get(str(spec.get("waveform_class", spec.get("envelope_class", "rectangle"))))
+        if type(wave_index) is not int or wave_index not in {0, 1, 2, 5}:
+            _fail(QCISReasonCode.SETTING_INVALID, "composite detune waveform class is invalid")
+        if wave_index == 0:
+            parameter = (int(spec.get("width_samples", spec.get("width", length))),)
+        elif wave_index == 1:
+            parameter = (_finite_setting_number(spec, ("r_sigma_samples", "r_sigma")),)
+        elif wave_index == 2:
+            edge = spec.get("edge_samples", spec.get("edge"))
+            if type(edge) is not int:
+                _fail(QCISReasonCode.SETTING_INVALID, "flattop edge_samples is missing")
+            parameter = (edge,)
+        else:
+            params = spec.get("parameters", spec)
+            if not isinstance(params, Mapping):
+                _fail(QCISReasonCode.SETTING_INVALID, "acz parameters are invalid")
+            parameter = tuple(_finite_setting_number(params, (name,)) for name in ("thf", "thi", "lam2", "lam3"))
+        return analytic_waveform(wave_index, length, parameter)[0]
+
+    def compile_composite(instruction: Any) -> None:
+        coupler = str(instruction.fields["target"])
+        _, coupler_z, component = _capabilities(registry, coupler)
+        if not coupler_z or component != "c":
+            _fail(QCISReasonCode.SETTING_INVALID, f"{instruction.op} target must be a coupler")
+        setting_key = "active_cz_setting" if instruction.op == "CZ" else "active_fsim_setting"
+        setting_id, setting = _active_setting(authorities, coupler, setting_key)
+        coupler_record = registry[coupler]
+        endpoints = coupler_record.get("endpoints", coupler_record.get("qubits", coupler_record.get("connected_qagents")))
+        if not isinstance(endpoints, (list, tuple)) or len(endpoints) != 2 or any(item not in registry for item in endpoints):
+            q0, q1 = setting.get("q0_target"), setting.get("q1_target")
+            endpoints = (q0, q1)
+        if not isinstance(endpoints, (list, tuple)) or len(endpoints) != 2 or any(not isinstance(item, str) or item not in registry for item in endpoints):
+            _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id} cannot resolve two endpoint qubits")
+        q0, q1 = str(endpoints[0]), str(endpoints[1])
+        length_raw = setting.get("duration_samples", setting.get("length_samples"))
+        length = _strict_positive_integer(length_raw, invalid_code=QCISReasonCode.SETTING_INVALID, detail=f"{setting_id}.duration_samples")
+        waveforms = setting.get("waveforms", setting)
+        if not isinstance(waveforms, Mapping):
+            _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id}.waveforms")
+        specs = {
+            q0: waveforms.get("q0", waveforms.get("q0_detune")),
+            q1: waveforms.get("q1", waveforms.get("q1_detune")),
+            coupler: waveforms.get("coupler", waveforms.get("coupler_detune")),
+        }
+        if any(not isinstance(value, Mapping) for value in specs.values()):
+            _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id} requires q0, q1, and coupler waveforms")
+
+        all_targets = (q0, q1, coupler)
+        start = max((cursor for target in all_targets for cursor in lanes(target).values()), default=0)
+        end = start + length
+        if end > max_samples:
+            _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, f"{instruction.op} exceeds sample budget")
+        for target in all_targets:
+            for lane in lanes(target):
+                cursors[target][lane] = end
+
+        use_f = bool(setting.get("use_f012zbias_mapper", False))
+        use_g = bool(setting.get("use_g2zbias_mapper", False))
+        mapper_evidence: dict[str, str] = {}
+        for target in (q0, q1):
+            spec = specs[target]
+            assert isinstance(spec, Mapping)
+            if use_f:
+                mapper_id, mapper = _mapper_record(authorities, target, "f012zbias")
+                record = registry[target]
+                lower = record.get("flux_min_phi0")
+                upper = record.get("flux_max_phi0")
+                bounds = (float(lower), float(upper)) if isinstance(lower, (int, float)) and isinstance(upper, (int, float)) else None
+                _, _, target_component = _capabilities(registry, target)
+                amplitude = _f012_to_flux(mapper, _finite_setting_number(spec, ("frequency_detune_GHz",)), idle[target_component], bounds)
+                mapper_evidence[target] = f"{mapper_id}:{sha256_json(mapper)}"
+            else:
+                amplitude = _finite_setting_number(spec, ("flux_offset_phi0",), default=0.0)
+            events.append(("flux", _capabilities(registry, target)[2], start, amplitude * composite_waveform(spec, length)))
+        coupler_spec = specs[coupler]
+        assert isinstance(coupler_spec, Mapping)
+        if use_g:
+            mapper_id, mapper = _mapper_record(authorities, coupler, "g2zbias")
+            amplitude = _g2_to_flux(mapper, _finite_setting_number(coupler_spec, ("coupling_detune_GHz",)))
+            mapper_evidence[coupler] = f"{mapper_id}:{sha256_json(mapper)}"
+        else:
+            amplitude = _finite_setting_number(coupler_spec, ("flux_offset_phi0",), default=0.0)
+        events.append(("flux", component, start, amplitude * composite_waveform(coupler_spec, length)))
+        q0_phase = _finite_setting_number(setting, ("q0_calibrated_dynamic_phase_rad",))
+        q1_phase = _finite_setting_number(setting, ("q1_calibrated_dynamic_phase_rad",))
+        frames[q0] -= q0_phase
+        frames[q1] -= q1_phase
+        steps.append({"index": instruction.index, "op": instruction.op, "setting_id": setting_id, "interval": [start, end], "mappers": mapper_evidence, "frame_corrections": {q0: -q0_phase, q1: -q1_phase}})
+
     for instruction in parsed.instructions:
         fields = dict(instruction.fields)
-        if instruction.op == "RZ":
+        if instruction.op in {"RZ", "Z", "S", "SD", "T", "TD"}:
             target = fields["target"]
             xy, _, _ = _capabilities(registry, target)
             if not xy:
                 _fail(QCISReasonCode.UNKNOWN_QAGENT, f"RZ target lacks xy lane: {target}")
+            if instruction.op != "RZ" and str(target_configuration(target).get("z_gate_impl", "VIRTUAL")).upper() == "PULSE":
+                _fail(QCISReasonCode.UNSUPPORTED_GATE_IMPLEMENTATION, "pulse-implemented Z gates are reserved")
             lanes(target)
-            frames[target] += float(fields["phase"])
-            steps.append({"index": instruction.index, "op": "RZ", "frame_after": frames[target]})
+            phase = float(fields["phase"]) if instruction.op == "RZ" else {"Z": -math.pi, "S": -math.pi / 2.0, "SD": math.pi / 2.0, "T": -math.pi / 4.0, "TD": math.pi / 4.0}[instruction.op]
+            frames[target] += phase
+            steps.append({"index": instruction.index, "op": instruction.op, "frame_after": frames[target]})
         elif instruction.op == "I":
             target = fields["targets"][0]
-            xy, z, _ = _capabilities(registry, target)
             state = lanes(target)
-            start = max(state.values(), default=0)
-            end = start + fields["length"]
-            if end > max_samples:
-                _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, "idle exceeds budget")
-            if xy:
-                state["xy"] = end
-                intervals.setdefault((target, "xy"), []).append((start, end))
-            if z:
-                state["z"] = end
-                intervals.setdefault((target, "z"), []).append((start, end))
-            steps.append({"index": instruction.index, "op": "I", "interval": [start, end]})
+            before = dict(state)
+            for lane in state:
+                state[lane] += fields["length"]
+                if state[lane] > max_samples:
+                    _fail(QCISReasonCode.TIMING_OUT_OF_BUDGET, "idle exceeds budget")
+            steps.append({"index": instruction.index, "op": "I", "cursors_before": before, "cursors_after": dict(state)})
         elif instruction.op == "B":
             targets = fields["targets"]
             current = max((value for target in targets for value in lanes(target).values()), default=0)
@@ -393,87 +647,100 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
             if not z:
                 _fail(QCISReasonCode.UNKNOWN_QAGENT, f"PLS target lacks z lane: {target}")
             start, end = reserve(target, "z", fields["t_start"], fields["length"])
-            events.append(("flux", component, start, end, {"value": float(fields["target_flux"])}))
+            if fields["wave_index"] == -1:
+                samples = np.asarray(fields["samples"], dtype="<f8")
+            else:
+                envelope_values, _ = analytic_waveform(fields["wave_index"], fields["length"], fields["shape_parameter"])
+                samples = float(fields["amplitude"]) * envelope_values
+            events.append(("flux", component, start, samples.astype("<f8")))
             steps.append({"index": instruction.index, "op": "PLS", "interval": [start, end]})
         elif instruction.op == "PLSXY":
             target = fields["target"]
             xy, _, component = _capabilities(registry, target)
             if not xy or component not in {"q1", "q2"}:
                 _fail(QCISReasonCode.UNKNOWN_QAGENT, f"PLSXY target lacks a qubit xy lane: {target}")
-            frequency = float(fields["frequency"])
-            if target in carriers and carriers[target] != frequency:
-                _fail(QCISReasonCode.CARRIER_CHANGE_UNSUPPORTED, f"carrier changes on {target}")
-            carriers[target] = frequency
             start, end = reserve(target, "xy", fields["t_start"], fields["length"])
-            events.append(("xy", component, start, end, {**{key: float(fields[key]) for key in ("amplitude", "drag_alpha", "r_sigma")}, "phase": float(fields["phase"]) + frames[target]}))
+            if fields["wave_index"] == -1:
+                payload = np.asarray(fields["samples"], dtype="<f8")
+                half = fields["length"]
+                samples = payload[:half] + 1j * payload[half:]
+            else:
+                frequency = float(fields["frequency"])
+                record_carrier(target, frequency)
+                envelope_values, derivative = analytic_waveform(fields["wave_index"], fields["length"], fields["shape_parameter"])
+                base = float(fields["amplitude"]) * (envelope_values - 1j * float(fields["drag_alpha"]) * derivative)
+                phase = float(fields["phase"])
+                samples = base * complex(math.cos(-phase), math.sin(-phase))
+            events.append(("xy", component, start, np.asarray(samples, dtype="<c16")))
             steps.append({"index": instruction.index, "op": "PLSXY", "interval": [start, end]})
-        else:  # X2P/Y2P
+        elif instruction.op == "DTN":
             target = fields["target"]
-            xy, _, component = _capabilities(registry, target)
-            if not xy or component not in {"q1", "q2"}:
-                _fail(QCISReasonCode.MACRO_CALIBRATION_INCOMPLETE, f"macro target {target}")
-            calibration = authorities.get("calibration", {})
-            record = calibration.get(component) if isinstance(calibration, Mapping) else None
-            required = ("amplitude_GHz", "carrier_frequency_GHz", "dragAlpha_samples", "formula_id", "length_samples", "r_sigma_samples")
-            if (
-                not isinstance(calibration, Mapping)
-                or not isinstance(calibration.get("calibration_id"), str)
-                or not calibration["calibration_id"]
-                or calibration.get("status") != "accepted_simulation"
-                or not isinstance(record, Mapping)
-                or any(key not in record for key in required)
-                or record.get("formula_id") != "qcis_gaussian_drag_samples_v1"
-            ):
-                _fail(QCISReasonCode.MACRO_CALIBRATION_INCOMPLETE, f"incomplete macro calibration for {target}")
-            _resolve_macro_setting(authorities, target, record)
-            try:
-                amplitude = float(record["amplitude_GHz"])
-                frequency = float(record["carrier_frequency_GHz"])
-                drag_alpha = float(record["dragAlpha_samples"])
-                r_sigma = float(record["r_sigma_samples"])
-            except (TypeError, ValueError, OverflowError) as exc:
-                _fail(QCISReasonCode.NONCANONICAL_NUMBER, f"macro calibration numeric field: {exc}")
-            length = _strict_positive_integer(
-                record["length_samples"],
-                invalid_code=QCISReasonCode.NONCANONICAL_NUMBER,
-                detail="macro length_samples",
-            )
-            if not all(math.isfinite(value) for value in (amplitude, frequency, drag_alpha, r_sigma)) or r_sigma <= 0.0:
-                _fail(QCISReasonCode.NONCANONICAL_NUMBER, "macro waveform parameters are outside the formula domain")
-            if target in carriers and carriers[target] != frequency:
-                _fail(QCISReasonCode.CARRIER_CHANGE_UNSUPPORTED, f"carrier changes on {target}")
-            carriers[target] = frequency
-            start, end = reserve(target, "xy", -1, length)
-            phase = (0.0 if instruction.op == "X2P" else math.pi / 2.0) + frames[target]
-            events.append(("xy", component, start, end, {"amplitude": amplitude, "drag_alpha": drag_alpha, "r_sigma": r_sigma, "phase": phase}))
-            steps.append({"index": instruction.index, "op": instruction.op, "phase": phase, "emitted_interval": [start, end], "calibration_keys": list(required)})
+            _, z, component = _capabilities(registry, target)
+            if not z:
+                _fail(QCISReasonCode.SETTING_INVALID, f"DTN target lacks z lane: {target}")
+            _, detune_setting = _active_setting(authorities, target, "active_detune_setting")
+            if str(detune_setting.get("control_role", "z")) != "z" or str(detune_setting.get("input_unit", "phi_over_phi0")) != "phi_over_phi0":
+                _fail(QCISReasonCode.SETTING_INVALID, "DTN setting must use z control and phi_over_phi0")
+            start, end = reserve(target, "z", -1, fields["length"])
+            events.append(("flux", component, start, np.full(fields["length"], float(fields["amplitude"]), dtype="<f8")))
+            steps.append({"index": instruction.index, "op": "DTN", "interval": [start, end]})
+        elif instruction.op in {"CZ", "FSIM"}:
+            compile_composite(instruction)
+        elif instruction.op in {"M", "RST", "SWD", "SWA"}:
+            _fail(QCISReasonCode.PARSE_ONLY_OPERATION, f"{instruction.op} is parsed but has no Stage 7 lowering")
+        else:
+            target = fields["target"]
+            op = instruction.op
+            if op == "X12":
+                dimension = registry[target].get("local_dimension", registry[target].get("dimension", registry[target].get("levels", 0)))
+                if type(dimension) is not int or dimension < 3:
+                    _fail(QCISReasonCode.SETTING_INVALID, "X12 requires local dimension >= 3")
+                emit_xy(target, "active_xy12_setting", 0.0, 1.0, instruction.index, op)
+                continue
+            if op in {"X2P", "X2M", "Y2P", "Y2M", "XY2P", "XY2M"}:
+                phases = {"X2P": 0.0, "X2M": math.pi, "Y2P": math.pi / 2.0, "Y2M": -math.pi / 2.0, "XY2P": float(fields.get("phase", 0.0)), "XY2M": float(fields.get("phase", 0.0)) + math.pi}
+                emit_xy(target, "active_xy2_setting", phases[op], 1.0, instruction.index, op)
+                continue
+            if op in {"X", "Y", "XY"}:
+                phase = {"X": 0.0, "Y": math.pi / 2.0, "XY": float(fields.get("phase", 0.0))}[op]
+                if bool(target_configuration(target).get("xy_pi_impl", False)):
+                    emit_xy(target, "active_xy_setting", phase, 1.0, instruction.index, op)
+                else:
+                    emit_xy(target, "active_xy2_setting", phase, 1.0, instruction.index, op)
+                    emit_xy(target, "active_xy2_setting", phase, 1.0, instruction.index, op)
+                continue
+            if op in {"RX", "RY", "RXY"}:
+                azimuth = 0.0 if op == "RX" else math.pi / 2.0 if op == "RY" else _normalized_angle(float(fields["azimuth"]))
+                altitude = _normalized_angle(float(fields["altitude"]))
+                phase = azimuth + (math.pi if altitude < 0.0 else 0.0)
+                scale = abs(altitude) / math.pi
+                if bool(target_configuration(target).get("xy_pi_impl", False)):
+                    emit_xy(target, "active_xy_setting", phase, scale, instruction.index, op)
+                else:
+                    emit_xy(target, "active_xy2_setting", phase, scale, instruction.index, op)
+                    emit_xy(target, "active_xy2_setting", phase, scale, instruction.index, op)
+                continue
+            _fail(QCISReasonCode.UNKNOWN_OPERATION, op)
 
     sample_count = max((value for state in cursors.values() for value in state.values()), default=0)
     q1_xy = np.zeros(sample_count, dtype="<c16")
     q2_xy = np.zeros(sample_count, dtype="<c16")
-    q1_flux = np.full(sample_count, idle["q1"], dtype="<f8")
-    q2_flux = np.full(sample_count, idle["q2"], dtype="<f8")
-    c_flux = np.full(sample_count, idle["c"], dtype="<f8")
+    q1_flux = np.zeros(sample_count, dtype="<f8")
+    q2_flux = np.zeros(sample_count, dtype="<f8")
+    c_flux = np.zeros(sample_count, dtype="<f8")
     xy_arrays = {"q1": q1_xy, "q2": q2_xy}
     flux_arrays = {"q1": q1_flux, "q2": q2_flux, "c": c_flux}
-    for kind, component, start, end, values in events:
+    for kind, component, start, samples in events:
+        end = start + len(samples)
         if kind == "flux":
-            flux_arrays[component][start:end] = values["value"]
+            flux_arrays[component][start:end] += samples
             continue
-        length = end - start
-        center = (length - 1) / 2.0
-        sigma = values["r_sigma"]
-        for offset in range(length):
-            coordinate = float(offset) - center
-            gaussian = math.exp(-0.5 * (coordinate / sigma) ** 2)
-            derivative = gaussian * (-coordinate / (sigma**2))
-            value = values["amplitude"] * complex(gaussian, -values["drag_alpha"] * derivative)
-            xy_arrays[component][start + offset] = value * complex(math.cos(-values["phase"]), math.sin(-values["phase"]))
+        xy_arrays[component][start:end] += samples
 
     ast_bytes = canonical_json_bytes(parsed.payload())
-    trace: dict[str, Any] = {"final_cursors": cursors, "final_frames": frames, "final_sample_count": sample_count, "schema_version": "0.1", "steps": steps}
+    trace: dict[str, Any] = {"final_cursors": cursors, "final_frames": frames, "final_sample_count": sample_count, "schema_version": "0.2", "steps": steps}
     if macros:
-        trace = {"authority_sha256": dict(authority_sha256), "final_cursors": cursors, "final_sample_count": sample_count, "schema_version": "0.1", "steps": steps}
+        trace["authority_sha256"] = dict(authority_sha256)
     trace_bytes = canonical_json_bytes(trace)
     q1_xy, q2_xy = frozen_array(q1_xy, "<c16"), frozen_array(q2_xy, "<c16")
     q1_flux, q2_flux, c_flux = (frozen_array(q1_flux, "<f8"), frozen_array(q2_flux, "<f8"), frozen_array(c_flux, "<f8"))
@@ -489,7 +756,7 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
             "epsilon_q1_c16_sha256": array_sha256["q1_xy"],
             "epsilon_q2_c16_sha256": array_sha256["q2_xy"],
             "sample_count": sample_count,
-            "schema_version": "0.1",
+            "schema_version": "0.2",
         }
     )
     plan = QCISLogicalWaveformPlan(

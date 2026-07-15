@@ -260,13 +260,13 @@ def test_append_gaussian_materialization_ast_trace_and_raw_arrays():
         authorities=_authorities(include_all_agents=True),
     )
     assert _artifact(result, "materialized_source", "concrete_source") == APPEND_SOURCE
-    _assert_sha(result, "BB4C52C8CB08DF473F229A6DE3E58056643BFC0AD0FF9D54FF2A32108813F38B", "ast_bytes", "canonical_ast")
-    _assert_sha(result, "7E2B1A023C4EE3765066E1851CB83A1EF943065C99B6EDB1CA98EA8711A6C2F6", "trace_bytes", "canonical_trace")
+    _assert_sha(result, "FF3D3C375B574CF50DDDFA9ACD9A12954435B0A09D1F03EDD1CADE49C80922FA", "ast_bytes", "canonical_ast")
+    _assert_sha(result, "BA26F4E7FB2C7126E0308903EF63206F6DF3CECAF2AE91F326081076FB0D56C4", "trace_bytes", "canonical_trace")
     _assert_array_sha(result, "872379342B861D074CDB5AC2585B3065CF7DBEF86A46E6D2DF8174A35C82F411", "q1_xy", "logical_q1_xy")
     _assert_array_sha(result, "17B0761F87B081D5CF10757CCC89F12BE355C70E2E29DF288B65B30710DCBCD1", "q2_xy", "logical_q2_xy")
-    _assert_array_sha(result, "0351A20942B1EEF0AD03C32E1291606671426A06F29CCD3BE1118F5136DA2824", "q1_flux", "logical_q1_flux")
+    _assert_array_sha(result, "9D908ECFB6B256DEF8B49A7C504E6C889C4B0E41FE6CE3E01863DD7B61A20AA0", "q1_flux", "logical_q1_flux")
     _assert_array_sha(result, "9D908ECFB6B256DEF8B49A7C504E6C889C4B0E41FE6CE3E01863DD7B61A20AA0", "q2_flux", "logical_q2_flux")
-    _assert_array_sha(result, "D58A8EFE0795E936484C6CEA8BDC4125802A01155516B3627146628F4A2D95B9", "c_flux", "logical_c_flux")
+    _assert_array_sha(result, "9D908ECFB6B256DEF8B49A7C504E6C889C4B0E41FE6CE3E01863DD7B61A20AA0", "c_flux", "logical_c_flux")
 
 
 def test_literal_and_scan_ref_materialize_to_byte_identical_compilation():
@@ -294,29 +294,29 @@ def test_literal_and_scan_ref_materialize_to_byte_identical_compilation():
 
 def test_absolute_rectangle_ast_trace_and_all_raw_arrays():
     result = _compile(_program(RECTANGLE_SOURCE, template_id="rectangle"), authorities=_authorities(include_all_agents=True))
-    _assert_sha(result, "7CF8365D6D05E83B593C8030F8AB3E1B5CA1EFB6CA465E1807249F2F918BBD2F", "ast_bytes", "canonical_ast")
-    _assert_sha(result, "7CD01239D5FF04FA6C2139366DD8098338F5094C3358E53E009B3C9087E6FCA4", "trace_bytes", "canonical_trace")
+    _assert_sha(result, "CA60729BCB4DE74C92138BCD510B85DD424A26D9E1EC426B3E4314D9A2BBB337", "ast_bytes", "canonical_ast")
+    _assert_sha(result, "15FF034CF23213AFCBC5AB2B8589C5267E251CC2BFE148278A3CD3674C6E9126", "trace_bytes", "canonical_trace")
     _assert_array_sha(result, "F5A5FD42D16A20302798EF6ED309979B43003D2320D9F0E8EA9831A92759FB4B", "q1_xy", "logical_q1_xy")
     _assert_array_sha(result, "F5A5FD42D16A20302798EF6ED309979B43003D2320D9F0E8EA9831A92759FB4B", "q2_xy", "logical_q2_xy")
-    _assert_array_sha(result, "B72C269B78507D682FA8237B148E0FA6B7FD2A14DCE6AF3A76DE9D937D34CF27", "q1_flux", "logical_q1_flux")
+    _assert_array_sha(result, "66687AADF862BD776C8FC18B8E9F8E20089714856EE233B3902A591D0D5F2925", "q1_flux", "logical_q1_flux")
     _assert_array_sha(result, "66687AADF862BD776C8FC18B8E9F8E20089714856EE233B3902A591D0D5F2925", "q2_flux", "logical_q2_flux")
-    _assert_array_sha(result, "C6804A75C4A7C9F0E17C3986076F5561DC881E7133FE96614097C621F7F8B313", "c_flux", "logical_c_flux")
+    _assert_array_sha(result, "537C71B5C7EFC0E0DDCA126E2C3029A3A74CA8C50ED979D489962AAED797DD3D", "c_flux", "logical_c_flux")
 
 
 def test_nonzero_drag_rz_bytes_carrier_effective_and_coefficient_inventory():
     result = _compile(_program(NONZERO_SOURCE, template_id="nonzero"), authorities=_authorities())
-    _assert_sha(result, "07FD9431368D572943A616C11D12150D5FAAB6ABF6FC0637471F9CF9DFF4F776", "ast_bytes", "canonical_ast")
-    _assert_sha(result, "4FE82B9B0AE2B0CE901CF98DEF7A301C3C7BEE6AB4D60E384FDAC3E664524331", "trace_bytes", "canonical_trace")
-    _assert_array_sha(result, "156F049E5AD848EBB45B3B1FF48DB245A55014F4D777F8F69ABAC9447F76DB12", "q1_xy", "logical_q1_xy")
+    _assert_sha(result, "32BFCBBD24895C9311C08661664C948A5F4961A26C5CB1D837BCA8C8E6F8598C", "ast_bytes", "canonical_ast")
+    _assert_sha(result, "96ABE204A820B660E6B248BA6E63501FCAEA9BB6BD97F5A1DEC3BE6B1284B293", "trace_bytes", "canonical_trace")
+    _assert_array_sha(result, "3828A0A3C7FDED386C5659F0791D0D3048088BF88D97BD0AB37A1938DE84A3A5", "q1_xy", "logical_q1_xy")
     _assert_sha(result, "2980D038907D648B022B38A95E36A1EA94387243D587006EFCD40D18008100F6", "carrier_metadata_bytes", "carrier_metadata")
-    _assert_array_sha(result, "156F049E5AD848EBB45B3B1FF48DB245A55014F4D777F8F69ABAC9447F76DB12", "effective_q1_xy", "effective_epsilon_q1")
-    _assert_sha(result, "51A4A0561BACFF0465ABC6B41BEAAF0E408D098E57079FF80F1199C3A5B87AD9", "coefficient_inventory_bytes", "coefficient_inventory")
+    _assert_array_sha(result, "3828A0A3C7FDED386C5659F0791D0D3048088BF88D97BD0AB37A1938DE84A3A5", "effective_q1_xy", "effective_epsilon_q1")
+    _assert_sha(result, "D8EE3AAAF759410DC48B65C1C167B04A6E0C374193AAB0516F4AF660F8F3EA3E", "coefficient_inventory_bytes", "coefficient_inventory")
 
 
 def test_xy2_macro_authority_provenance_ast_trace_and_waveform():
     result = _compile(_program(MACRO_SOURCE, template_id=MACRO_TEMPLATE_ID), authorities=_authorities())
-    _assert_sha(result, "BBFB1D2399D20F725BBDE29E657C14582EA701B99A2B36DC431EB038EC53A9CA", "ast_bytes", "canonical_ast")
-    _assert_sha(result, "E6C4457593D6D6942439A53DFF7BC12326425F020F64AA35DE0BF65AEA68831E", "trace_bytes", "canonical_trace")
+    _assert_sha(result, "FE3FACB9075ECAF35F79A73F452EDE7EB0234E9F665E333E2EABEE2605A80E3A", "ast_bytes", "canonical_ast")
+    _assert_sha(result, "053FEB79E04020A4633D2F0098057AAB6E07CA75E6E467AE503F55D26749097C", "trace_bytes", "canonical_trace")
     _assert_array_sha(result, "AD92ABD3DBECF6F2B61E87834632713F9D97DA6A14AC3E6F1DB5A9739E89DD7E", "q1_xy", "logical_q1_xy")
     trace = json.loads(_as_bytes(_artifact(result, "trace_bytes", "canonical_trace")))
     assert set(trace["authority_sha256"]) == {
@@ -381,7 +381,7 @@ def test_macro_calibration_integer_length_one_retains_frozen_waveform_and_trace_
     assert type(authorities["calibration"]["q1"]["length_samples"]) is int
     assert authorities["calibration"]["q1"]["length_samples"] == 1
     result = _compile(_program(MACRO_SOURCE, template_id=MACRO_TEMPLATE_ID), authorities=authorities)
-    _assert_sha(result, "E6C4457593D6D6942439A53DFF7BC12326425F020F64AA35DE0BF65AEA68831E", "trace_bytes", "canonical_trace")
+    _assert_sha(result, "053FEB79E04020A4633D2F0098057AAB6E07CA75E6E467AE503F55D26749097C", "trace_bytes", "canonical_trace")
     _assert_array_sha(result, "AD92ABD3DBECF6F2B61E87834632713F9D97DA6A14AC3E6F1DB5A9739E89DD7E", "q1_xy", "logical_q1_xy")
 
 
@@ -398,9 +398,9 @@ def test_canonical_decimal_tokens_reject(token: str):
         ("PLSXY Q1 1 -1 1 0.125 5 0 0 1\n\n", "QCIS_NONCANONICAL_SOURCE"),
         ("plSXY Q1 1 -1 1 0.125 5 0 0 1\n", "QCIS_NONCANONICAL_SOURCE"),
         ("PLSXY Q01 1 -1 1 0.125 5 0 0 1\n", "QCIS_UNKNOWN_QAGENT"),
-        ("RXY Q1 0.1\n", "QCIS_UNKNOWN_OPERATION"),
-        ("PLS Q1 -1 0 0 1\n", "QCIS_UNSUPPORTED_NUMERIC_WAVEFORM"),
-        ("PLS C 2 -1 4 0.25 0 0 0 1\n", "QCIS_UNSUPPORTED_WAVE_INDEX"),
+        ("RXY Q1 0.1\n", "QCIS_ARITY_MISMATCH"),
+        ("PLSXY Q1 -1 0 0 1 2\n", "QCIS_ARITY_MISMATCH"),
+        ("PLS C 3 -1 4 0.25 0 0 0 1\n", "QCIS_UNSUPPORTED_WAVE_INDEX"),
     ],
 )
 def test_source_and_opcode_rejections_have_stable_codes(source: str, code: str):
@@ -426,11 +426,14 @@ def test_template_binding_and_authority_rejections_have_stable_codes():
     _assert_reject(_program(MACRO_SOURCE, template_id=MACRO_TEMPLATE_ID), "QCIS_CALIBRATION_AUTHORITY_HASH_MISMATCH", authorities=bad)
 
 
-def test_timing_overlap_and_budget_reject_before_artifact_publication(tmp_path: Path):
+def test_timing_overlap_adds_without_artifact_side_effects(tmp_path: Path):
     overlap = "PLSXY Q1 1 0 2 0.125 5 0 0 1\nPLSXY Q1 1 1 2 0.125 5 0 0 1\n"
     before = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
     program, authorities = _registered_case(overlap)
-    _assert_reject(program, "QCIS_TIMING_OVERLAP", authorities=authorities)
+    result = _compile(program, authorities=authorities)
+    waveform = np.asarray(result.q1_xy).real
+    assert waveform[0] == pytest.approx(waveform[2])
+    assert waveform[1] == pytest.approx(2.0 * waveform[0])
     after = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
     assert after == before
 

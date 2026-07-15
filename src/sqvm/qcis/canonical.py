@@ -13,6 +13,7 @@ from sqvm.qcis.errors import QCISCompilationError, QCISReasonCode
 
 REAL_TOKEN = re.compile(r"-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE]-?(0|[1-9][0-9]*))?$")
 INTEGER_TOKEN = re.compile(r"0|[1-9][0-9]*$")
+SIGNED_INTEGER_TOKEN = re.compile(r"-?(0|[1-9][0-9]*)$")
 PLACEHOLDER_TOKEN = re.compile(r"\$[a-z][a-z0-9_]{0,63}$")
 OPERATION_TOKEN = re.compile(r"[A-Z][A-Z0-9]*$")
 QAGENT_TOKEN = re.compile(r"[A-Z][A-Z0-9]*$")
@@ -45,6 +46,12 @@ def parse_integer_token(token: str, *, allow_negative_one: bool = False) -> int:
     if allow_negative_one and token == "-1":
         return -1
     if not isinstance(token, str) or INTEGER_TOKEN.fullmatch(token) is None:
+        raise QCISCompilationError(QCISReasonCode.NONCANONICAL_NUMBER, token)
+    return int(token)
+
+
+def parse_signed_integer_token(token: str) -> int:
+    if not isinstance(token, str) or SIGNED_INTEGER_TOKEN.fullmatch(token) is None or token == "-0":
         raise QCISCompilationError(QCISReasonCode.NONCANONICAL_NUMBER, token)
     return int(token)
 
