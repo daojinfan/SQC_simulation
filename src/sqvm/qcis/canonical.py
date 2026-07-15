@@ -57,7 +57,7 @@ def parse_signed_integer_token(token: str) -> int:
 
 
 def canonical_float(value: float) -> str:
-    """Use CPython's shortest binary64 round-trip decimal representation."""
+    """Return the shortest valid QCIS decimal that round-trips to binary64."""
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise QCISCompilationError(QCISReasonCode.NONCANONICAL_NUMBER, "binding is not a number")
@@ -66,7 +66,14 @@ def canonical_float(value: float) -> str:
         raise QCISCompilationError(QCISReasonCode.NONCANONICAL_NUMBER, "binding is non-finite")
     if parsed == 0.0:
         return "0"
-    return repr(parsed)
+    token = repr(parsed)
+    if "e" not in token and "E" not in token:
+        return token[:-2] if token.endswith(".0") else token
+    mantissa, exponent = token.lower().split("e")
+    if mantissa.endswith(".0"):
+        mantissa = mantissa[:-2]
+    exponent_value = int(exponent)
+    return f"{mantissa}e{exponent_value}"
 
 
 def parse_canonical_float(token: str) -> float:

@@ -33,6 +33,38 @@ _AUTHORITY_CODES = {
     "compiler": QCISReasonCode.COMPILER_AUTHORITY_HASH_MISMATCH,
 }
 _IDLE_DEFAULT = {"q1": 0.1, "q2": 0.0, "c": 0.27}
+_BINDABLE_OPERANDS = {
+    "PLS": {"amplitude": 5, "target_flux": 5, "length": 4},
+    "PLSXY": {"amplitude": 5, "frequency": 6, "phase": 7, "drag_alpha": 8, "r_sigma": 9, "length": 4},
+    "DTN": {"length": 2, "amplitude": 3},
+    "RZ": {"phase": 2},
+    "XY": {"phase": 2},
+    "XY2P": {"phase": 2},
+    "XY2M": {"phase": 2},
+    "RX": {"altitude": 2},
+    "RY": {"altitude": 2},
+    "RXY": {"azimuth": 2, "altitude": 3},
+}
+
+
+def _integer_binding_position(tokens: list[str], token_index: int) -> bool:
+    """Whether a placeholder occupies a pulse/detune sample-count field."""
+
+    if tokens[0] not in {"PLS", "PLSXY", "DTN"}:
+        return False
+    # Numeric PLS/PLSXY has no separate length operand.
+    if tokens[0] in {"PLS", "PLSXY"} and tokens[2] == "-1":
+        return False
+    return token_index == _BINDABLE_OPERANDS[tokens[0]]["length"]
+
+
+def _canonical_positive_integer(value: float, name: str) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _fail(QCISReasonCode.NONCANONICAL_NUMBER, f"binding {name!r} must be a positive integer sample count")
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric <= 0.0 or not numeric.is_integer():
+        _fail(QCISReasonCode.NONCANONICAL_NUMBER, f"binding {name!r} must be a positive integer sample count")
+    return str(int(numeric))
 
 
 def materialize_program(source: str, bindings: Mapping[str, float]) -> str:
@@ -42,13 +74,15 @@ def materialize_program(source: str, bindings: Mapping[str, float]) -> str:
     result: list[str] = []
     seen: set[str] = set()
     for line in source[:-1].split("\n"):
+        tokens = line.split(" ")
         values: list[str] = []
-        for token in line.split(" "):
+        for token_index, token in enumerate(tokens):
             if token.startswith("$"):
                 name = token[1:]
                 if name not in bindings:
                     raise QCISCompilationError(QCISReasonCode.BINDING_SET_MISMATCH, f"missing {name!r}")
-                values.append(canonical_float(bindings[name]))
+                value = bindings[name]
+                values.append(_canonical_positive_integer(value, name) if _integer_binding_position(tokens, token_index) else canonical_float(value))
                 seen.add(name)
             else:
                 values.append(token)
@@ -122,22 +156,45 @@ def _admit_template(envelope: ProgramEnvelope, authorities: Mapping[str, Any]) -
     if not isinstance(declared, Mapping) or set(declared) != set(envelope.bindings):
         _fail(QCISReasonCode.BINDING_SET_MISMATCH, "binding key set mismatch")
     for name, spec in declared.items():
-        if not isinstance(spec, Mapping) or set(spec) != {"unit", "occurrences", "position"} or not isinstance(spec["unit"], str):
+        if not isinstance(spec, Mapping) or not isinstance(spec.get("unit"), str):
             _fail(QCISReasonCode.BINDING_SET_MISMATCH, f"invalid binding spec {name!r}")
-        occurrences = source.count(f"${name}")
-        if _strict_positive_integer(spec["occurrences"], invalid_code=QCISReasonCode.BINDING_SET_MISMATCH, detail=f"binding {name!r} occurrences") != occurrences:
+        keys = set(spec)
+        if keys == {"unit", "occurrences", "position"}:
+            positions = (spec["position"],)
+        elif keys == {"unit", "occurrences", "positions"} and isinstance(spec["positions"], list | tuple):
+            positions = tuple(spec["positions"])
+        else:
+            _fail(QCISReasonCode.BINDING_SET_MISMATCH, f"invalid binding spec {name!r}")
+        occurrences = sum(token == f"${name}" for line in source[:-1].split("\n") for token in line.split(" "))
+        expected_occurrences = _strict_positive_integer(
+            spec["occurrences"],
+            invalid_code=QCISReasonCode.BINDING_SET_MISMATCH,
+            detail=f"binding {name!r} occurrences",
+        )
+        if expected_occurrences != occurrences or len(positions) != occurrences:
             _fail(QCISReasonCode.BINDING_POSITION_FORBIDDEN, f"binding {name!r} occurrence mismatch")
-        position = spec.get("position")
-        if position is not None:
+        declared_coordinates: set[tuple[int, int]] = set()
+        for position in positions:
             if not (isinstance(position, list | tuple) and len(position) == 2 and type(position[0]) is int and isinstance(position[1], str)):
                 _fail(QCISReasonCode.BINDING_POSITION_FORBIDDEN, f"binding {name!r} position invalid")
             lines = source[:-1].split("\n")
             if position[0] < 0 or position[0] >= len(lines):
                 _fail(QCISReasonCode.BINDING_POSITION_FORBIDDEN, f"binding {name!r} position outside source")
             tokens = lines[position[0]].split(" ")
-            fields = {"PLSXY": {"amplitude": 5, "frequency": 6, "phase": 7, "drag_alpha": 8, "r_sigma": 9}, "PLS": {"target_flux": 5}}
+            fields = _BINDABLE_OPERANDS
+            if tokens[0] in {"PLS", "PLSXY"} and tokens[2] == "-1":
+                _fail(QCISReasonCode.BINDING_POSITION_FORBIDDEN, f"binding {name!r} cannot target numeric payload")
             if tokens[0] not in fields or fields[tokens[0]].get(position[1]) is None or tokens[fields[tokens[0]][position[1]]] != f"${name}":
                 _fail(QCISReasonCode.BINDING_POSITION_FORBIDDEN, f"binding {name!r} position forbidden")
+            declared_coordinates.add((position[0], fields[tokens[0]][position[1]]))
+        actual_coordinates = {
+            (line_index, token_index)
+            for line_index, line in enumerate(source[:-1].split("\n"))
+            for token_index, token in enumerate(line.split(" "))
+            if token == f"${name}"
+        }
+        if len(declared_coordinates) != len(positions) or actual_coordinates != declared_coordinates:
+            _fail(QCISReasonCode.BINDING_POSITION_FORBIDDEN, f"binding {name!r} positions differ from source")
     return template
 
 

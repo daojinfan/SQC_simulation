@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from sqvm.qcis import QCISCompilationError, QCISReasonCode, compile_qcis, parse_qcis
+from sqvm.qcis.canonical import canonical_float, parse_canonical_float
 from sqvm.qcis.waveforms import acz, flattop
 
 
@@ -95,6 +96,14 @@ def test_flattop_and_acz_are_deterministic_and_normalized():
     shaped, _ = acz(9, 1.2, 0.2, 0.1, 0.2)
     assert shaped[0] == shaped[-1] == 0.0
     assert np.all(np.isfinite(shaped))
+
+
+@pytest.mark.parametrize("value", [5.0, 1e20, 1e-5])
+def test_materialized_numeric_tokens_are_shortest_valid_qcis_decimals(value: float):
+    token = canonical_float(value)
+    assert ".0" not in token
+    assert "e+" not in token
+    assert parse_canonical_float(token) == value
 
 
 def test_direct_xy_ignores_rz_and_absolute_overlap_adds():
@@ -192,3 +201,158 @@ def test_parse_only_operation_fails_at_lowering_not_parsing():
     with pytest.raises(QCISCompilationError) as captured:
         _compile(source)
     assert captured.value.code == QCISReasonCode.PARSE_ONLY_OPERATION
+
+
+def test_template_scan_bindings_cover_pulse_detune_and_rotation_operands():
+    source = (
+        "PLSXY Q1 1 -1 $xy_length $xy_amplitude $xy_frequency $xy_phase $xy_drag $xy_sigma\n"
+        "PLS C 0 -1 $z_length $z_amplitude 0 0 0 4\n"
+        "DTN Q1 $dtn_length $dtn_amplitude\n"
+        "RXY Q1 $azimuth $altitude\n"
+    )
+    authorities = _authorities(source)
+    authorities["templates"]["case"]["bindings"] = {
+        "xy_length": {"unit": "samples", "occurrences": 1, "position": [0, "length"]},
+        "xy_amplitude": {"unit": "GHz", "occurrences": 1, "position": [0, "amplitude"]},
+        "xy_frequency": {"unit": "GHz", "occurrences": 1, "position": [0, "frequency"]},
+        "xy_phase": {"unit": "rad", "occurrences": 1, "position": [0, "phase"]},
+        "xy_drag": {"unit": "samples", "occurrences": 1, "position": [0, "drag_alpha"]},
+        "xy_sigma": {"unit": "samples", "occurrences": 1, "position": [0, "r_sigma"]},
+        "z_length": {"unit": "samples", "occurrences": 1, "position": [1, "length"]},
+        "z_amplitude": {"unit": "phi_over_phi0", "occurrences": 1, "position": [1, "amplitude"]},
+        "dtn_length": {"unit": "samples", "occurrences": 1, "position": [2, "length"]},
+        "dtn_amplitude": {"unit": "phi_over_phi0", "occurrences": 1, "position": [2, "amplitude"]},
+        "azimuth": {"unit": "rad", "occurrences": 1, "position": [3, "azimuth"]},
+        "altitude": {"unit": "rad", "occurrences": 1, "position": [3, "altitude"]},
+    }
+    bindings = {
+        "xy_length": {"scan_ref": "xy_length", "unit": "samples"},
+        "xy_amplitude": {"literal": 0.125, "unit": "GHz"},
+        "xy_frequency": {"literal": 5.0, "unit": "GHz"},
+        "xy_phase": {"literal": 0.2, "unit": "rad"},
+        "xy_drag": {"literal": 0.0, "unit": "samples"},
+        "xy_sigma": {"literal": 1.0, "unit": "samples"},
+        "z_length": {"literal": 4.0, "unit": "samples"},
+        "z_amplitude": {"literal": 0.2, "unit": "phi_over_phi0"},
+        "dtn_length": {"scan_ref": "dtn_length", "unit": "samples"},
+        "dtn_amplitude": {"literal": 0.05, "unit": "phi_over_phi0"},
+        "azimuth": {"literal": 0.1, "unit": "rad"},
+        "altitude": {"literal": -0.5, "unit": "rad"},
+    }
+    result = compile_qcis(
+        {
+            "program_schema_version": "0.1",
+            "instruction_set_id": "qcis_stage7_calibration_v1",
+            "template_id": "case",
+            "template_sha256": _sha(source),
+            "source_format": "qcis_template",
+            "source": source,
+            "bindings": bindings,
+        },
+        authorities,
+        idle_flux={"q1": 0.1, "q2": 0.0, "c": 0.27},
+        scan_values={
+            "xy_length": {"value": 4.0, "unit": "samples"},
+            "dtn_length": {"value": 3.0, "unit": "samples"},
+        },
+    )
+    assert "PLSXY Q1 1 -1 4 0.125 5 0.2 0 1\n" in result.concrete_source
+    assert "PLS C 0 -1 4 0.2 0 0 0 4\n" in result.concrete_source
+    assert "DTN Q1 3 0.05\n" in result.concrete_source
+    assert "RXY Q1 0.1 -0.5\n" in result.concrete_source
+
+
+def test_length_binding_requires_a_positive_integer_sample_count():
+    source = "DTN Q1 $length 0.05\n"
+    authorities = _authorities(source)
+    authorities["templates"]["case"]["bindings"] = {
+        "length": {"unit": "samples", "occurrences": 1, "position": [0, "length"]},
+    }
+    with pytest.raises(QCISCompilationError) as captured:
+        compile_qcis(
+            {
+                "program_schema_version": "0.1",
+                "instruction_set_id": "qcis_stage7_calibration_v1",
+                "template_id": "case",
+                "template_sha256": _sha(source),
+                "source_format": "qcis_template",
+                "source": source,
+                "bindings": {"length": {"literal": 3.5, "unit": "samples"}},
+            },
+            authorities,
+            idle_flux={"q1": 0.1, "q2": 0.0, "c": 0.27},
+        )
+    assert captured.value.code == QCISReasonCode.NONCANONICAL_NUMBER
+
+
+def test_numeric_pulse_payload_has_no_bindable_length_slot():
+    source = "PLSXY Q1 -1 -1 $sample 2\n"
+    authorities = _authorities(source)
+    authorities["templates"]["case"]["bindings"] = {
+        "sample": {"unit": "samples", "occurrences": 1, "position": [0, "length"]},
+    }
+    with pytest.raises(QCISCompilationError) as captured:
+        compile_qcis(
+            {
+                "program_schema_version": "0.1",
+                "instruction_set_id": "qcis_stage7_calibration_v1",
+                "template_id": "case",
+                "template_sha256": _sha(source),
+                "source_format": "qcis_template",
+                "source": source,
+                "bindings": {"sample": {"literal": 1.0, "unit": "samples"}},
+            },
+            authorities,
+            idle_flux={"q1": 0.1, "q2": 0.0, "c": 0.27},
+        )
+    assert captured.value.code == QCISReasonCode.BINDING_POSITION_FORBIDDEN
+
+
+def test_repeated_binding_requires_a_complete_authorized_positions_list():
+    source = (
+        "PLSXY Q1 1 -1 1 $amplitude 5 0 0 1\n"
+        "PLSXY Q1 1 -1 1 $amplitude 5 0 0 1\n"
+    )
+    authorities = _authorities(source)
+    authorities["templates"]["case"]["bindings"] = {
+        "amplitude": {
+            "unit": "GHz",
+            "occurrences": 2,
+            "positions": [[0, "amplitude"], [1, "amplitude"]],
+        },
+    }
+    result = compile_qcis(
+        {
+            "program_schema_version": "0.1",
+            "instruction_set_id": "qcis_stage7_calibration_v1",
+            "template_id": "case",
+            "template_sha256": _sha(source),
+            "source_format": "qcis_template",
+            "source": source,
+            "bindings": {"amplitude": {"literal": 0.125, "unit": "GHz"}},
+        },
+        authorities,
+        idle_flux={"q1": 0.1, "q2": 0.0, "c": 0.27},
+    )
+    assert np.allclose(result.q1_xy.real, [0.125, 0.125])
+
+    authorities["templates"]["case"]["bindings"]["amplitude"] = {
+        "unit": "GHz",
+        "occurrences": 2,
+        "position": [0, "amplitude"],
+    }
+    with pytest.raises(QCISCompilationError) as captured:
+        compile_qcis(
+            {
+                "program_schema_version": "0.1",
+                "instruction_set_id": "qcis_stage7_calibration_v1",
+                "template_id": "case",
+                "template_sha256": _sha(source),
+                "source_format": "qcis_template",
+                "source": source,
+                "bindings": {"amplitude": {"literal": 0.125, "unit": "GHz"}},
+            },
+            authorities,
+            idle_flux={"q1": 0.1, "q2": 0.0, "c": 0.27},
+        )
+    assert captured.value.code == QCISReasonCode.BINDING_POSITION_FORBIDDEN
