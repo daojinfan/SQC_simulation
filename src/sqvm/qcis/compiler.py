@@ -382,7 +382,62 @@ def compile_qcis(
     return _compile_plan(envelope, concrete, parsed, authority_map, registry, idle, authority_sha256, max_samples, macros)
 
 
-def _active_setting(authorities: Mapping[str, Any], target: str, key: str) -> tuple[str, Mapping[str, Any]]:
+def _is_v02_profile(authorities: Mapping[str, Any]) -> bool:
+    profile = authorities.get("instruction_profile")
+    return isinstance(profile, Mapping) and profile.get("profile_version") == "0.2"
+
+
+def _record_hash(record: Mapping[str, Any]) -> str:
+    """Hash a calibration record without its generated self-hash field."""
+
+    return sha256_json({str(name): _canonical_plain(value) for name, value in record.items() if name != "setting_hash"})
+
+
+def _accepted_record_evidence(
+    record_id: str,
+    record: Mapping[str, Any],
+    *,
+    id_field: str,
+    expected_type: str | None = None,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Validate the immutable v0.2 calibration record contract and return trace evidence."""
+
+    if record.get(id_field) != record_id:
+        _fail(QCISReasonCode.SETTING_INVALID, f"{record_id}.{id_field} does not match its registry key")
+    if expected_type is not None and record.get("gate_type", record.get("mapper_type")) != expected_type:
+        _fail(QCISReasonCode.SETTING_INVALID, f"{record_id} has unexpected type")
+    if target is not None and record.get("target") != target:
+        _fail(QCISReasonCode.SETTING_INVALID, f"{record_id}.target does not match {target}")
+    if record.get("status") != "accepted":
+        _fail(QCISReasonCode.SETTING_INVALID, f"{record_id} is not accepted")
+    revision = record.get("revision")
+    if type(revision) is not int or revision <= 0:
+        _fail(QCISReasonCode.SETTING_INVALID, f"{record_id}.revision must be a positive integer")
+    run_id = record.get("calibration_run_id")
+    if not isinstance(run_id, str) or not run_id:
+        _fail(QCISReasonCode.SETTING_INVALID, f"{record_id}.calibration_run_id is required")
+    setting_hash = record.get("setting_hash")
+    if not isinstance(setting_hash, str) or setting_hash != _record_hash(record):
+        _fail(QCISReasonCode.SETTING_INVALID, f"{record_id}.setting_hash does not match record content")
+    return {id_field: record_id, "revision": revision, "setting_hash": setting_hash, "calibration_run_id": run_id}
+
+
+def _setting_evidence(authorities: Mapping[str, Any], setting_id: str, setting: Mapping[str, Any]) -> dict[str, Any]:
+    if not _is_v02_profile(authorities):
+        return {"setting_id": setting_id}
+    evidence = _accepted_record_evidence(
+        setting_id,
+        setting,
+        id_field="setting_id",
+        target=str(setting.get("target", "")),
+    )
+    return evidence
+
+
+def _active_setting(
+    authorities: Mapping[str, Any], target: str, key: str, *, expected_gate_type: str | None = None
+) -> tuple[str, Mapping[str, Any]]:
     configuration = authorities.get("gate_configuration")
     waveform_registry = authorities.get("waveform_registry")
     target_configuration = configuration.get(target) if isinstance(configuration, Mapping) else None
@@ -396,6 +451,14 @@ def _active_setting(authorities: Mapping[str, Any], target: str, key: str) -> tu
     targets = setting.get("targets")
     if targets is not None and (not isinstance(targets, (list, tuple)) or target not in targets):
         _fail(QCISReasonCode.SETTING_INVALID, f"setting {setting_id!r} does not apply to {target}")
+    if _is_v02_profile(authorities):
+        _accepted_record_evidence(
+            setting_id,
+            setting,
+            id_field="setting_id",
+            expected_type=expected_gate_type,
+            target=target,
+        )
     return setting_id, setting
 
 
@@ -460,7 +523,14 @@ def _xy_setting(authorities: Mapping[str, Any], registry: Mapping[str, Mapping[s
         shape_parameter = (edge,)
     envelope, derivative = analytic_waveform(index_value, length, shape_parameter)
     base = amplitude * (envelope - 1j * drag * derivative)
-    return {"setting_id": setting_id, "length": length, "frequency": frequency, "phase_offset": phase_offset, "base": base.astype("<c16")}
+    return {
+        "setting_id": setting_id,
+        "evidence": _setting_evidence(authorities, setting_id, setting),
+        "length": length,
+        "frequency": frequency,
+        "phase_offset": phase_offset,
+        "base": base.astype("<c16"),
+    }
 
 
 def _normalized_angle(value: float) -> float:
@@ -475,11 +545,33 @@ def _mapper_record(authorities: Mapping[str, Any], target: str, kind: str) -> tu
     mappers = waveform_registry.get("mappers") if isinstance(waveform_registry, Mapping) else None
     key = f"active_{kind.lower()}_mapper"
     raw = target_configuration.get(key) if isinstance(target_configuration, Mapping) else None
+    expected_type = f"{kind.upper()}_MAPPER"
     if isinstance(raw, Mapping):
-        return str(raw.get("mapper_id", key)), raw
+        if _is_v02_profile(authorities):
+            _fail(QCISReasonCode.MAPPER_NOT_FOUND, f"{target}.{key} must select a registered mapper id")
+        mapper_id = raw.get("mapper_id", key)
+        if not isinstance(mapper_id, str) or not mapper_id:
+            _fail(QCISReasonCode.MAPPER_NOT_FOUND, f"{target}.{key}")
+        return mapper_id, raw
     if not isinstance(raw, str) or not isinstance(mappers, Mapping) or not isinstance(mappers.get(raw), Mapping):
         _fail(QCISReasonCode.MAPPER_NOT_FOUND, f"{target}.{key}")
-    return raw, mappers[raw]
+    mapper = mappers[raw]
+    if _is_v02_profile(authorities):
+        _accepted_record_evidence(raw, mapper, id_field="mapper_id", expected_type=expected_type)
+        if kind == "g2zbias" and (mapper.get("interpolation") != "piecewise_linear" or mapper.get("extrapolation") != "reject"):
+            _fail(QCISReasonCode.SETTING_INVALID, f"{raw} must use piecewise_linear interpolation without extrapolation")
+    return raw, mapper
+
+
+def _mapper_evidence(authorities: Mapping[str, Any], mapper_id: str, mapper: Mapping[str, Any]) -> dict[str, Any]:
+    if _is_v02_profile(authorities):
+        return _accepted_record_evidence(
+            mapper_id,
+            mapper,
+            id_field="mapper_id",
+            expected_type=str(mapper.get("mapper_type", "")),
+        )
+    return {"mapper_id": mapper_id, "record_sha256": sha256_json(mapper)}
 
 
 def _f012_to_flux(mapper: Mapping[str, Any], detune: float, current_flux: float, bounds: tuple[float, float] | None) -> float:
@@ -570,7 +662,10 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         rotation = complex(math.cos(-absolute_phase), math.sin(-absolute_phase))
         samples = np.asarray(setting["base"], dtype="<c16") * scale * rotation
         events.append(("xy", component, start, samples.astype("<c16")))
-        steps.append({"index": instruction_index, "op": source_op, "setting_id": setting["setting_id"], "phase": absolute_phase, "scale": scale, "emitted_interval": [start, end]})
+        step = {"index": instruction_index, "op": source_op, "setting_id": setting["setting_id"], "phase": absolute_phase, "scale": scale, "emitted_interval": [start, end]}
+        if _is_v02_profile(authorities):
+            step["setting"] = setting["evidence"]
+        steps.append(step)
 
     def target_configuration(target: str) -> Mapping[str, Any]:
         configuration = authorities.get("gate_configuration")
@@ -605,7 +700,7 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         if not coupler_z or component != "c":
             _fail(QCISReasonCode.SETTING_INVALID, f"{instruction.op} target must be a coupler")
         setting_key = "active_cz_setting" if instruction.op == "CZ" else "active_fsim_setting"
-        setting_id, setting = _active_setting(authorities, coupler, setting_key)
+        setting_id, setting = _active_setting(authorities, coupler, setting_key, expected_gate_type=instruction.op)
         coupler_record = registry[coupler]
         endpoints = coupler_record.get("endpoints", coupler_record.get("qubits", coupler_record.get("connected_qagents")))
         if not isinstance(endpoints, (list, tuple)) or len(endpoints) != 2 or any(item not in registry for item in endpoints):
@@ -614,6 +709,12 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         if not isinstance(endpoints, (list, tuple)) or len(endpoints) != 2 or any(not isinstance(item, str) or item not in registry for item in endpoints):
             _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id} cannot resolve two endpoint qubits")
         q0, q1 = str(endpoints[0]), str(endpoints[1])
+        for target in (q0, q1):
+            xy, z, endpoint_component = _capabilities(registry, target)
+            if not xy or not z or endpoint_component not in {"q1", "q2"}:
+                _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id} endpoint {target!r} lacks qubit XY/Z lanes")
+        if q0 == q1:
+            _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id} endpoints must be distinct")
         length_raw = setting.get("duration_samples", setting.get("length_samples"))
         length = _strict_positive_integer(length_raw, invalid_code=QCISReasonCode.SETTING_INVALID, detail=f"{setting_id}.duration_samples")
         waveforms = setting.get("waveforms", setting)
@@ -636,9 +737,13 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
             for lane in lanes(target):
                 cursors[target][lane] = end
 
-        use_f = bool(setting.get("use_f012zbias_mapper", False))
-        use_g = bool(setting.get("use_g2zbias_mapper", False))
-        mapper_evidence: dict[str, str] = {}
+        use_f_raw = setting.get("use_f012zbias_mapper", False)
+        use_g_raw = setting.get("use_g2zbias_mapper", False)
+        if _is_v02_profile(authorities) and (type(use_f_raw) is not bool or type(use_g_raw) is not bool):
+            _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id} mapper switches must be boolean")
+        use_f = bool(use_f_raw)
+        use_g = bool(use_g_raw)
+        mapper_evidence: dict[str, dict[str, Any]] = {}
         for target in (q0, q1):
             spec = specs[target]
             assert isinstance(spec, Mapping)
@@ -647,10 +752,18 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
                 record = registry[target]
                 lower = record.get("flux_min_phi0")
                 upper = record.get("flux_max_phi0")
-                bounds = (float(lower), float(upper)) if isinstance(lower, (int, float)) and isinstance(upper, (int, float)) else None
+                bounds: tuple[float, float] | None = None
+                if isinstance(lower, (int, float)) and not isinstance(lower, bool) and isinstance(upper, (int, float)) and not isinstance(upper, bool):
+                    lower_value, upper_value = float(lower), float(upper)
+                    if math.isfinite(lower_value) and math.isfinite(upper_value) and lower_value <= upper_value:
+                        bounds = (lower_value, upper_value)
+                if _is_v02_profile(authorities) and bounds is None:
+                    _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, f"{target} requires finite device flux bounds for F012ZBIAS")
                 _, _, target_component = _capabilities(registry, target)
+                if bounds is not None and not bounds[0] <= idle[target_component] <= bounds[1]:
+                    _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, f"{target} idle flux is outside device bounds")
                 amplitude = _f012_to_flux(mapper, _finite_setting_number(spec, ("frequency_detune_GHz",)), idle[target_component], bounds)
-                mapper_evidence[target] = f"{mapper_id}:{sha256_json(mapper)}"
+                mapper_evidence[target] = _mapper_evidence(authorities, mapper_id, mapper)
             else:
                 amplitude = _finite_setting_number(spec, ("flux_offset_phi0",), default=0.0)
             events.append(("flux", _capabilities(registry, target)[2], start, amplitude * composite_waveform(spec, length)))
@@ -659,7 +772,7 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         if use_g:
             mapper_id, mapper = _mapper_record(authorities, coupler, "g2zbias")
             amplitude = _g2_to_flux(mapper, _finite_setting_number(coupler_spec, ("coupling_detune_GHz",)))
-            mapper_evidence[coupler] = f"{mapper_id}:{sha256_json(mapper)}"
+            mapper_evidence[coupler] = _mapper_evidence(authorities, mapper_id, mapper)
         else:
             amplitude = _finite_setting_number(coupler_spec, ("flux_offset_phi0",), default=0.0)
         events.append(("flux", component, start, amplitude * composite_waveform(coupler_spec, length)))
@@ -667,7 +780,10 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         q1_phase = _finite_setting_number(setting, ("q1_calibrated_dynamic_phase_rad",))
         frames[q0] -= q0_phase
         frames[q1] -= q1_phase
-        steps.append({"index": instruction.index, "op": instruction.op, "setting_id": setting_id, "interval": [start, end], "mappers": mapper_evidence, "frame_corrections": {q0: -q0_phase, q1: -q1_phase}})
+        step = {"index": instruction.index, "op": instruction.op, "setting_id": setting_id, "interval": [start, end], "mappers": mapper_evidence, "frame_corrections": {q0: -q0_phase, q1: -q1_phase}}
+        if _is_v02_profile(authorities):
+            step["setting"] = _setting_evidence(authorities, setting_id, setting)
+        steps.append(step)
 
     for instruction in parsed.instructions:
         fields = dict(instruction.fields)
@@ -735,12 +851,15 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
             _, z, component = _capabilities(registry, target)
             if not z:
                 _fail(QCISReasonCode.SETTING_INVALID, f"DTN target lacks z lane: {target}")
-            _, detune_setting = _active_setting(authorities, target, "active_detune_setting")
+            detune_id, detune_setting = _active_setting(authorities, target, "active_detune_setting")
             if str(detune_setting.get("control_role", "z")) != "z" or str(detune_setting.get("input_unit", "phi_over_phi0")) != "phi_over_phi0":
                 _fail(QCISReasonCode.SETTING_INVALID, "DTN setting must use z control and phi_over_phi0")
             start, end = reserve(target, "z", -1, fields["length"])
             events.append(("flux", component, start, np.full(fields["length"], float(fields["amplitude"]), dtype="<f8")))
-            steps.append({"index": instruction.index, "op": "DTN", "interval": [start, end]})
+            step = {"index": instruction.index, "op": "DTN", "setting_id": detune_id, "interval": [start, end]}
+            if _is_v02_profile(authorities):
+                step["setting"] = _setting_evidence(authorities, detune_id, detune_setting)
+            steps.append(step)
         elif instruction.op in {"CZ", "FSIM"}:
             compile_composite(instruction)
         elif instruction.op in {"M", "RST", "SWD", "SWA"}:

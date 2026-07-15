@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -118,6 +119,19 @@ class QCISCharacterizationMetric:
     value: float
     uncertainty: float | None = None
 
+    def __post_init__(self) -> None:
+        if self.metric_type not in {"qpt_process_fidelity", "xeb_cycle_fidelity"}:
+            raise ValueError("metric_type must be qpt_process_fidelity or xeb_cycle_fidelity")
+        if isinstance(self.value, bool) or not isinstance(self.value, (int, float)) or not math.isfinite(float(self.value)) or not 0.0 <= float(self.value) <= 1.0:
+            raise ValueError("fidelity must be a finite value in [0, 1]")
+        if self.uncertainty is not None and (
+            isinstance(self.uncertainty, bool)
+            or not isinstance(self.uncertainty, (int, float))
+            or not math.isfinite(float(self.uncertainty))
+            or float(self.uncertainty) < 0.0
+        ):
+            raise ValueError("uncertainty must be finite and non-negative")
+
 
 @dataclass(frozen=True, slots=True)
 class PhasedFSimCharacterization:
@@ -132,6 +146,32 @@ class PhasedFSimCharacterization:
     phi_rad: float
     metrics: tuple[QCISCharacterizationMetric, ...]
     leakage: float | None = None
+    method: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.characterization_run_id, str) or not self.characterization_run_id:
+            raise ValueError("characterization_run_id is required")
+        if not isinstance(self.source, str) or not self.source:
+            raise ValueError("source is required")
+        method = self.source if not self.method else self.method
+        if not isinstance(method, str) or not method:
+            raise ValueError("method is required")
+        object.__setattr__(self, "method", method)
+        for name in ("theta_rad", "zeta_rad", "chi_rad", "gamma_rad", "phi_rad"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                raise ValueError(f"{name} must be finite")
+        if not isinstance(self.metrics, tuple) or not self.metrics:
+            raise ValueError("at least one typed QPT/XEB fidelity metric is required")
+        if any(not isinstance(metric, QCISCharacterizationMetric) for metric in self.metrics):
+            raise ValueError("metrics must be QCISCharacterizationMetric instances")
+        if self.leakage is not None and (
+            isinstance(self.leakage, bool)
+            or not isinstance(self.leakage, (int, float))
+            or not math.isfinite(float(self.leakage))
+            or not 0.0 <= float(self.leakage) <= 1.0
+        ):
+            raise ValueError("leakage must be a finite value in [0, 1]")
 
 
 @dataclass(frozen=True, slots=True)

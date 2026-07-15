@@ -5,13 +5,36 @@ import hashlib
 import numpy as np
 import pytest
 
-from sqvm.qcis import QCISCompilationError, QCISReasonCode, compile_qcis, parse_qcis
-from sqvm.qcis.canonical import canonical_float, parse_canonical_float
+from sqvm.qcis import (
+    PhasedFSimCharacterization,
+    QCISCharacterizationMetric,
+    QCISCompilationError,
+    QCISReasonCode,
+    compile_qcis,
+    parse_qcis,
+)
+from sqvm.qcis.canonical import canonical_float, parse_canonical_float, sha256_json
 from sqvm.qcis.waveforms import acz, flattop
 
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest().upper()
+
+
+def _accepted_record(record_id: str, record: dict, *, id_field: str, target: str | None = None, record_type: str | None = None) -> dict:
+    result = dict(record)
+    result[id_field] = record_id
+    if target is not None:
+        result["target"] = target
+    if record_type is not None:
+        result["gate_type" if id_field == "setting_id" else "mapper_type"] = record_type
+    result.update({"revision": 1, "calibration_run_id": f"{record_id}_run", "status": "accepted"})
+    result["setting_hash"] = sha256_json(result)
+    return result
+
+
+def _refresh_record(record: dict) -> None:
+    record["setting_hash"] = sha256_json({name: value for name, value in record.items() if name != "setting_hash"})
 
 
 def _authorities(source: str) -> dict:
@@ -42,19 +65,19 @@ def _authorities(source: str) -> dict:
         },
         "waveform_registry": {
             "settings": {
-                "q1_xy2": rectangle_xy2,
-                "q2_xy2": rectangle_xy2,
-                "q1_xy": rectangle_xy,
-                "q1_xy12": {"wave_index": 0, "length_samples": 3, "width_samples": 3, "amplitude_GHz": 0.4, "frequency_detune_GHz": 0.01},
-                "q1_dtn": detune,
-                "q2_dtn": detune,
-                "cz": composite,
-                "fsim": composite,
+                "q1_xy2": _accepted_record("q1_xy2", rectangle_xy2, id_field="setting_id", target="Q1"),
+                "q2_xy2": _accepted_record("q2_xy2", rectangle_xy2, id_field="setting_id", target="Q2"),
+                "q1_xy": _accepted_record("q1_xy", rectangle_xy, id_field="setting_id", target="Q1"),
+                "q1_xy12": _accepted_record("q1_xy12", {"wave_index": 0, "length_samples": 3, "width_samples": 3, "amplitude_GHz": 0.4, "frequency_detune_GHz": 0.01}, id_field="setting_id", target="Q1"),
+                "q1_dtn": _accepted_record("q1_dtn", detune, id_field="setting_id", target="Q1"),
+                "q2_dtn": _accepted_record("q2_dtn", detune, id_field="setting_id", target="Q2"),
+                "cz": _accepted_record("cz", composite, id_field="setting_id", target="C", record_type="CZ"),
+                "fsim": _accepted_record("fsim", composite, id_field="setting_id", target="C", record_type="FSIM"),
             },
             "mappers": {
-                "q1_fmap": {"f01max_GHz": 5.5, "k_rad_per_phi0": 2.0, "idle_flux_offset_phi0": 0.0},
-                "q2_fmap": {"f01max_GHz": 5.5, "k_rad_per_phi0": 2.0, "idle_flux_offset_phi0": 0.0},
-                "c_gmap": {"coupling_detune_GHz": [-0.1, 0.0, 0.1], "zbias_offset_phi0": [-0.2, 0.0, 0.2]},
+                "q1_fmap": _accepted_record("q1_fmap", {"f01max_GHz": 5.5, "k_rad_per_phi0": 2.0, "idle_flux_offset_phi0": 0.0}, id_field="mapper_id", record_type="F012ZBIAS_MAPPER"),
+                "q2_fmap": _accepted_record("q2_fmap", {"f01max_GHz": 5.5, "k_rad_per_phi0": 2.0, "idle_flux_offset_phi0": 0.0}, id_field="mapper_id", record_type="F012ZBIAS_MAPPER"),
+                "c_gmap": _accepted_record("c_gmap", {"coupling_detune_GHz": [-0.1, 0.0, 0.1], "zbias_offset_phi0": [-0.2, 0.0, 0.2], "interpolation": "piecewise_linear", "extrapolation": "reject"}, id_field="mapper_id", record_type="G2ZBIAS_MAPPER"),
             },
         },
         "clock": {"dt_ns": 0.5},
@@ -163,6 +186,7 @@ def test_composite_mapper_switches_resolve_external_mapper_records():
     setting["q0"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
     setting["q1"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
     setting["coupler"] = {"wave_index": 0, "width_samples": 4, "coupling_detune_GHz": 0.05}
+    _refresh_record(setting)
     result = _compile(source, authorities)
     assert np.any(result.q1_flux != 0.0)
     assert np.any(result.q2_flux != 0.0)
@@ -178,10 +202,113 @@ def test_fsim_uses_its_own_active_setting_and_missing_mapper_fails_closed():
     setting = authorities["waveform_registry"]["settings"]["fsim"]
     setting["use_g2zbias_mapper"] = True
     setting["coupler"] = {"wave_index": 0, "width_samples": 4, "coupling_detune_GHz": 0.05}
+    _refresh_record(setting)
     authorities["gate_configuration"]["C"].pop("active_g2zbias_mapper")
     with pytest.raises(QCISCompilationError) as captured:
         _compile(source, authorities)
     assert captured.value.code == QCISReasonCode.MAPPER_NOT_FOUND
+
+
+@pytest.mark.parametrize("field", ("setting_id", "target", "status", "revision", "setting_hash", "calibration_run_id"))
+def test_v02_active_setting_identity_lifecycle_and_provenance_fail_closed(field: str):
+    source = "DTN Q1 2 0.05\n"
+    authorities = _authorities(source)
+    authorities["waveform_registry"]["settings"]["q1_dtn"].pop(field)
+    with pytest.raises(QCISCompilationError) as captured:
+        _compile(source, authorities)
+    assert captured.value.code == QCISReasonCode.SETTING_INVALID
+
+
+def test_v02_composite_gate_type_hash_and_trace_evidence_are_bound():
+    source = "CZ C\n"
+    authorities = _authorities(source)
+    setting = authorities["waveform_registry"]["settings"]["cz"]
+    setting["gate_type"] = "FSIM"
+    _refresh_record(setting)
+    with pytest.raises(QCISCompilationError) as captured:
+        _compile(source, authorities)
+    assert captured.value.code == QCISReasonCode.SETTING_INVALID
+
+    authorities = _authorities(source)
+    setting = authorities["waveform_registry"]["settings"]["cz"]
+    setting["use_f012zbias_mapper"] = True
+    setting["use_g2zbias_mapper"] = True
+    setting["q0"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
+    setting["q1"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
+    setting["coupler"] = {"wave_index": 0, "width_samples": 4, "coupling_detune_GHz": 0.05}
+    _refresh_record(setting)
+    trace_step = _compile(source, authorities).trace["steps"][0]
+    assert trace_step["setting"] == {
+        "setting_id": "cz",
+        "revision": 1,
+        "setting_hash": setting["setting_hash"],
+        "calibration_run_id": "cz_run",
+    }
+    assert trace_step["mappers"]["Q1"] == {
+        "mapper_id": "q1_fmap",
+        "revision": 1,
+        "setting_hash": authorities["waveform_registry"]["mappers"]["q1_fmap"]["setting_hash"],
+        "calibration_run_id": "q1_fmap_run",
+    }
+
+
+def test_v02_mapper_records_and_f012_device_bounds_fail_closed():
+    source = "CZ C\n"
+    authorities = _authorities(source)
+    setting = authorities["waveform_registry"]["settings"]["cz"]
+    setting["use_f012zbias_mapper"] = True
+    setting["q0"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
+    setting["q1"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
+    _refresh_record(setting)
+    authorities["waveform_registry"]["mappers"]["q1_fmap"].pop("revision")
+    with pytest.raises(QCISCompilationError) as captured:
+        _compile(source, authorities)
+    assert captured.value.code == QCISReasonCode.SETTING_INVALID
+
+    authorities = _authorities(source)
+    setting = authorities["waveform_registry"]["settings"]["cz"]
+    setting["use_f012zbias_mapper"] = True
+    setting["q0"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
+    setting["q1"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
+    _refresh_record(setting)
+    authorities["qagent_registry"]["Q1"].pop("flux_min_phi0")
+    with pytest.raises(QCISCompilationError) as captured:
+        _compile(source, authorities)
+    assert captured.value.code == QCISReasonCode.MAPPER_DOMAIN_ERROR
+
+    authorities = _authorities(source)
+    setting = authorities["waveform_registry"]["settings"]["cz"]
+    setting["use_f012zbias_mapper"] = True
+    setting["q0"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
+    setting["q1"] = {"wave_index": 0, "width_samples": 4, "frequency_detune_GHz": -0.05}
+    _refresh_record(setting)
+    authorities["gate_configuration"]["Q1"]["active_f012zbias_mapper"] = authorities["waveform_registry"]["mappers"]["q1_fmap"]
+    with pytest.raises(QCISCompilationError) as captured:
+        _compile(source, authorities)
+    assert captured.value.code == QCISReasonCode.MAPPER_NOT_FOUND
+
+
+def test_g2zbias_does_not_impose_an_unfrozen_output_monotonicity_constraint():
+    source = "CZ C\n"
+    authorities = _authorities(source)
+    setting = authorities["waveform_registry"]["settings"]["cz"]
+    setting["use_g2zbias_mapper"] = True
+    setting["coupler"] = {"wave_index": 0, "width_samples": 4, "coupling_detune_GHz": 0.05}
+    _refresh_record(setting)
+    mapper = authorities["waveform_registry"]["mappers"]["c_gmap"]
+    mapper["zbias_offset_phi0"] = [-0.2, 0.0, -0.1]
+    _refresh_record(mapper)
+    assert np.allclose(_compile(source, authorities).c_flux, -0.05)
+
+
+def test_phased_fsim_characterization_requires_finite_parameters_and_typed_metrics():
+    metric = QCISCharacterizationMetric("xeb_cycle_fidelity", 0.9941, 0.0007)
+    result = PhasedFSimCharacterization("fsim_xeb_0031", "xeb", 0.781, 0.014, -0.009, 0.022, 0.036, (metric,), 0.0018)
+    assert result.method == "xeb"
+    with pytest.raises(ValueError):
+        QCISCharacterizationMetric("fidelity", 0.99)
+    with pytest.raises(ValueError):
+        PhasedFSimCharacterization("fsim_xeb_0031", "xeb", float("nan"), 0.014, -0.009, 0.022, 0.036, (metric,))
 
 
 def test_x12_uses_f12_carrier_and_requires_three_levels():
