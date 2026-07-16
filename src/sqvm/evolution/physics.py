@@ -145,6 +145,7 @@ def _lab_reference(stage5_input: Stage5Input, scenario: EffectiveScenario, frame
     values, vectors = linalg.eigh(h0.full(), subset_by_index=[0, count - 1], driver="evr")
     if len(values) != count or not np.all(np.isfinite(values)) or np.any(np.diff(values) <= stage5_input.admission.config.tolerances["lab_degeneracy_GHz"]):
         raise ValueError("lab reference eigensystem is insufficient or degenerate")
+    vectors = _phase_fixed(vectors)
     catalog = _catalog_vectors(frame["local_vectors"])
     overlaps = np.abs(catalog.conj().T @ vectors) ** 2
     assignments = _decimal_assignment(overlaps)

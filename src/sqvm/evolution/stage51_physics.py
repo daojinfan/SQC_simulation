@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import replace
+import hashlib
+from itertools import combinations
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -14,7 +15,10 @@ from sqvm.device.capacitance import build_capacitance_matrix
 from sqvm.device.junction import resolve_junction_parameters
 from sqvm.device.spec import load_device
 from sqvm.evolution.models import EffectiveScenario, RebuiltModel, Stage5Config, Stage5Input, Stage5PathAdmission
-from sqvm.evolution.physics import angular_rad_per_ns, evolve_stage5_scenario
+from sqvm.evolution.physics import (
+    _build_frame, _lab_reference, _qutip, angular_rad_per_ns,
+    evolve_stage5_scenario,
+)
 from sqvm.evolution.stage51_authority import admit_physics_authority, fail, read_json
 from sqvm.evolution.stage51_coefficients import verify_evolution_coefficient_artifact
 from sqvm.evolution.stage51_models import (
@@ -31,14 +35,31 @@ def _phase_fixed(vector: np.ndarray) -> np.ndarray:
     index = int(np.flatnonzero(np.abs(value) == np.abs(value).max())[0])
     if value[index] == 0:
         fail(Stage51FailureCode.INITIAL_STATE_INVALID, "zero state")
-    value *= np.exp(-1j * np.angle(value[index]))
-    if value[index].real < 0: value *= -1
-    value = np.asarray(value, dtype="<c16"); value.setflags(write=False)
+    pivot = value[index]
+    value *= np.conj(pivot) / abs(pivot)
+    real = np.round(value.real, decimals=14)
+    imag = np.round(value.imag, decimals=14)
+    real[np.abs(real) < 5e-15] = 0.0
+    imag[np.abs(imag) < 5e-15] = 0.0
+    value = np.asarray(real + 1j * imag, dtype="<c16")
+    value[index] = complex(round(abs(pivot), 14), 0.0)
+    value.setflags(write=False)
     return value
 
 
 def phase_invariant_overlap(left: np.ndarray, right: np.ndarray) -> float:
-    return float(abs(np.vdot(left, right)) ** 2)
+    left_value = np.asarray(left, dtype=np.complex128)
+    right_value = np.asarray(right, dtype=np.complex128)
+    if left_value.ndim != 1 or right_value.ndim != 1 or left_value.shape != right_value.shape or not np.all(np.isfinite(left_value)) or not np.all(np.isfinite(right_value)):
+        fail(Stage51FailureCode.NUMERICAL_RESULT_INVALID, "overlap vectors")
+    left_norm = float(np.vdot(left_value, left_value).real)
+    right_norm = float(np.vdot(right_value, right_value).real)
+    if left_norm <= 0.0 or right_norm <= 0.0:
+        fail(Stage51FailureCode.NUMERICAL_RESULT_INVALID, "zero overlap vector")
+    result = float(abs(np.vdot(left_value, right_value)) ** 2 / (left_norm * right_norm))
+    if not np.isfinite(result) or result < -1e-12 or result > 1.0 + 1e-12:
+        fail(Stage51FailureCode.NUMERICAL_RESULT_INVALID, "overlap outside bounds")
+    return min(1.0, max(0.0, result))
 
 
 def _arrays(handle: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> dict[str, np.ndarray]:
@@ -52,8 +73,7 @@ def _arrays(handle: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -
     return result
 
 
-def _run_stage51_smoke_base(coefficients: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> Stage51NumericalResult:
-    """Run accepted bounded smoke physics from verified coefficient bytes only."""
+def _build_stage51_input(coefficients: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> Stage5Input:
     if not isinstance(coefficients, VerifiedCoefficientHandle): fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "coefficient handle")
     authority, _ = admit_physics_authority(context); arrays = _arrays(coefficients, context)
     plan = read_json(coefficients.artifact_root / "coefficient_plan.json", Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED)
@@ -68,11 +88,53 @@ def _run_stage51_smoke_base(coefficients: VerifiedCoefficientHandle, context: St
     ec = build_ec_matrix(build_mode_capacitance_matrix(artifacts, build_mode_transform(artifacts))).matrix_GHz
     config = Stage5Config(Path("stage51-authority"), "stage51", {}, ("stage51",), tuple(model["charge_cutoffs"]), None, None, None, model["reference_state_count"], authority["solver"], authority["tolerances"], {})
     scenario = EffectiveScenario("stage51", arrays["time_center_ns"], {"q1": (arrays["epsilon_q1"].real.astype("<f8"), arrays["epsilon_q1"].imag.astype("<f8")), "q2": (arrays["epsilon_q2"].real.astype("<f8"), arrays["epsilon_q2"].imag.astype("<f8"))}, {"q1": arrays["absolute_flux_q1"], "c": arrays["absolute_flux_c"], "q2": arrays["absolute_flux_q2"]}, dict(frame), {"q1": 0.0, "q2": 0.0})
-    stage5 = Stage5Input(Stage5PathAdmission(context.repository_root, config, {}), {}, "stage51", {"stage51": scenario}, RebuiltModel(artifacts, replace(load_hamiltonian_config(context.accepted_hamiltonian_artifact), basis=BasisConfig({"q1":1,"c":1,"q2":1})), ec))
+    return Stage5Input(Stage5PathAdmission(context.repository_root, config, {}), {}, "stage51", {"stage51": scenario}, RebuiltModel(artifacts, replace(load_hamiltonian_config(context.accepted_hamiltonian_artifact), basis=BasisConfig(dict(zip(("q1", "c", "q2"), model["charge_cutoffs"], strict=True)))), ec))
+
+
+def _projector_evidence(projectors: Mapping[str, Any], tolerance: float) -> tuple[Mapping[str, str], tuple[Mapping[str, Any], ...]]:
+    labels = ("000", "100", "001", "101")
+    if set(projectors) != set(labels) or not np.isfinite(tolerance) or tolerance <= 0.0:
+        fail(Stage51FailureCode.OBSERVABLE_SPEC_INVALID, "projector labels or tolerance")
+    matrices: dict[str, np.ndarray] = {}
+    checks: list[Mapping[str, Any]] = []
+    hashes: dict[str, str] = {}
+    dimension: int | None = None
+    for label in labels:
+        source = projectors[label]
+        matrix = np.asarray(source.full() if hasattr(source, "full") else source, dtype="<c16", order="C")
+        if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or not np.all(np.isfinite(matrix)):
+            fail(Stage51FailureCode.OBSERVABLE_SPEC_INVALID, f"projector {label}")
+        if dimension is None:
+            dimension = matrix.shape[0]
+        if matrix.shape != (dimension, dimension):
+            fail(Stage51FailureCode.OBSERVABLE_SPEC_INVALID, "projector dimensions")
+        hermitian_error = float(np.linalg.norm(matrix - matrix.conj().T))
+        idempotence_error = float(np.linalg.norm(matrix @ matrix - matrix))
+        if hermitian_error > tolerance or idempotence_error > tolerance:
+            fail(Stage51FailureCode.OBSERVABLE_SPEC_INVALID, f"projector {label} algebra")
+        matrices[label] = matrix
+        hashes[label] = hashlib.sha256(matrix.tobytes(order="C")).hexdigest().upper()
+        checks.append(MappingProxyType({"name": f"projector_{label}_valid", "passed": True, "hermitian_error": hermitian_error, "idempotence_error": idempotence_error}))
+    for left, right in combinations(labels, 2):
+        error = float(np.linalg.norm(matrices[left] @ matrices[right]))
+        if error > tolerance:
+            fail(Stage51FailureCode.OBSERVABLE_SPEC_INVALID, f"projectors {left}/{right} overlap")
+        checks.append(MappingProxyType({"name": f"projector_{left}_{right}_orthogonal", "passed": True, "error": error}))
+    return MappingProxyType(hashes), tuple(checks)
+
+
+def run_stage51_numerical_kernel(coefficients: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> Stage51NumericalResult:
+    """Run the accepted bounded smoke evolution after projector preflight."""
+    stage5 = _build_stage51_input(coefficients, context)
+    scenario = stage5.scenarios["stage51"]
+    qt = _qutip()
+    frame = _build_frame(stage5, scenario, qt)
+    reference = _lab_reference(stage5, scenario, frame, qt)
+    projector_hashes, projector_checks = _projector_evidence(reference["projectors"], stage5.admission.config.tolerances["projector_orthogonality"])
     result = evolve_stage5_scenario(stage5, "stage51")
     initial, final = _phase_fixed(result.states[0]), _phase_fixed(result.states[-1])
     populations = {name: np.asarray(values, dtype="<f8") for name, values in result.populations.items()}
     for value in (*populations.values(),): value.setflags(write=False)
     leakage, norm = np.asarray(result.leakage, dtype="<f8"), np.asarray(result.norm_error, dtype="<f8"); leakage.setflags(write=False); norm.setflags(write=False)
     edges = np.asarray(result.edge_time_ns, dtype="<f8"); edges.setflags(write=False)
-    return Stage51NumericalResult(edges, initial, final, MappingProxyType(populations), leakage, norm, MappingProxyType({}), MappingProxyType({"angular_conversion": angular_rad_per_ns.__name__, "checks": result.checks, "projector_validation_pending": True}))
+    return Stage51NumericalResult(edges, initial, final, MappingProxyType(populations), leakage, norm, projector_hashes, MappingProxyType({"angular_conversion": angular_rad_per_ns.__name__, "checks": result.checks, "projector_checks": projector_checks, "projector_validation_pending": False}))

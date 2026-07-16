@@ -14,5 +14,6 @@ from sqvm.evolution.stage51_models import (
     EvolutionCoefficientPlan, Stage51EvolutionError, Stage51FailureCode,
     Stage51PhysicsContext, VerifiedCoefficientHandle,
 )
+from sqvm.evolution.stage51_physics import phase_invariant_overlap, run_stage51_numerical_kernel
 
-__all__ = ["EvolutionCoefficientPlan", "FormalScaleQualificationRequired", "Stage51EvolutionError", "Stage51FailureCode", "Stage51PhysicsContext", "VerifiedCoefficientHandle", "admit_stage5_config_paths", "admit_verified_control", "angular_rad_per_ns", "build_evolution_coefficient_plan", "evolve_stage5_scenario", "load_stage5_input", "publish_evolution_coefficient_artifact", "run_stage5_evolution", "verify_evolution_coefficient_artifact", "verify_evolution_coefficient_staging", "zoh_edges"]
+__all__ = ["EvolutionCoefficientPlan", "FormalScaleQualificationRequired", "Stage51EvolutionError", "Stage51FailureCode", "Stage51PhysicsContext", "VerifiedCoefficientHandle", "admit_stage5_config_paths", "admit_verified_control", "angular_rad_per_ns", "build_evolution_coefficient_plan", "evolve_stage5_scenario", "load_stage5_input", "phase_invariant_overlap", "publish_evolution_coefficient_artifact", "run_stage5_evolution", "run_stage51_numerical_kernel", "verify_evolution_coefficient_artifact", "verify_evolution_coefficient_staging", "zoh_edges"]
