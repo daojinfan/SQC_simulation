@@ -1,0 +1,55 @@
+{
+  "artifact_type": "stage_04_1_source_snapshot",
+  "artifact_version": "0.1",
+  "schema_version": "0.1",
+  "sources": [
+    {
+      "path": "src/sqvm/control/models.py",
+      "raw_sha256": "8D83F49A50417832F2F7BC7C346BA56D78DC4484ABCB221769625FA78999FD5B"
+    },
+    {
+      "path": "src/sqvm/control/registry.py",
+      "raw_sha256": "C442E0D687F4816F20C95D56E58E389AA0AED6C1C235BCB794C2960F37191263"
+    },
+    {
+      "path": "src/sqvm/control/stage4_1_artifacts.py",
+      "raw_sha256": "B793BB1984B472FE3758283D8740790940FFCE524BAA7927C80BF93FABAFA289"
+    },
+    {
+      "path": "src/sqvm/control/stage4_1_compile.py",
+      "raw_sha256": "D445C0112084323035E7245F3AA2C31B0DC321FBFAA6025F07DD58DFE8F6CD99"
+    },
+    {
+      "path": "src/sqvm/control/stage4_1_config.py",
+      "raw_sha256": "98D6208F749845B4F2242CFDF3C0192218759E68378E035B71B9E1F8CA99131C"
+    },
+    {
+      "path": "src/sqvm/control/stage4_1_context.py",
+      "raw_sha256": "CAF8BAEA3FC79AC36876B3D8D7351DDFDAC237DC1ACCFE60954E6ACA89A740E2"
+    },
+    {
+      "path": "src/sqvm/control/stage4_1_models.py",
+      "raw_sha256": "F996D941B61016165F87303EFC61B46F5698BC0AFD567494DFF5550B8B216BAE"
+    },
+    {
+      "path": "src/sqvm/control/stage4_1_verify.py",
+      "raw_sha256": "D1A2CE38066B5AC21C87DF3D607E99FBD553D4272BBE54058D3F9987136D21AB"
+    },
+    {
+      "path": "src/sqvm/control/stage4_config.py",
+      "raw_sha256": "07A8B37DCFC288DF61BB92C4E1F4E45FF74B758CC9DBAA2EED774B79E62011FD"
+    },
+    {
+      "path": "src/sqvm/control/stage4_models.py",
+      "raw_sha256": "E80E83901F3EB995DB2B651180D47A8047930F82178D49567B03BA0D1CBAB319"
+    },
+    {
+      "path": "src/sqvm/hamiltonian/provenance.py",
+      "raw_sha256": "926D49088A51F3BAC9338D12D83E546D588789EC0DDAA99C4E3D6021AD6A6076"
+    },
+    {
+      "path": "src/sqvm/runtime/storage.py",
+      "raw_sha256": "872C512914E18500DBAF74563F35866166CC102E59A8E9CD7A1A0F395B4CAD67"
+    }
+  ]
+}

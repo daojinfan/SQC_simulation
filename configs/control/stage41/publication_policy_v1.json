@@ -1,0 +1,8 @@
+{
+  "artifact_type": "stage_04_1_publication_policy",
+  "artifact_version": "0.1",
+  "configured_base_root": "output/stage_04_1_parameterized_control",
+  "mode": "atomic_no_replace",
+  "schema_version": "0.1",
+  "status": "approved"
+}

@@ -1,0 +1,8 @@
+{
+  "artifact_type": "stage_04_1_environment_snapshot",
+  "artifact_version": "0.1",
+  "environment": {
+    "control_runtime": "python_numpy_v1"
+  },
+  "schema_version": "0.1"
+}

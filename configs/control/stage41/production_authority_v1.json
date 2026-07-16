@@ -1,0 +1,40 @@
+{
+  "artifact_type": "stage_04_1_production_authority",
+  "artifact_version": "0.1",
+  "authority_id": "E5035D0882DD481C66415750AE2173CB01095885F48F02BA7E17D929C2671323",
+  "channel_registry": {
+    "path": "configs/control/2q1c2r_channels.yaml",
+    "raw_sha256": "CDB10063BC5B61965E8FD6A9ACBB124CB5EE8F56AC1A19012DAAFC187A81D478"
+  },
+  "control_config": {
+    "path": "configs/control/2q1c2r_control_smoke.yaml",
+    "raw_sha256": "A06AC0F8DDE81AA7861461AC6319625C4D5901F1D27EE7C649E49D899F8B163C"
+  },
+  "design": {
+    "path": "docs/designs/07_qcis_compiler_design.md",
+    "raw_sha256": "311CEA271820F282DF3B5380825F3764315F7271E746BA8827BD7E770362BC71"
+  },
+  "device_config": {
+    "path": "configs/devices/2q1c2r.yaml",
+    "raw_sha256": "CA300E0AE08DCBBE7810F92AFDDFD713C6928A2E04E4A853FCE418B181E18D3F"
+  },
+  "device_flux_limits_phi0": {
+    "c": {
+      "max_phi0": 1.0,
+      "min_phi0": -1.0
+    },
+    "q1": {
+      "max_phi0": 1.0,
+      "min_phi0": -1.0
+    },
+    "q2": {
+      "max_phi0": 1.0,
+      "min_phi0": -1.0
+    }
+  },
+  "environment_snapshot_sha256": "A65173E7A53403C8187FDAAAA17BBD51B9523B52C177831B2218BC3607ED8A20",
+  "publication_policy_sha256": "8C5C05F66304484EB2C10FC659AAEB1DB8794AB51723B0E2C64E8E7647B0E8C0",
+  "schema_version": "0.1",
+  "source_snapshot_sha256": "3C1AAA2B4B0CB41870F759114AE7B290A04FA55F63B3508CD79DB31FEDCDAC62",
+  "status": "approved"
+}
