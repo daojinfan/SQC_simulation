@@ -1,0 +1,55 @@
+{
+  "schema_version": "0.1",
+  "artifact_type": "stage_05_1_physics_authority",
+  "artifact_version": "0.1",
+  "status": "approved",
+  "device": {
+    "path": "configs/devices/2q1c2r.yaml",
+    "raw_sha256": "CA300E0AE08DCBBE7810F92AFDDFD713C6928A2E04E4A853FCE418B181E18D3F"
+  },
+  "hamiltonian": {
+    "path": "configs/hamiltonians/2q1c_charge_basis.yaml",
+    "raw_sha256": "B65D1C57083D26F3C0CE1B0F980B07B685F4F21BCBD955DCD73D933416D84E5E"
+  },
+  "model": {
+    "tensor_order": ["q1", "c", "q2"],
+    "charge_cutoffs": [1, 1, 1],
+    "reference_state_count": 16
+  },
+  "frame": {
+    "rwa_projection": "number_sector_v1"
+  },
+  "solver": {
+    "qutip_version_spec": ">=5.1,<5.4",
+    "method": "vern9",
+    "rtol": 1e-13,
+    "atol": 1e-15,
+    "nsteps": 100000,
+    "max_step_ns": 0.0025,
+    "store_states": true,
+    "store_final_state": true,
+    "normalize_output": false,
+    "progress_bar": null
+  },
+  "tolerances": {
+    "label_min_overlap": 0.9,
+    "lab_degeneracy_GHz": 1e-10,
+    "projector_orthogonality": 1e-12,
+    "norm_error": 1e-9,
+    "population_bound": 1e-10
+  },
+  "accepted_stage5_bindings": {
+    "design": {
+      "path": "docs/designs/05_qutip_evolution_design.md",
+      "raw_sha256": "0163321D7774CC0B23EB8E53F4C8431DC6A74209E031690C58278E0B2CFA8412"
+    },
+    "amendment": {
+      "path": "docs/decisions/2026-07-14-stage5-v0-2-amendment.md",
+      "raw_sha256": "8B68CE8D36C810A0964F8FBE5753762A02F2B6D8D090E25FE9C8797899CF7714"
+    }
+  },
+  "source_snapshot_sha256": "5E72BF0A8BCD2D6AA363F100B257FF3701209BD543641ACE547891159A0D47BC",
+  "environment_snapshot_sha256": "083493B10B20DDC3E100AB50F5D5776B7E68AB79A5E662CF6CC54A9D96154346",
+  "publication_policy_sha256": "4195619FE1B4C8D87482AF952751292F4F702A748B073EF604256D8942A97F40",
+  "authority_id": "15CF16D9C3B025E46B602596BA329E27BB1133ED5FBE5CEB74AF9532B1F13477"
+}

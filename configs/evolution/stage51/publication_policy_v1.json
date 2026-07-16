@@ -1,0 +1,8 @@
+{
+  "schema_version": "0.1",
+  "artifact_type": "stage_05_1_publication_policy",
+  "artifact_version": "0.1",
+  "artifact_root": "output/stage_05_1",
+  "atomic_no_replace": true,
+  "status": "approved"
+}

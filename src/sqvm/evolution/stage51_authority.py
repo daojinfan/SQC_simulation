@@ -92,6 +92,23 @@ def freeze_array(value: Any, dtype: str, name: str) -> np.ndarray:
     return result
 
 
+def _verify_source_snapshot(root: Path, path: Path) -> None:
+    snapshot = read_json(path, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID)
+    expected = {"schema_version", "artifact_type", "artifact_version", "sources"}
+    if set(snapshot) != expected or snapshot.get("schema_version") != "0.1" or snapshot.get("artifact_type") != "stage_05_1_source_snapshot" or snapshot.get("artifact_version") != "0.1" or not isinstance(snapshot.get("sources"), list):
+        fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "source snapshot schema")
+    previous: str | None = None
+    for row in snapshot["sources"]:
+        if not isinstance(row, Mapping) or set(row) != {"path", "raw_sha256"} or not isinstance(row["path"], str) or not isinstance(row["raw_sha256"], str):
+            fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "source snapshot row")
+        if previous is not None and row["path"].encode("utf-8") <= previous.encode("utf-8"):
+            fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "source snapshot ordering")
+        previous = row["path"]
+        source = safe_file(root, root / row["path"], Stage51FailureCode.PHYSICS_AUTHORITY_INVALID)
+        if raw_file_sha256(source) != row["raw_sha256"]:
+            fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, f"source snapshot {row['path']}")
+
+
 def admit_physics_authority(context: Stage51PhysicsContext) -> tuple[Mapping[str, Any], Mapping[str, str]]:
     """Admit the independently approved numerical source, never Stage 5 config."""
 
@@ -145,6 +162,7 @@ def admit_physics_authority(context: Stage51PhysicsContext) -> tuple[Mapping[str
         bindings[name] = raw_file_sha256(safe_file(root, configured, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID))
     if authority["source_snapshot_sha256"] != bindings["source_snapshot"] or authority["environment_snapshot_sha256"] != bindings["environment_snapshot"] or authority["publication_policy_sha256"] != bindings["publication_policy"]:
         fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "snapshot binding")
+    _verify_source_snapshot(root, safe_file(root, context.source_snapshot, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID))
     if authority["solver"] != _SMOKE_SOLVER or authority["tolerances"] != _SMOKE_TOLERANCES:
         fail(Stage51FailureCode.SOLVER_AUTHORITY_INVALID, "solver/tolerances")
     approval_path = safe_file(root, context.stage5_1_approval_authority, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID)

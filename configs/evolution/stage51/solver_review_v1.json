@@ -1,0 +1,25 @@
+{
+  "schema_version": "0.1",
+  "artifact_type": "stage_05_1_solver_review",
+  "artifact_version": "0.1",
+  "status": "approved",
+  "solver": {
+    "atol": 1e-15,
+    "max_step_ns": 0.0025,
+    "method": "vern9",
+    "normalize_output": false,
+    "nsteps": 100000,
+    "progress_bar": null,
+    "qutip_version_spec": ">=5.1,<5.4",
+    "rtol": 1e-13,
+    "store_final_state": true,
+    "store_states": true
+  },
+  "tolerances": {
+    "lab_degeneracy_GHz": 1e-10,
+    "label_min_overlap": 0.9,
+    "norm_error": 1e-9,
+    "population_bound": 1e-10,
+    "projector_orthogonality": 1e-12
+  }
+}

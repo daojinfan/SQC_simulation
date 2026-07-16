@@ -1,0 +1,20 @@
+{
+  "schema_version": "0.1",
+  "artifact_type": "stage_05_1_source_snapshot",
+  "artifact_version": "0.1",
+  "sources": [
+    {"path": "pyproject.toml", "raw_sha256": "4A9EEB72E2132C5704207C25908C7D634CD231A8CB50485EF8ABE9CB9E1E5CD1"},
+    {"path": "src/sqvm/evolution/__init__.py", "raw_sha256": "12E462B0F1F763C3267492AC907FCBD3C6C1C0D41D9AB644C7D0FA0921C82482"},
+    {"path": "src/sqvm/evolution/artifacts.py", "raw_sha256": "0BB445CCF085036F8FC31BF3A8EDE1BCA443A21F9A7FCFB6832C06A56FD6DB57"},
+    {"path": "src/sqvm/evolution/config.py", "raw_sha256": "16366D9B4D32132EF13008DCB273D5B00A9BD0769922EB09A42EE7FAAF668666"},
+    {"path": "src/sqvm/evolution/input.py", "raw_sha256": "10173CE2DA9D168C492FC0B84F72D5F97D3962D0295CD90921C6CBAD7D1D60F0"},
+    {"path": "src/sqvm/evolution/models.py", "raw_sha256": "79F0905F8DE2D7E96403B1CABF56FFB7A7686A30D39D7150A7AC6DC75E010D8E"},
+    {"path": "src/sqvm/evolution/physics.py", "raw_sha256": "F0DFC9BD5C246BD799CB1B05F75EE9D81C03C6A2ADCF3355519D234DE949E06B"},
+    {"path": "src/sqvm/evolution/stage51_authority.py", "raw_sha256": "820745B6529D777D9A0DCFC576002DB3D0CF630DBDD6D3DD8F2563F7F8BB7551"},
+    {"path": "src/sqvm/evolution/stage51_coefficients.py", "raw_sha256": "E0E19DA0B429D205C9EC2D486E8D0A38E22925F13DDF102644B322504791976F"},
+    {"path": "src/sqvm/evolution/stage51_context.py", "raw_sha256": "7A64750BE8A3A77455E2F734D1FB01179024E0C38F35A0B4BD547DD1E1E9712D"},
+    {"path": "src/sqvm/evolution/stage51_models.py", "raw_sha256": "09D92E420C3E0DE37582CD547AFC22835C8131F0CF243E5F8B9A6E65C31D6262"},
+    {"path": "src/sqvm/evolution/stage51_physics.py", "raw_sha256": "9CF6836F037F5D90B6C25E994DD0BB9F3193684019540AC9417102A2A19C9113"},
+    {"path": "src/sqvm/evolution/stage51_worker.py", "raw_sha256": "0DB9EA9029E2967267D482F063BCDAE37CBC200873B14A772403BFBCAA16FE90"}
+  ]
+}
