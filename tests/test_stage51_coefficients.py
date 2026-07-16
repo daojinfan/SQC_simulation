@@ -61,3 +61,19 @@ def test_signed_zoh_plan_and_raw_artifact_are_deterministic(monkeypatch, tmp_pat
     path.write_bytes(bytes([path.read_bytes()[0] ^ 1]) + path.read_bytes()[1:])
     with pytest.raises(Stage51EvolutionError):
         verify_evolution_coefficient_artifact(handle.artifact_root, context, source_handle)
+
+
+def test_worker_payload_verification_does_not_mint_control_capability(monkeypatch, tmp_path):
+    _patch_authority(monkeypatch)
+    import sqvm.evolution.stage51_coefficients as module
+
+    context = _context(tmp_path)
+    plan = build_evolution_coefficient_plan(_input(), context)
+    handle = publish_evolution_coefficient_artifact(plan, context, tmp_path / "coefficient", object())
+
+    payload, arrays, receipt = module._verify_coefficient_payload(handle.artifact_root, context)
+    assert payload["coefficient_plan_id"] == plan.coefficient_plan_id
+    assert set(arrays) == set(plan.arrays)
+    assert receipt["physics_authority_id"] == handle.physics_authority_id
+    with pytest.raises(Stage51EvolutionError, match="process-local source control handle required"):
+        verify_evolution_coefficient_artifact(handle.artifact_root, context)

@@ -179,7 +179,12 @@ def publish_evolution_coefficient_artifact(plan: EvolutionCoefficientPlan, conte
         raise
 
 
-def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51PhysicsContext, expected_source_control_handle: VerifiedControlHandle | None = None) -> VerifiedCoefficientHandle:
+def _verify_coefficient_payload(
+    artifact_root: Path,
+    context: Stage51PhysicsContext,
+) -> tuple[Mapping[str, Any], Mapping[str, np.ndarray], Mapping[str, Any]]:
+    """Verify the immutable coefficient payload without minting a control capability."""
+
     root = Path(artifact_root).resolve(); output = context.output_root.resolve()
     try: root.relative_to(output)
     except ValueError: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "outside output root")
@@ -230,9 +235,24 @@ def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51P
     })
     if plan.get("operator_inventory") != plain(probe):
         fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, "static probe mismatch")
+    frozen_arrays: dict[str, np.ndarray] = {}
+    for name, array in artifact_arrays.items():
+        frozen = np.asarray(array, dtype=ARRAYS[name][0]).copy(order="C")
+        frozen.setflags(write=False)
+        frozen_arrays[name] = frozen
+    return MappingProxyType(plan), MappingProxyType(frozen_arrays), MappingProxyType(receipt)
+
+
+def verify_evolution_coefficient_artifact(
+    artifact_root: Path,
+    context: Stage51PhysicsContext,
+    expected_source_control_handle: VerifiedControlHandle | None = None,
+) -> VerifiedCoefficientHandle:
+    plan, artifact_arrays, receipt = _verify_coefficient_payload(artifact_root, context)
     if expected_source_control_handle is None:
         fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "process-local source control handle required")
     rebuilt = build_evolution_coefficient_plan(admit_verified_control(expected_source_control_handle, context), context)
     if plan != _payload(rebuilt) or any(not np.array_equal(artifact_arrays[name], rebuilt.arrays[name]) for name in ARRAYS):
         fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "artifact plan is not bound to source control handle")
+    root = Path(artifact_root).resolve()
     return VerifiedCoefficientHandle(plan["coefficient_plan_id"], root, raw_file_sha256(root / MANIFEST_NAME), raw_file_sha256(root / RECEIPT_NAME), raw_file_sha256(root / INVENTORY_NAME), receipt["physics_authority_id"], expected_source_control_handle)
