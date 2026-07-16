@@ -16,6 +16,6 @@
     {"path": "src/sqvm/evolution/stage51_context.py", "raw_sha256": "7A64750BE8A3A77455E2F734D1FB01179024E0C38F35A0B4BD547DD1E1E9712D"},
     {"path": "src/sqvm/evolution/stage51_models.py", "raw_sha256": "09D92E420C3E0DE37582CD547AFC22835C8131F0CF243E5F8B9A6E65C31D6262"},
     {"path": "src/sqvm/evolution/stage51_physics.py", "raw_sha256": "9CF6836F037F5D90B6C25E994DD0BB9F3193684019540AC9417102A2A19C9113"},
-    {"path": "src/sqvm/evolution/stage51_worker.py", "raw_sha256": "0DB9EA9029E2967267D482F063BCDAE37CBC200873B14A772403BFBCAA16FE90"}
+    {"path": "src/sqvm/evolution/stage51_worker.py", "raw_sha256": "0D01B62EFB1E983CCF071745609A50279FAFDC54B2DF470BEB0AB053F8C2B54C"}
   ]
 }

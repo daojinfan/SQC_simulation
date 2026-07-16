@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import fields
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -275,11 +276,13 @@ def execute_stage51_worker(
     session.mkdir()
     request_path.write_bytes(canonical_json_bytes(_request_payload(verified.artifact_root, context, worker_output)))
     command = [sys.executable, "-m", "sqvm.evolution.stage51_worker", str(request_path)]
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str((context.repository_root / "src").resolve())
     try:
         try:
             completed = subprocess.run(
                 command, cwd=context.repository_root, capture_output=True, text=True,
-                timeout=float(timeout_s), check=False,
+                timeout=float(timeout_s), check=False, env=environment,
             )
         except subprocess.TimeoutExpired:
             fail(Stage51FailureCode.WORKER_TIMEOUT, f"timeout_s={float(timeout_s)}")
