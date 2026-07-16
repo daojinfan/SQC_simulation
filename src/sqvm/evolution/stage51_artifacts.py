@@ -231,6 +231,8 @@ def verify_stage51_evolution_artifact(
     artifact_root: Path,
     coefficients: VerifiedCoefficientHandle,
     context: Stage51PhysicsContext,
+    *,
+    _independent_result: Stage51NumericalResult | None = None,
 ) -> VerifiedEvolutionHandle:
     verified_coefficients = verify_evolution_coefficient_artifact(
         coefficients.artifact_root, context, coefficients.source_control_handle,
@@ -263,7 +265,9 @@ def verify_stage51_evolution_artifact(
     numerical = _numerical_from_artifact(payload, arrays)
     authority, _ = admit_physics_authority(context)
     _validate_worker_result(numerical, authority["tolerances"])
-    independent = run_stage51_worker_kernel(verified_coefficients.artifact_root, context)
+    independent = _independent_result or run_stage51_worker_kernel(verified_coefficients.artifact_root, context)
+    if not isinstance(independent, Stage51NumericalResult):
+        fail(Stage51FailureCode.NUMERICAL_RESULT_INVALID, "independent replay result")
     fidelity = phase_invariant_overlap(numerical.final_state, independent.final_state)
     threshold = float(authority["tolerances"]["norm_error"])
     if not np.isfinite(fidelity) or 1.0 - fidelity > threshold or payload.get("replay_fidelity") != fidelity or numerical.projector_sha256 != independent.projector_sha256 or not np.array_equal(numerical.edge_time_ns, independent.edge_time_ns) or not np.array_equal(numerical.initial_state, independent.initial_state):
@@ -320,7 +324,9 @@ def run_verified_control_evolution(
     try:
         staging.mkdir()
         result_id = _write_result_staging(staging, verified, context, worker_result, fidelity)
-        verified_result = verify_stage51_evolution_artifact(staging, verified, context)
+        verified_result = verify_stage51_evolution_artifact(
+            staging, verified, context, _independent_result=independent,
+        )
         if verified_result.result_id != result_id:
             fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "staging result id")
         atomic_publish(staging, target)
