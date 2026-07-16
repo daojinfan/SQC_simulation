@@ -1,9 +1,10 @@
-# Stage 5.1 Verified-Control Evolution Detailed Design (Initial Draft)
+# Stage 5.1 Verified-Control Evolution Detailed Design
 
 - Date: 2026-07-16
-- Status: initial draft; not reviewed or frozen
+- Status: reviewed and frozen for Stage 5.1 implementation
 - Depends on: accepted Stage 5 physics model, QCIS v0.3, and Stage 4.1 `VerifiedControlHandle`
-- Opens no gate: implementation, Stage 6 physical backend, and Stage 7 model scans remain closed
+- Opens: Stage 5.1 implementation and qualification only
+- Keeps closed: Stage 6 physical backend and Stage 7 model scans
 
 ## 1. Purpose
 
@@ -375,15 +376,25 @@ Implementation sequence after review:
 5. complete tamper, determinism, timeout, and cross-platform qualification;
 6. publish a separate Stage 5.1 approval and readiness report.
 
-This draft does not authorize implementation. Even after Stage 5.1 approval, Stage 6 non-null programs,
-physical backend registration, and Stage 7 model-derived calibration scans require their own reviewed gates.
+The frozen review decisions in Section 15 authorize this Stage 5.1 implementation sequence. Stage 6 non-null
+programs, physical backend registration, and Stage 7 model-derived calibration scans still require their own
+reviewed gates.
 
-## 15. Items requiring user confirmation
+## 15. Frozen review decisions
 
-The first review should confirm, one item at a time:
+The user confirmed all five Stage 5.1 review items on 2026-07-16:
 
 1. Stage 5.1 retains the accepted Stage 5 closed-system interaction-picture Hamiltonian and initial-state rule.
-2. The initial artifact records full edge states and four computational populations, not only a final scalar.
-3. Coefficient artifacts are published before QuTiP execution and are independently reusable only by exact hash.
-4. The first profile uses accepted Stage 5 smoke cutoffs/options; formal qualification remains separate.
-5. Dissipation, noise, readout, fitting, and calibration-setting updates remain out of scope.
+2. The initial artifact records complete initial and final edge states, the four computational populations
+   `000`, `100`, `001`, and `101`, normalization evidence, and computational-subspace leakage. It does not
+   reduce the reusable result to one final scalar.
+3. Coefficient artifacts are independently verified and published before QuTiP execution. Reuse requires an
+   exact content-hash match; parameter similarity is not sufficient.
+4. The first implementation profile uses accepted Stage 5 smoke cutoffs, solver options, and bounded sampling
+   for integration and regression testing. Formal physical qualification requires a separate convergence and
+   numerical-accuracy profile.
+5. Dissipation, noise, readout, fitting, calibration recommendations, and calibration-setting updates remain
+   outside Stage 5.1.
+
+These decisions freeze the Stage 5.1 implementation boundary and authorize the implementation sequence in
+Section 14. They do not authorize Stage 6 non-null programs, physical backend registration, or Stage 7 scans.
