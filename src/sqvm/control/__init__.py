@@ -21,6 +21,7 @@ from sqvm.control.stage4_compile import compile_control_schedule
 from sqvm.control.stage4_1_compile import adapt_qcis_v03_compilation, admit_qcis_v03_plan, compile_qcis_waveform_plan
 from sqvm.control.stage4_1_artifacts import Stage41ArtifactError, write_parameterized_control_artifact
 from sqvm.control.stage4_1_config import build_parameterized_control_context
+from sqvm.control.stage4_1_context import production_parameterized_control_context
 from sqvm.control.stage4_1_models import (
     LogicalArrayInventoryRow,
     ParameterizedControlCompilation,
@@ -81,6 +82,7 @@ __all__ = [
     "admit_qcis_v03_plan",
     "adapt_qcis_v03_compilation",
     "build_parameterized_control_context",
+    "production_parameterized_control_context",
     "compile_qcis_waveform_plan",
     "write_parameterized_control_artifact",
     "verify_parameterized_control_artifact",

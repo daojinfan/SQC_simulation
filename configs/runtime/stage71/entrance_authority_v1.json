@@ -1,0 +1,54 @@
+{
+  "artifact_type": "stage_07_1_model_entrance_authority",
+  "artifact_version": "0.1",
+  "authority_id": "A85D2012AB93EDD1FDB56F69DDAD84F8D418101F7EA2E43E76EF6E04A9E97D46",
+  "bounded_envelope": {
+    "allowed_cutoffs": {
+      "c": 1,
+      "q1": 1,
+      "q2": 1
+    },
+    "allowed_pilot_kind": "compiled_qcis_single_point",
+    "dt_ns": 0.5,
+    "max_effective_duration_ns": 48.0,
+    "max_effective_sample_count": 96,
+    "max_logical_duration_ns": 32.0,
+    "max_logical_sample_count": 64,
+    "max_point_count": 1,
+    "max_worker_wall_seconds": 180.0,
+    "solver_profile": "stage_05_1_smoke"
+  },
+  "capability": {
+    "backend_id": "stage51_qutip_closed_system_v1",
+    "backend_kind": "model_evolution",
+    "calibration_eligible": false,
+    "control_profile": "stage_04_1_parameterized_control_v1",
+    "evolution_profile": "stage_05_1_verified_control_v1",
+    "formal_scale_qualified": false,
+    "measurement": false,
+    "program_profile": "qcis_stage7_calibration_v3",
+    "qualification_scope": "bounded_smoke_only",
+    "readout": false,
+    "recommendation_eligible": false,
+    "response_kind": "model_evolution_evidence_v1",
+    "stage6_registered": false
+  },
+  "design": {
+    "path": "docs/designs/07_1_model_backend_entrance_design.md",
+    "raw_sha256": "76A3FDD7B07319AF6762EF6EE887A46D7F3DC33FD26017FC493F351F2275F62B"
+  },
+  "schema_version": "0.1",
+  "source": {
+    "path": "src/sqvm/runtime/stage71.py",
+    "raw_sha256": "75AB4DF07B474F1E579787F1513667D843D6E54138B3744B6FA35BF6330701BF"
+  },
+  "stage4_1_approval": {
+    "path": "configs/control/stage41/production_approval_v1.json",
+    "raw_sha256": "802FBFD9299EE4D522E3895BFAC64076D39DCC8ABC6761744640281FEE2CE499"
+  },
+  "stage5_1_approval": {
+    "path": "configs/evolution/stage51/physics_approval_v1.json",
+    "raw_sha256": "5708689EFE5B4C06350D9CB65F10D05A2C98B0840EB1DCB12EA240E915269DCB"
+  },
+  "status": "approved_bounded_only"
+}
