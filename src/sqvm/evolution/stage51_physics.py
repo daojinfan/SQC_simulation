@@ -84,6 +84,25 @@ def _build_stage5_input_from_controls(
     authority: Mapping[str, Any],
     context: Stage51PhysicsContext,
 ) -> Stage5Input:
+    if not isinstance(absolute_flux_phi0, Mapping) or set(absolute_flux_phi0) != {"q1", "c", "q2"}:
+        fail(Stage51FailureCode.CONTROL_ARRAY_INVALID, "absolute flux names")
+    arrays = {
+        "time_center_ns": (time_center_ns, "<f8"),
+        "epsilon_q1": (epsilon_q1, "<c16"),
+        "epsilon_q2": (epsilon_q2, "<c16"),
+        **{f"absolute_flux_{name}": (absolute_flux_phi0.get(name), "<f8") for name in ("q1", "c", "q2")},
+    }
+    sample_count: int | None = None
+    for name, (value, dtype) in arrays.items():
+        if not isinstance(value, np.ndarray) or value.dtype != np.dtype(dtype) or value.ndim != 1 or value.size == 0 or not value.flags.c_contiguous or not np.all(np.isfinite(value)):
+            fail(Stage51FailureCode.CONTROL_ARRAY_INVALID, name)
+        if sample_count is None:
+            sample_count = int(value.size)
+        elif value.size != sample_count:
+            fail(Stage51FailureCode.CONTROL_ARRAY_INVALID, "control lengths")
+    expected_centers = time_center_ns[0] + np.arange(time_center_ns.size, dtype="<f8") * 0.5
+    if not np.array_equal(time_center_ns, expected_centers):
+        fail(Stage51FailureCode.CONTROL_CLOCK_MISMATCH, "signed centers")
     if not isinstance(frame, Mapping) or set(frame) != {"q1", "q2"} or any(type(value) is not float or not np.isfinite(value) for value in frame.values()):
         fail(Stage51FailureCode.FRAME_AUTHORITY_MISMATCH, "coefficient frame")
     model = authority["model"]
