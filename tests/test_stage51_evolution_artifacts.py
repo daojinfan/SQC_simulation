@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import inspect
 import json
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
@@ -95,3 +97,16 @@ def test_result_single_byte_tamper_is_rejected(monkeypatch, tmp_path):
     path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
     with pytest.raises(Stage51EvolutionError, match="ARTIFACT_VERIFICATION_FAILED"):
         artifacts.verify_stage51_evolution_artifact(published.artifact_root, handle, context)
+
+
+def test_public_verifier_has_no_replay_injection_and_rejects_forged_observables(monkeypatch, tmp_path):
+    context, handle = _fixture(tmp_path)
+    _patch(monkeypatch, handle)
+    forged = replace(_result(), leakage=_array([0.0, 0.125]))
+    monkeypatch.setattr(artifacts, "execute_stage51_worker", lambda *_args, **_kwargs: forged)
+    target = context.output_root / "forged-result"
+
+    assert "independent_result" not in inspect.signature(artifacts.verify_stage51_evolution_artifact).parameters
+    with pytest.raises(Stage51EvolutionError, match="NUMERICAL_RESULT_INVALID"):
+        artifacts.run_verified_control_evolution(handle, context, target, timeout_s=1.0)
+    assert not target.exists()
