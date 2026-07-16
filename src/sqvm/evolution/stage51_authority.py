@@ -20,9 +20,12 @@ from sqvm.evolution.stage51_models import (
     Stage51PhysicsContext,
 )
 from sqvm.hamiltonian.provenance import canonical_json_bytes, raw_file_sha256
+from sqvm.runtime.storage import inventory_tree_no_follow
 
 
 DT_NS = 0.5
+_SMOKE_SOLVER = {"qutip_version_spec": ">=5.1,<5.4", "method": "vern9", "rtol": 1.0e-13, "atol": 1.0e-15, "nsteps": 100000, "max_step_ns": 0.0025, "store_states": True, "store_final_state": True, "normalize_output": False, "progress_bar": None}
+_SMOKE_TOLERANCES = {"label_min_overlap": 0.90, "lab_degeneracy_GHz": 1.0e-10, "projector_orthogonality": 1.0e-12, "norm_error": 1.0e-9, "population_bound": 1.0e-10}
 
 
 def fail(code: Stage51FailureCode, detail: str) -> None:
@@ -54,11 +57,21 @@ def read_json(path: Path, code: Stage51FailureCode) -> dict[str, Any]:
 def safe_file(root: Path, path: Path, code: Stage51FailureCode) -> Path:
     try:
         root = root.resolve(strict=True)
-        resolved = path.resolve(strict=True)
+        raw = Path(path)
+        if not raw.is_absolute():
+            raw = root / raw
+        relative = raw.relative_to(root)
+        current = root
+        for part in relative.parts:
+            current = current / part
+            attributes = getattr(current.stat(), "st_file_attributes", 0)
+            if current.is_symlink() or attributes & 0x400:
+                fail(code, f"link/reparse path: {path}")
+        resolved = raw.resolve(strict=True)
         resolved.relative_to(root)
     except (OSError, ValueError) as exc:
         fail(code, f"path outside root: {path}")
-    if resolved.is_symlink() or not resolved.is_file():
+    if not resolved.is_file():
         fail(code, f"path is not a regular file: {path}")
     return resolved
 
@@ -124,7 +137,7 @@ def admit_physics_authority(context: Stage51PhysicsContext) -> tuple[Mapping[str
         bindings[name] = raw_file_sha256(safe_file(root, configured, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID))
     if authority["source_snapshot_sha256"] != bindings["source_snapshot"] or authority["environment_snapshot_sha256"] != bindings["environment_snapshot"] or authority["publication_policy_sha256"] != bindings["publication_policy"]:
         fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "snapshot binding")
-    if not isinstance(authority["solver"], Mapping) or not isinstance(authority["tolerances"], Mapping):
+    if authority["solver"] != _SMOKE_SOLVER or authority["tolerances"] != _SMOKE_TOLERANCES:
         fail(Stage51FailureCode.SOLVER_AUTHORITY_INVALID, "solver/tolerances")
     return MappingProxyType(plain(authority)), MappingProxyType(bindings)
 
@@ -142,10 +155,35 @@ def _recheck_handle(handle: VerifiedControlHandle, context: Stage51PhysicsContex
         if not path.is_file() or raw_file_sha256(path) != expected:
             fail(Stage51FailureCode.CONTROL_BINDING_MISMATCH, name)
     control = read_json(root / CONTROL_NAME, Stage51FailureCode.HANDLE_NOT_PUBLISHED)
+    inventory = read_json(root / INVENTORY_NAME, Stage51FailureCode.HANDLE_NOT_PUBLISHED)
+    manifest = read_json(root / MANIFEST_NAME, Stage51FailureCode.HANDLE_NOT_PUBLISHED)
     receipt = read_json(root / RECEIPT_NAME, Stage51FailureCode.HANDLE_NOT_PUBLISHED)
     report = read_json(root / REPORT_NAME, Stage51FailureCode.HANDLE_NOT_PUBLISHED)
     if control.get("status") != "published" or receipt.get("status") != "published" or report.get("ok") is not True or control.get("control_id") != handle.control_id or receipt.get("control_id") != handle.control_id or control.get("effective", {}).get("effective_control_sha256") != handle.effective_control_sha256:
         fail(Stage51FailureCode.HANDLE_NOT_PUBLISHED, "receipt/report/control")
+    if set(inventory) != {"schema_version", "artifact_type", "artifact_version", "arrays"} or inventory.get("schema_version") != "0.1" or inventory.get("artifact_type") != "stage_04_1_array_inventory" or inventory.get("artifact_version") != "0.1" or not isinstance(inventory["arrays"], list):
+        fail(Stage51FailureCode.HANDLE_NOT_PUBLISHED, "inventory schema")
+    if manifest.get("control_id") != handle.control_id or manifest.get("array_inventory_sha256") != handle.inventory_sha256 or manifest.get("effective_control_sha256") != handle.effective_control_sha256 or report.get("inventory_sha256") != handle.inventory_sha256 or report.get("effective_control_sha256") != handle.effective_control_sha256 or receipt.get("inventory_sha256") != handle.inventory_sha256 or receipt.get("effective_control_sha256") != handle.effective_control_sha256 or receipt.get("manifest_sha256") != handle.manifest_sha256 or report.get("manifest_sha256") != handle.manifest_sha256:
+        fail(Stage51FailureCode.CONTROL_BINDING_MISMATCH, "publication topology")
+    actual = inventory_tree_no_follow(root)
+    expected_files = [row for row in actual if row["path"] not in {MANIFEST_NAME, REPORT_NAME, RECEIPT_NAME}]
+    if manifest.get("payload_files") != expected_files or manifest.get("control_sha256") != raw_file_sha256(root / CONTROL_NAME):
+        fail(Stage51FailureCode.CONTROL_BINDING_MISMATCH, "manifest file set")
+    wanted = {"effective/time_center_ns": (handle.time_center_ns, "<f8"), "effective/q1_i": (handle.xy_drive_GHz["q1"][0], "<f8"), "effective/q1_q": (handle.xy_drive_GHz["q1"][1], "<f8"), "effective/q2_i": (handle.xy_drive_GHz["q2"][0], "<f8"), "effective/q2_q": (handle.xy_drive_GHz["q2"][1], "<f8"), "effective/q1_flux_absolute": (handle.absolute_flux_phi0["q1"], "<f8"), "effective/q2_flux_absolute": (handle.absolute_flux_phi0["q2"], "<f8"), "effective/c_flux_absolute": (handle.absolute_flux_phi0["c"], "<f8")}
+    rows = {row.get("name"): row for row in inventory["arrays"] if isinstance(row, Mapping)}
+    if len(rows) != len(inventory["arrays"]) or not set(wanted).issubset(rows):
+        fail(Stage51FailureCode.HANDLE_NOT_PUBLISHED, "effective inventory names")
+    for name, (memory, dtype) in wanted.items():
+        row = rows[name]
+        if set(row) != {"name", "path", "dtype", "shape", "unit", "byte_length", "sha256"} or row["dtype"] != dtype or row["shape"] != [int(memory.size)] or row["byte_length"] != memory.nbytes:
+            fail(Stage51FailureCode.CONTROL_ARRAY_INVALID, name)
+        path = safe_file(root, root / row["path"], Stage51FailureCode.CONTROL_ARRAY_INVALID)
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest().upper() != row["sha256"] or len(raw) != row["byte_length"]:
+            fail(Stage51FailureCode.CONTROL_ARRAY_INVALID, name)
+        values = np.frombuffer(raw, dtype=dtype)
+        if not np.array_equal(values, memory):
+            fail(Stage51FailureCode.CONTROL_BINDING_MISMATCH, name)
 
 
 def admit_verified_control(handle: VerifiedControlHandle, context: Stage51PhysicsContext) -> Stage51EvolutionInput:
@@ -174,4 +212,4 @@ def admit_verified_control(handle: VerifiedControlHandle, context: Stage51Physic
         fail(Stage51FailureCode.FRAME_AUTHORITY_MISMATCH, "frame")
     binding = MappingProxyType({"control_id": handle.control_id, "manifest_sha256": handle.manifest_sha256, "receipt_sha256": handle.receipt_sha256, "inventory_sha256": handle.inventory_sha256, "effective_control_sha256": handle.effective_control_sha256})
     checks = tuple(MappingProxyType({"name": name, "passed": True}) for name in ("verified_control_handle_valid", "control_receipt_rechecked", "effective_arrays_exact", "signed_sample_grid_exact", "named_tensor_mapping_exact", "frame_reference_authority_valid", "phase_not_reapplied", "idle_not_reapplied"))
-    return Stage51EvolutionInput(handle.control_id, binding, centers, MappingProxyType(epsilon), MappingProxyType(flux), MappingProxyType(frame), checks)
+    return Stage51EvolutionInput(handle.control_id, binding, centers, epsilon["q1"], epsilon["q2"], MappingProxyType(flux), MappingProxyType(frame), checks)
