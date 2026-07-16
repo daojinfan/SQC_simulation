@@ -117,6 +117,14 @@ def admit_physics_authority(context: Stage51PhysicsContext) -> tuple[Mapping[str
         fail(Stage51FailureCode.TENSOR_MAPPING_INVALID, "model")
     if authority["frame"] != {"rwa_projection": "number_sector_v1"}:
         fail(Stage51FailureCode.FRAME_AUTHORITY_MISMATCH, "frame")
+    stage5_bindings = authority["accepted_stage5_bindings"]
+    if not isinstance(stage5_bindings, Mapping) or set(stage5_bindings) != {"design", "amendment"}:
+        fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "accepted Stage5 bindings")
+    expected_stage5 = {"design": root / "docs/designs/05_qutip_evolution_design.md", "amendment": root / "docs/decisions/2026-07-14-stage5-v0-2-amendment.md"}
+    for name, expected_path in expected_stage5.items():
+        row = stage5_bindings[name]
+        if not isinstance(row, Mapping) or set(row) != {"path", "raw_sha256"} or row["path"] != expected_path.relative_to(root).as_posix() or raw_file_sha256(safe_file(root, expected_path, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID)) != row["raw_sha256"]:
+            fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, f"accepted Stage5 {name}")
     bindings = {
         "physics_authority": raw_file_sha256(authority_path),
         "physics_authority_id": authority_id,
@@ -139,6 +147,19 @@ def admit_physics_authority(context: Stage51PhysicsContext) -> tuple[Mapping[str
         fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "snapshot binding")
     if authority["solver"] != _SMOKE_SOLVER or authority["tolerances"] != _SMOKE_TOLERANCES:
         fail(Stage51FailureCode.SOLVER_AUTHORITY_INVALID, "solver/tolerances")
+    approval_path = safe_file(root, context.stage5_1_approval_authority, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID)
+    approval = read_json(approval_path, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID)
+    approval_keys = {"schema_version", "artifact_type", "artifact_version", "status", "physics_authority_path", "physics_authority_raw_sha256", "authority_id", "design_path", "design_raw_sha256", "review_record_path", "review_record_raw_sha256", "reviewer_role", "context_bindings"}
+    if set(approval) != approval_keys or approval.get("schema_version") != "0.1" or approval.get("artifact_type") != "stage_05_1_physics_approval" or approval.get("artifact_version") != "0.1" or approval.get("status") != "approved" or not isinstance(approval.get("reviewer_role"), str) or not approval["reviewer_role"]:
+        fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "approval schema")
+    design_path = safe_file(root, context.stage5_1_design_authority, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID)
+    review_path = safe_file(root, context.solver_validation_approval, Stage51FailureCode.PHYSICS_AUTHORITY_INVALID)
+    if approval["physics_authority_path"] != authority_path.relative_to(root).as_posix() or approval["physics_authority_raw_sha256"] != raw_file_sha256(authority_path) or approval["authority_id"] != authority_id or approval["design_path"] != design_path.relative_to(root).as_posix() or approval["design_raw_sha256"] != raw_file_sha256(design_path) or approval["review_record_path"] != review_path.relative_to(root).as_posix() or approval["review_record_raw_sha256"] != raw_file_sha256(review_path):
+        fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "approval binding")
+    context_bindings = approval["context_bindings"]
+    expected_context = {name: bindings[name] for name in ("source_snapshot", "environment_snapshot", "publication_policy", "solver_validation")}
+    if not isinstance(context_bindings, Mapping) or context_bindings != expected_context:
+        fail(Stage51FailureCode.PHYSICS_AUTHORITY_INVALID, "approval context binding")
     return MappingProxyType(plain(authority)), MappingProxyType(bindings)
 
 
