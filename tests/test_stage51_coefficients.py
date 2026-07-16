@@ -44,6 +44,7 @@ def _patch_authority(monkeypatch):
     monkeypatch.setattr(module, "admit_physics_authority", lambda context: (authority, binding))
     monkeypatch.setattr(module, "_model_probe", lambda authority, context, flux: MappingProxyType({"tensor_order": ["q1", "c", "q2"], "dimension": 27, "static_probe_sha256": "M"}))
     monkeypatch.setattr(module, "admit_verified_control", lambda handle, context: _input())
+    monkeypatch.setattr(module, "_physics_preflight", lambda admitted, context: MappingProxyType({"ok": True}))
 
 
 def test_signed_zoh_plan_and_raw_artifact_are_deterministic(monkeypatch, tmp_path):

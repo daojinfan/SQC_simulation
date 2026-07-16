@@ -49,6 +49,11 @@ CHECKS = (
 )
 
 
+def _physics_preflight(admitted: Stage51EvolutionInput, context: Stage51PhysicsContext) -> Mapping[str, Any]:
+    from sqvm.evolution.stage51_physics import run_stage51_physics_preflight
+    return run_stage51_physics_preflight(admitted, context)
+
+
 def _model_probe(authority: Mapping[str, Any], context: Stage51PhysicsContext, flux: Mapping[str, float]) -> Mapping[str, Any]:
     try:
         device = load_device(context.accepted_device_artifact)
@@ -99,6 +104,7 @@ def build_evolution_coefficient_plan(admitted: Stage51EvolutionInput, context: S
         "observable_spec": {"labels": ["000", "100", "001", "101"], "replay_fidelity": "phase_invariant_final_overlap_v1"},
         "solver_spec": plain(authority["solver"]),
     }
+    _physics_preflight(admitted, context)
     checks = tuple(MappingProxyType({"name": name, "passed": True}) for name in CHECKS)
     return EvolutionCoefficientPlan("0.1", canonical_sha256(payload), admitted.control_binding, binding, MappingProxyType({"dt_ns": 0.5}), admitted.frame_reference_frequency_GHz, probe, MappingProxyType(inventory), MappingProxyType(payload["initial_state_spec"]), MappingProxyType(payload["observable_spec"]), MappingProxyType(payload["solver_spec"]), checks, MappingProxyType(arrays))
 

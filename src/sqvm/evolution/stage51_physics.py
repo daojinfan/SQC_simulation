@@ -16,14 +16,14 @@ from sqvm.device.junction import resolve_junction_parameters
 from sqvm.device.spec import load_device
 from sqvm.evolution.models import EffectiveScenario, RebuiltModel, Stage5Config, Stage5Input, Stage5PathAdmission
 from sqvm.evolution.physics import (
-    _build_frame, _lab_reference, _qutip, angular_rad_per_ns,
-    evolve_stage5_scenario,
+    _build_frame, _lab_reference, _qutip, _static_hamiltonian,
+    angular_rad_per_ns, evolve_stage5_scenario,
 )
 from sqvm.evolution.stage51_authority import admit_physics_authority, fail, read_json
 from sqvm.evolution.stage51_coefficients import verify_evolution_coefficient_artifact
 from sqvm.evolution.stage51_models import (
-    Stage51FailureCode, Stage51NumericalResult, Stage51PhysicsContext,
-    VerifiedCoefficientHandle,
+    Stage51EvolutionInput, Stage51FailureCode, Stage51NumericalResult,
+    Stage51PhysicsContext, VerifiedCoefficientHandle,
 )
 from sqvm.hamiltonian import BasisConfig, DeviceArtifacts, build_ec_matrix, build_mode_capacitance_matrix, build_mode_transform, load_hamiltonian_config
 
@@ -73,11 +73,15 @@ def _arrays(handle: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -
     return result
 
 
-def _build_stage51_input(coefficients: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> Stage5Input:
-    if not isinstance(coefficients, VerifiedCoefficientHandle): fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "coefficient handle")
-    authority, _ = admit_physics_authority(context); arrays = _arrays(coefficients, context)
-    plan = read_json(coefficients.artifact_root / "coefficient_plan.json", Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED)
-    frame = plan.get("frame_reference_frequency_GHz")
+def _build_stage5_input_from_controls(
+    time_center_ns: np.ndarray,
+    epsilon_q1: np.ndarray,
+    epsilon_q2: np.ndarray,
+    absolute_flux_phi0: Mapping[str, np.ndarray],
+    frame: Mapping[str, float],
+    authority: Mapping[str, Any],
+    context: Stage51PhysicsContext,
+) -> Stage5Input:
     if not isinstance(frame, Mapping) or set(frame) != {"q1", "q2"} or any(type(value) is not float or not np.isfinite(value) for value in frame.values()):
         fail(Stage51FailureCode.FRAME_AUTHORITY_MISMATCH, "coefficient frame")
     model = authority["model"]
@@ -87,8 +91,20 @@ def _build_stage51_input(coefficients: VerifiedCoefficientHandle, context: Stage
     artifacts = DeviceArtifacts(context.accepted_device_artifact, {"capacitance_matrix": {"nodes": list(cap.nodes), "matrix_fF": [list(row) for row in cap.matrix_fF]}, "junction_parameters": [{"component": row.component, "junction": row.junction, "rn_ohm": row.rn_ohm, "ej_GHz": row.ej_GHz, "source": row.source} for row in resolve_junction_parameters(device).rows], "components": {name: {"squid": {"flux_bias_phi0": item.squid.flux_bias_phi0}} for name, item in device.components.items() if item.squid is not None}})
     ec = build_ec_matrix(build_mode_capacitance_matrix(artifacts, build_mode_transform(artifacts))).matrix_GHz
     config = Stage5Config(Path("stage51-authority"), "stage51", {}, ("stage51",), tuple(model["charge_cutoffs"]), None, None, None, model["reference_state_count"], authority["solver"], authority["tolerances"], {})
-    scenario = EffectiveScenario("stage51", arrays["time_center_ns"], {"q1": (arrays["epsilon_q1"].real.astype("<f8"), arrays["epsilon_q1"].imag.astype("<f8")), "q2": (arrays["epsilon_q2"].real.astype("<f8"), arrays["epsilon_q2"].imag.astype("<f8"))}, {"q1": arrays["absolute_flux_q1"], "c": arrays["absolute_flux_c"], "q2": arrays["absolute_flux_q2"]}, dict(frame), {"q1": 0.0, "q2": 0.0})
+    scenario = EffectiveScenario("stage51", time_center_ns, {"q1": (epsilon_q1.real.astype("<f8"), epsilon_q1.imag.astype("<f8")), "q2": (epsilon_q2.real.astype("<f8"), epsilon_q2.imag.astype("<f8"))}, {name: absolute_flux_phi0[name] for name in ("q1", "c", "q2")}, dict(frame), {"q1": 0.0, "q2": 0.0})
     return Stage5Input(Stage5PathAdmission(context.repository_root, config, {}), {}, "stage51", {"stage51": scenario}, RebuiltModel(artifacts, replace(load_hamiltonian_config(context.accepted_hamiltonian_artifact), basis=BasisConfig(dict(zip(("q1", "c", "q2"), model["charge_cutoffs"], strict=True)))), ec))
+
+
+def _build_stage51_input(coefficients: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> Stage5Input:
+    if not isinstance(coefficients, VerifiedCoefficientHandle): fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "coefficient handle")
+    authority, _ = admit_physics_authority(context)
+    arrays = _arrays(coefficients, context)
+    plan = read_json(coefficients.artifact_root / "coefficient_plan.json", Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED)
+    return _build_stage5_input_from_controls(
+        arrays["time_center_ns"], arrays["epsilon_q1"], arrays["epsilon_q2"],
+        {"q1": arrays["absolute_flux_q1"], "c": arrays["absolute_flux_c"], "q2": arrays["absolute_flux_q2"]},
+        plan.get("frame_reference_frequency_GHz"), authority, context,
+    )
 
 
 def _projector_evidence(projectors: Mapping[str, Any], tolerance: float) -> tuple[Mapping[str, str], tuple[Mapping[str, Any], ...]]:
@@ -123,14 +139,47 @@ def _projector_evidence(projectors: Mapping[str, Any], tolerance: float) -> tupl
     return MappingProxyType(hashes), tuple(checks)
 
 
-def run_stage51_numerical_kernel(coefficients: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> Stage51NumericalResult:
-    """Run the accepted bounded smoke evolution after projector preflight."""
-    stage5 = _build_stage51_input(coefficients, context)
+def _physics_preflight(stage5: Stage5Input) -> tuple[Mapping[str, str], tuple[Mapping[str, Any], ...]]:
     scenario = stage5.scenarios["stage51"]
     qt = _qutip()
     frame = _build_frame(stage5, scenario, qt)
+    for name, operator in {"frame_generator": frame["f_generator"], **{f"drive_{key}": value for key, value in frame["d_plus"].items()}}.items():
+        matrix = np.asarray(operator.full(), dtype=np.complex128)
+        if not np.all(np.isfinite(matrix)):
+            fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, name)
+    seen_flux: set[tuple[float, float, float]] = set()
+    for index in range(scenario.time_center_ns.size):
+        key = tuple(float(scenario.absolute_flux_phi0[name][index]) for name in ("q1", "c", "q2"))
+        if key in seen_flux:
+            continue
+        seen_flux.add(key)
+        static = _static_hamiltonian(stage5, scenario, index, qt)
+        matrix = np.asarray(static.full(), dtype=np.complex128)
+        if not np.all(np.isfinite(matrix)) or float(np.linalg.norm(matrix - matrix.conj().T)) > 1e-10:
+            fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, "static Hamiltonian")
     reference = _lab_reference(stage5, scenario, frame, qt)
+    state = np.asarray(reference["psi_ip"].full(), dtype=np.complex128).reshape(-1)
+    if not np.all(np.isfinite(state)) or abs(float(np.vdot(state, state).real) - 1.0) > stage5.admission.config.tolerances["norm_error"]:
+        fail(Stage51FailureCode.INITIAL_STATE_INVALID, "interaction-picture initial state")
     projector_hashes, projector_checks = _projector_evidence(reference["projectors"], stage5.admission.config.tolerances["projector_orthogonality"])
+    if not np.isfinite(float(angular_rad_per_ns(1.0))):
+        fail(Stage51FailureCode.ANGULAR_CONVERSION_VIOLATION, "angular conversion")
+    return projector_hashes, projector_checks
+
+
+def run_stage51_physics_preflight(admitted: Stage51EvolutionInput, context: Stage51PhysicsContext) -> Mapping[str, Any]:
+    if not isinstance(admitted, Stage51EvolutionInput):
+        fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "admitted input")
+    authority, _ = admit_physics_authority(context)
+    stage5 = _build_stage5_input_from_controls(admitted.time_center_ns, admitted.epsilon_q1, admitted.epsilon_q2, admitted.absolute_flux_phi0, admitted.frame_reference_frequency_GHz, authority, context)
+    hashes, checks = _physics_preflight(stage5)
+    return MappingProxyType({"projector_sha256": hashes, "projector_checks": checks})
+
+
+def run_stage51_numerical_kernel(coefficients: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> Stage51NumericalResult:
+    """Run the accepted bounded smoke evolution after projector preflight."""
+    stage5 = _build_stage51_input(coefficients, context)
+    projector_hashes, projector_checks = _physics_preflight(stage5)
     result = evolve_stage5_scenario(stage5, "stage51")
     initial, final = _phase_fixed(result.states[0]), _phase_fixed(result.states[-1])
     populations = {name: np.asarray(values, dtype="<f8") for name, values in result.populations.items()}
