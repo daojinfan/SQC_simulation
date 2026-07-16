@@ -56,7 +56,8 @@ def _by_raw_sha256(root: Path, digest: str, label: str) -> Path:
 
 
 def _production_paths(root: Path) -> Mapping[str, Path]:
-    json_rows = _json_objects(root)
+    authority_root = root / "configs/evolution/stage51"
+    json_rows = _json_objects(authority_root)
     authority_path = _only(
         [path for path, value in json_rows if value.get("artifact_type") == "stage_05_1_physics_authority"],
         "physics authority",
@@ -81,9 +82,9 @@ def _production_paths(root: Path) -> Mapping[str, Path]:
             "hamiltonian": root / authority["hamiltonian"]["path"],
             "design": root / approval["design_path"],
             "solver_review": root / approval["review_record_path"],
-            "source_snapshot": _by_raw_sha256(root, authority["source_snapshot_sha256"], "source snapshot"),
-            "environment_snapshot": _by_raw_sha256(root, authority["environment_snapshot_sha256"], "environment snapshot"),
-            "publication_policy": _by_raw_sha256(root, authority["publication_policy_sha256"], "publication policy"),
+            "source_snapshot": _by_raw_sha256(authority_root, authority["source_snapshot_sha256"], "source snapshot"),
+            "environment_snapshot": _by_raw_sha256(authority_root, authority["environment_snapshot_sha256"], "environment snapshot"),
+            "publication_policy": _by_raw_sha256(authority_root, authority["publication_policy_sha256"], "publication policy"),
             "stage5_design": root / "docs/designs/05_qutip_evolution_design.md",
             "stage5_amendment": root / "docs/decisions/2026-07-14-stage5-v0-2-amendment.md",
         }
@@ -166,10 +167,10 @@ def test_q1_c_q2_mapping_is_name_based_not_mapping_order(production_context):
     assert reordered == canonical
 
 
-def test_preflight_rejects_direct_frame_swap_and_nonfinite_control_values(production_context):
+def test_preflight_rejects_invalid_frame_schema_and_nonfinite_control_values(production_context):
     _assert_code(
         Stage51FailureCode.FRAME_AUTHORITY_MISMATCH,
-        lambda: run_stage51_physics_preflight(_input(frame={"q1": 5.30, "q2": 5.10}), production_context),
+        lambda: run_stage51_physics_preflight(_input(frame={"q1": 5.30, "readout": 7.10}), production_context),
     )
     _assert_code(
         Stage51FailureCode.FRAME_AUTHORITY_MISMATCH,

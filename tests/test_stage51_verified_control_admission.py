@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from types import MappingProxyType
 from typing import Any, Callable
+import uuid
 
 import numpy as np
 import pytest
@@ -22,7 +23,12 @@ from sqvm.control import (
     verify_parameterized_control_artifact,
     write_parameterized_control_artifact,
 )
-from sqvm.evolution import Stage51EvolutionError, Stage51FailureCode, Stage51PhysicsContext, admit_verified_control
+from sqvm.evolution import (
+    Stage51EvolutionError, Stage51FailureCode, Stage51PhysicsContext,
+    admit_verified_control, build_evolution_coefficient_plan,
+    production_stage51_physics_context, publish_evolution_coefficient_artifact,
+    run_verified_control_evolution, verify_stage51_evolution_artifact,
+)
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.qcis.canonical import sha256_json
 
@@ -167,6 +173,32 @@ def test_real_stage41_publication_yields_eight_exact_effective_arrays_and_admitt
     assert np.array_equal(admitted.absolute_flux_phi0["q2"], effective["q2_flux_absolute"])
     assert np.array_equal(admitted.absolute_flux_phi0["c"], effective["c_flux_absolute"])
     assert admitted.control_binding["control_id"] == handle.control_id
+
+
+def test_real_stage41_handle_runs_through_production_qutip_worker_and_replay():
+    workspace = ROOT / "output" / f".stage51-e2e.{uuid.uuid4().hex}"
+    workspace.mkdir(parents=True)
+    try:
+        source_handle, _ = _published_handle(workspace)
+        context = production_stage51_physics_context(ROOT, output_root=workspace / "stage51")
+        admitted = admit_verified_control(source_handle, context)
+        plan = build_evolution_coefficient_plan(admitted, context)
+        coefficients = publish_evolution_coefficient_artifact(
+            plan, context, context.output_root / "coefficient", source_handle,
+        )
+
+        published = run_verified_control_evolution(
+            coefficients, context, context.output_root / "evolution", timeout_s=180.0,
+        )
+        verified = verify_stage51_evolution_artifact(
+            published.artifact_root, coefficients, context,
+        )
+
+        assert published.status == "published"
+        assert verified.result_id == published.result_id
+        assert verified.replay_fidelity == pytest.approx(1.0, abs=1.0e-9)
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 @pytest.mark.parametrize("kind", ("q1_i", "q1_flux_absolute"))
