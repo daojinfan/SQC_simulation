@@ -20,7 +20,9 @@ from sqvm.evolution.physics import (
     angular_rad_per_ns, evolve_stage5_scenario,
 )
 from sqvm.evolution.stage51_authority import admit_physics_authority, fail, read_json
-from sqvm.evolution.stage51_coefficients import verify_evolution_coefficient_artifact
+from sqvm.evolution.stage51_coefficients import (
+    _verify_coefficient_payload, verify_evolution_coefficient_artifact,
+)
 from sqvm.evolution.stage51_models import (
     Stage51EvolutionInput, Stage51FailureCode, Stage51NumericalResult,
     Stage51PhysicsContext, VerifiedCoefficientHandle,
@@ -107,6 +109,16 @@ def _build_stage51_input(coefficients: VerifiedCoefficientHandle, context: Stage
     )
 
 
+def _build_stage51_payload_input(artifact_root: Path, context: Stage51PhysicsContext) -> Stage5Input:
+    plan, arrays, _ = _verify_coefficient_payload(artifact_root, context)
+    authority, _ = admit_physics_authority(context)
+    return _build_stage5_input_from_controls(
+        arrays["time_center_ns"], arrays["epsilon_q1"], arrays["epsilon_q2"],
+        {"q1": arrays["absolute_flux_q1"], "c": arrays["absolute_flux_c"], "q2": arrays["absolute_flux_q2"]},
+        plan.get("frame_reference_frequency_GHz"), authority, context,
+    )
+
+
 def _projector_evidence(projectors: Mapping[str, Any], tolerance: float) -> tuple[Mapping[str, str], tuple[Mapping[str, Any], ...]]:
     labels = ("000", "100", "001", "101")
     if set(projectors) != set(labels) or not np.isfinite(tolerance) or tolerance <= 0.0:
@@ -176,9 +188,7 @@ def run_stage51_physics_preflight(admitted: Stage51EvolutionInput, context: Stag
     return MappingProxyType({"projector_sha256": hashes, "projector_checks": checks})
 
 
-def run_stage51_numerical_kernel(coefficients: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> Stage51NumericalResult:
-    """Run the accepted bounded smoke evolution after projector preflight."""
-    stage5 = _build_stage51_input(coefficients, context)
+def _evolve_stage51_input(stage5: Stage5Input) -> Stage51NumericalResult:
     projector_hashes, projector_checks = _physics_preflight(stage5)
     result = evolve_stage5_scenario(stage5, "stage51")
     initial, final = _phase_fixed(result.states[0]), _phase_fixed(result.states[-1])
@@ -187,3 +197,22 @@ def run_stage51_numerical_kernel(coefficients: VerifiedCoefficientHandle, contex
     leakage, norm = np.asarray(result.leakage, dtype="<f8"), np.asarray(result.norm_error, dtype="<f8"); leakage.setflags(write=False); norm.setflags(write=False)
     edges = np.asarray(result.edge_time_ns, dtype="<f8"); edges.setflags(write=False)
     return Stage51NumericalResult(edges, initial, final, MappingProxyType(populations), leakage, norm, projector_hashes, MappingProxyType({"angular_conversion": angular_rad_per_ns.__name__, "checks": result.checks, "projector_checks": projector_checks, "projector_validation_pending": False}))
+
+
+def run_stage51_worker_kernel(artifact_root: Path, context: Stage51PhysicsContext) -> Stage51NumericalResult:
+    """Run from a verified coefficient payload without minting an upstream capability."""
+
+    return _evolve_stage51_input(_build_stage51_payload_input(artifact_root, context))
+
+
+def run_stage51_numerical_kernel(coefficients: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> Stage51NumericalResult:
+    """Run the parent-process kernel after full control-capability verification."""
+
+    if not isinstance(coefficients, VerifiedCoefficientHandle):
+        fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "coefficient handle")
+    verified = verify_evolution_coefficient_artifact(
+        coefficients.artifact_root, context, coefficients.source_control_handle,
+    )
+    if verified.coefficient_plan_id != coefficients.coefficient_plan_id:
+        fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "coefficient handle binding")
+    return run_stage51_worker_kernel(verified.artifact_root, context)
