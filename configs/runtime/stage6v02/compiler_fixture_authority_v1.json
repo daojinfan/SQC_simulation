@@ -1,0 +1,111 @@
+{
+  "artifact_type": "stage_06_qcis_compiler_fixture_authority",
+  "artifact_version": "1",
+  "authority_id": "2B255F518ABA1A0949965CB5E53A7AE6B19BD619A8F1739D9A6D2B1458E34EB5",
+  "claim_envelope": {
+    "backend_execution": "absent",
+    "calibration_claim": "none",
+    "evidence_class": "compiler_test_fixture",
+    "measurement_payload": null,
+    "observation_model": "absent",
+    "physics_claim": "none",
+    "recommendation_eligible": false
+  },
+  "idle_flux_phi0": {
+    "c": 0.27,
+    "q1": 0.1,
+    "q2": 0.0
+  },
+  "qcis_authorities": {
+    "clock": {
+      "dt_ns": 0.5,
+      "sample_rate_Hz": 2000000000.0
+    },
+    "compiler": {
+      "compiler_id": "sqvm_qcis_compiler_v3"
+    },
+    "expected_sha256": {
+      "clock": "E07C96334709E010802989582FBBB4151BC7E23D5D705B6C46E4FB4085F15F14",
+      "compiler": "F0440915C2CDCC46233979BA50EFA2AC33D72AC8343197CAF9BA6374FD0416DD",
+      "gate_configuration": "18BEB267DCCEBE5C6C76529F56EC850C6C8F83BE6811CA7222D3F0AA529370FD",
+      "instruction_profile": "33635291E46120A7EA33D97F545D1DE943A26425E899852726469F9BC8A6202D",
+      "qagent_registry": "26A6DE94432AC8F7142F21C35133FDBBD77D4912EC8801DB2D30799D19B4AA67",
+      "waveform_registry": "64AEF1E316EBAC30F2F52EA11897BC31D0B5D2AD4929202F82468DFF4A16E2D3"
+    },
+    "gate_configuration": {
+      "C": {},
+      "Q1": {},
+      "Q2": {}
+    },
+    "instruction_profile": {
+      "profile_id": "qcis_stage7_calibration_v3",
+      "profile_version": "0.3"
+    },
+    "qagent_registry": {
+      "C": {
+        "component": "c",
+        "endpoints": [
+          "Q1",
+          "Q2"
+        ],
+        "z_channel": "c_flux"
+      },
+      "Q1": {
+        "anharmonicity_GHz": -0.2,
+        "component": "q1",
+        "local_dimension": 3,
+        "reference_frequency_authority": {
+          "calibration_run_id": "fixture_q1_f01",
+          "frequency_source": "bootstrap_seed",
+          "reference_frequency_GHz": 5.0,
+          "revision": 1,
+          "setting_hash": "8BC584AB407BFAB156CA8F7E6126097D26394797198AB25FDFCBF2AD47EC5F8A"
+        },
+        "xy_channel": "q1_xy",
+        "z_channel": "q1_z"
+      },
+      "Q2": {
+        "anharmonicity_GHz": -0.21,
+        "component": "q2",
+        "local_dimension": 3,
+        "reference_frequency_authority": {
+          "calibration_run_id": "fixture_q2_f01",
+          "frequency_source": "bootstrap_seed",
+          "reference_frequency_GHz": 5.2,
+          "revision": 1,
+          "setting_hash": "BEE82AA83A51EB73199192B662071670AE09C71A5A36FDC55C407FE8289054AC"
+        },
+        "xy_channel": "q2_xy",
+        "z_channel": "q2_z"
+      }
+    },
+    "templates": {
+      "platform_qcis_compile_smoke_v1": {
+        "bindings": {
+          "drive_frequency": {
+            "occurrences": 1,
+            "position": [
+              0,
+              "frequency"
+            ],
+            "unit": "GHz"
+          }
+        },
+        "source": "PLSXY Q1 0 -1 2 1 $drive_frequency 0 0 2\n"
+      }
+    },
+    "waveform_registry": {
+      "settings": {}
+    }
+  },
+  "request_config_path": "configs/experiments/platform_qcis_compile_smoke_v1.yaml",
+  "request_config_sha256": "7B7E4130649F4D25384B4ADCD4B74CB62DDE0ECA49B0552A83DD06BC83B58110",
+  "schema_version": "0.1",
+  "source_bindings": {
+    "docs/designs/06_1_experiment_runtime_v02_design.md": "D377E9DD8B92C62FA6D22913168E0FA65FC2176F7481942B323F8B22D6873E3B",
+    "docs/designs/07_qcis_compiler_design.md": "311CEA271820F282DF3B5380825F3764315F7271E746BA8827BD7E770362BC71",
+    "src/sqvm/qcis/compiler.py": "7E94B3B7D24EDA24AA720D532754F4ED564B9D8E700B2B125BC59522E01ACB23",
+    "src/sqvm/qcis/models.py": "1D8BC6FF0F7F860E61F8B59B0AE7AEAB613AE0FC71D9C6B86FA76972C265A0CA",
+    "src/sqvm/qcis/parser.py": "A3BC377A17FCFAF2E8ED5A70CD9904872BBD226B9C0BD9DBFF7711E91B2E58A9"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "artifact_type": "stage_06_qcis_compiler_fixture_approval",
+  "artifact_version": "1",
+  "authority_id": "2B255F518ABA1A0949965CB5E53A7AE6B19BD619A8F1739D9A6D2B1458E34EB5",
+  "authority_raw_sha256": "E55E955E54204DDB447D98830ADB76D161B3CA05965F7FF9631FB9A3238D864C",
+  "blocking_findings": [],
+  "decision": "APPROVE",
+  "design_path": "docs/designs/06_1_experiment_runtime_v02_design.md",
+  "design_sha256": "D377E9DD8B92C62FA6D22913168E0FA65FC2176F7481942B323F8B22D6873E3B",
+  "reviewer_role": "independent_test",
+  "schema_version": "0.1"
+}
