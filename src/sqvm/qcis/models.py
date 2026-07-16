@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -93,9 +93,10 @@ class QCISInstruction:
 @dataclass(frozen=True, slots=True)
 class QCISProgram:
     instructions: tuple[QCISInstruction, ...]
+    schema_version: str = "0.2"
 
     def payload(self) -> dict[str, Any]:
-        return {"schema_version": "0.2", "instructions": [item.payload() for item in self.instructions]}
+        return {"schema_version": self.schema_version, "instructions": [item.payload() for item in self.instructions]}
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +192,10 @@ class QCISLogicalWaveformPlan:
     carrier_metadata: Mapping[str, float]
     array_sha256: Mapping[str, str]
     authority_sha256: Mapping[str, str]
+    frame_reference_frequency_GHz: Mapping[str, float] = field(default_factory=dict)
+    frame_reference_authority_sha256: Mapping[str, str] = field(default_factory=dict)
+    drive_event_inventory: tuple[Mapping[str, Any], ...] = ()
+    drive_event_inventory_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)

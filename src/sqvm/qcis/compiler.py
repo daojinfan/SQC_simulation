@@ -19,7 +19,14 @@ from .models import (
     frozen_array,
     frozen_mapping,
 )
-from .parser import INSTRUCTION_SET_ID, PROGRAM_SCHEMA_VERSION, SOURCE_FORMAT, parse_qcis
+from .parser import (
+    INSTRUCTION_SET_ID,
+    PROGRAM_SCHEMA_VERSION,
+    SOURCE_FORMAT,
+    V03_INSTRUCTION_SET_ID,
+    V03_PROGRAM_SCHEMA_VERSION,
+    parse_qcis,
+)
 from .waveforms import analytic_waveform
 
 
@@ -132,7 +139,11 @@ def _envelope(program: Mapping[str, Any]) -> ProgramEnvelope:
         )
     except (KeyError, TypeError, ValueError) as exc:
         _fail(QCISReasonCode.BINDING_SET_MISMATCH, str(exc))
-    if envelope.program_schema_version != PROGRAM_SCHEMA_VERSION or envelope.instruction_set_id != INSTRUCTION_SET_ID:
+    accepted_profiles = {
+        (PROGRAM_SCHEMA_VERSION, INSTRUCTION_SET_ID),
+        (V03_PROGRAM_SCHEMA_VERSION, V03_INSTRUCTION_SET_ID),
+    }
+    if (envelope.program_schema_version, envelope.instruction_set_id) not in accepted_profiles:
         _fail(QCISReasonCode.PROFILE_AUTHORITY_HASH_MISMATCH, "program profile is not admitted")
     if envelope.source_format != SOURCE_FORMAT:
         _fail(QCISReasonCode.NONCANONICAL_SOURCE, "source format is not qcis_template")
@@ -372,19 +383,36 @@ def compile_qcis(
         authority_map = authorities
     idle = _validate_idle_flux(idle_flux)
     envelope = _envelope(program)
+    if envelope.instruction_set_id == V03_INSTRUCTION_SET_ID:
+        profile = authority_map.get("instruction_profile")
+        if not isinstance(profile, Mapping) or profile.get("profile_id") != V03_INSTRUCTION_SET_ID or profile.get("profile_version") != "0.3":
+            _fail(QCISReasonCode.PROFILE_AUTHORITY_HASH_MISMATCH, "v0.3 instruction profile is not admitted")
     template = _admit_template(envelope, authority_map)
     concrete = materialize_program(envelope.source, _resolve_bindings(envelope, template, scan_values))
     registry = _registry(authority_map)
-    parsed = parse_qcis(concrete, registry)
+    is_v03 = envelope.instruction_set_id == V03_INSTRUCTION_SET_ID
+    parsed = parse_qcis(concrete, registry, schema_version="0.3" if is_v03 else "0.2")
     macro_ops = {"X", "Y", "X2P", "X2M", "Y2P", "Y2M", "XY", "XY2P", "XY2M", "RX", "RY", "RXY", "X12", "CZ", "FSIM"}
     macros = any(item.op in macro_ops for item in parsed.instructions)
+    if is_v03:
+        required_hashes = {"instruction_profile", "qagent_registry", "gate_configuration", "waveform_registry", "clock", "compiler"}
+        if macros and isinstance(authority_map.get("calibration"), Mapping):
+            required_hashes.add("calibration")
+        expected = authority_map.get("expected_sha256")
+        if not isinstance(expected, Mapping) or set(expected) != required_hashes:
+            _fail(QCISReasonCode.PROFILE_AUTHORITY_HASH_MISMATCH, "v0.3 requires exact expected authority hashes")
     authority_sha256 = _authority_hashes(authority_map, envelope, macros=macros and isinstance(authority_map.get("calibration"), Mapping))
     return _compile_plan(envelope, concrete, parsed, authority_map, registry, idle, authority_sha256, max_samples, macros)
 
 
-def _is_v02_profile(authorities: Mapping[str, Any]) -> bool:
+def _requires_strict_calibration(authorities: Mapping[str, Any]) -> bool:
     profile = authorities.get("instruction_profile")
-    return isinstance(profile, Mapping) and profile.get("profile_version") == "0.2"
+    return isinstance(profile, Mapping) and profile.get("profile_version") in {"0.2", "0.3"}
+
+
+def _is_v03_profile(authorities: Mapping[str, Any]) -> bool:
+    profile = authorities.get("instruction_profile")
+    return isinstance(profile, Mapping) and profile.get("profile_id") == V03_INSTRUCTION_SET_ID and profile.get("profile_version") == "0.3"
 
 
 def _record_hash(record: Mapping[str, Any]) -> str:
@@ -424,7 +452,7 @@ def _accepted_record_evidence(
 
 
 def _setting_evidence(authorities: Mapping[str, Any], setting_id: str, setting: Mapping[str, Any]) -> dict[str, Any]:
-    if not _is_v02_profile(authorities):
+    if not _requires_strict_calibration(authorities):
         return {"setting_id": setting_id}
     evidence = _accepted_record_evidence(
         setting_id,
@@ -451,7 +479,7 @@ def _active_setting(
     targets = setting.get("targets")
     if targets is not None and (not isinstance(targets, (list, tuple)) or target not in targets):
         _fail(QCISReasonCode.SETTING_INVALID, f"setting {setting_id!r} does not apply to {target}")
-    if _is_v02_profile(authorities):
+    if _requires_strict_calibration(authorities):
         _accepted_record_evidence(
             setting_id,
             setting,
@@ -495,15 +523,27 @@ def _xy_setting(authorities: Mapping[str, Any], registry: Mapping[str, Mapping[s
     length_raw = waveform.get("length_samples", waveform.get("length"))
     length = _strict_positive_integer(length_raw, invalid_code=QCISReasonCode.SETTING_INVALID, detail=f"{setting_id}.length")
     amplitude = _finite_setting_number(waveform, ("amplitude_GHz", "amplitude"))
-    try:
-        frequency = _finite_setting_number(waveform, ("carrier_frequency_GHz", "frequency_GHz", "frequency"))
-    except QCISCompilationError:
-        if key != "active_xy12_setting":
-            raise
-        target_record = registry[target]
-        f01 = _finite_setting_number(target_record, ("f01_GHz", "idle_f01_GHz"))
-        anharmonicity = _finite_setting_number(target_record, ("anharmonicity_GHz",))
-        frequency = f01 + anharmonicity + _finite_setting_number(waveform, ("frequency_detune_GHz", "detune_GHz"), default=0.0)
+    if _is_v03_profile(authorities):
+        forbidden_frequency_fields = {"carrier_frequency_GHz", "frequency_GHz", "frequency", "f12_GHz", "frequency_detune_GHz", "detune_GHz"}
+        if any(name in waveform for name in forbidden_frequency_fields):
+            _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id} must not duplicate a v0.3 drive frequency")
+        f01, _ = _v03_reference_authority(registry, target)
+        if key == "active_xy12_setting":
+            if waveform.get("transition") != "12":
+                _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id}.transition must be 12")
+            frequency = f01 + _finite_setting_number(registry[target], ("anharmonicity_GHz",))
+        else:
+            frequency = f01
+    else:
+        try:
+            frequency = _finite_setting_number(waveform, ("carrier_frequency_GHz", "frequency_GHz", "frequency"))
+        except QCISCompilationError:
+            if key != "active_xy12_setting":
+                raise
+            target_record = registry[target]
+            f01 = _finite_setting_number(target_record, ("f01_GHz", "idle_f01_GHz"))
+            anharmonicity = _finite_setting_number(target_record, ("anharmonicity_GHz",))
+            frequency = f01 + anharmonicity + _finite_setting_number(waveform, ("frequency_detune_GHz", "detune_GHz"), default=0.0)
     drag = _finite_setting_number(waveform, ("dragAlpha_samples", "drag_alpha"), default=0.0)
     phase_offset = _finite_setting_number(waveform, ("phase_offset_rad", "phase"), default=0.0)
     index_value = waveform.get("wave_index")
@@ -538,6 +578,60 @@ def _normalized_angle(value: float) -> float:
     return math.pi if result == -math.pi else result
 
 
+def _v03_reference_authority(registry: Mapping[str, Mapping[str, Any]], target: str) -> tuple[float, dict[str, Any]]:
+    record = registry.get(target)
+    if not isinstance(record, Mapping):
+        _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, f"missing QAgent {target}")
+    raw = record.get("reference_frequency_authority")
+    if not isinstance(raw, Mapping):
+        _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, f"{target}.reference_frequency_authority")
+    required = {"reference_frequency_GHz", "frequency_source", "calibration_run_id", "revision", "setting_hash"}
+    if set(raw) != required:
+        _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, f"{target} reference-frequency fields are not exact")
+    frequency = raw["reference_frequency_GHz"]
+    if isinstance(frequency, bool) or not isinstance(frequency, (int, float)) or not math.isfinite(float(frequency)):
+        _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, f"{target}.reference_frequency_GHz")
+    if raw["frequency_source"] not in {"bootstrap_seed", "accepted_simulation"}:
+        _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, f"{target}.frequency_source")
+    if not isinstance(raw["calibration_run_id"], str) or not raw["calibration_run_id"] or type(raw["revision"]) is not int or raw["revision"] <= 0:
+        _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, f"{target} reference-frequency lifecycle")
+    expected_hash = sha256_json({name: value for name, value in raw.items() if name != "setting_hash"})
+    if raw["setting_hash"] != expected_hash:
+        _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, f"{target}.reference_frequency setting hash")
+    if "f01_GHz" in record and _finite_setting_number(record, ("f01_GHz",)) != float(frequency):
+        _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, f"{target}.f01_GHz contradicts the reference frequency")
+    if "f12_GHz" in record:
+        expected_f12 = float(frequency) + _finite_setting_number(record, ("anharmonicity_GHz",))
+        if _finite_setting_number(record, ("f12_GHz",)) != expected_f12:
+            _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, f"{target}.f12_GHz contradicts f01 plus anharmonicity")
+    return float(frequency), {"revision": raw["revision"], "setting_hash": raw["setting_hash"], "calibration_run_id": raw["calibration_run_id"], "frequency_source": raw["frequency_source"]}
+
+
+def _v03_clock(authorities: Mapping[str, Any]) -> tuple[float, float]:
+    clock = authorities.get("clock")
+    if not isinstance(clock, Mapping):
+        _fail(QCISReasonCode.CLOCK_AUTHORITY_HASH_MISMATCH, "clock is absent")
+    dt = clock.get("dt_ns")
+    sample_rate = clock.get("sample_rate_Hz")
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) for value in (dt, sample_rate)):
+        _fail(QCISReasonCode.CLOCK_AUTHORITY_HASH_MISMATCH, "v0.3 clock requires finite dt_ns and sample_rate_Hz")
+    if float(dt) <= 0.0 or float(sample_rate) <= 0.0 or not math.isclose(float(dt) * float(sample_rate), 1e9, rel_tol=0.0, abs_tol=1e-6):
+        _fail(QCISReasonCode.CLOCK_AUTHORITY_HASH_MISMATCH, "v0.3 clock grid is inconsistent")
+    return float(dt), float(sample_rate)
+
+
+def _v03_drive_samples(base: np.ndarray, *, phase_total: float, start: int, f_drive: float, f_ref: float, dt_ns: float, sample_rate_hz: float) -> np.ndarray:
+    detuning = f_drive - f_ref
+    if not all(math.isfinite(value) for value in (phase_total, f_drive, f_ref, detuning)) or abs(detuning) >= sample_rate_hz / 2.0 / 1e9:
+        _fail(QCISReasonCode.DRIVE_DETUNING_OUT_OF_BAND, "drive detuning is outside the strict Nyquist interval")
+    output = np.empty(len(base), dtype="<c16")
+    for k, value in enumerate(np.asarray(base, dtype="<c16")):
+        absolute_time = (start + k + 0.5) * dt_ns
+        theta = math.remainder(phase_total + 2.0 * math.pi * detuning * absolute_time, 2.0 * math.pi)
+        output[k] = value * complex(math.cos(-theta), math.sin(-theta))
+    return output
+
+
 def _mapper_record(authorities: Mapping[str, Any], target: str, kind: str) -> tuple[str, Mapping[str, Any]]:
     configuration = authorities.get("gate_configuration")
     waveform_registry = authorities.get("waveform_registry")
@@ -547,7 +641,7 @@ def _mapper_record(authorities: Mapping[str, Any], target: str, kind: str) -> tu
     raw = target_configuration.get(key) if isinstance(target_configuration, Mapping) else None
     expected_type = f"{kind.upper()}_MAPPER"
     if isinstance(raw, Mapping):
-        if _is_v02_profile(authorities):
+        if _requires_strict_calibration(authorities):
             _fail(QCISReasonCode.MAPPER_NOT_FOUND, f"{target}.{key} must select a registered mapper id")
         mapper_id = raw.get("mapper_id", key)
         if not isinstance(mapper_id, str) or not mapper_id:
@@ -556,7 +650,7 @@ def _mapper_record(authorities: Mapping[str, Any], target: str, kind: str) -> tu
     if not isinstance(raw, str) or not isinstance(mappers, Mapping) or not isinstance(mappers.get(raw), Mapping):
         _fail(QCISReasonCode.MAPPER_NOT_FOUND, f"{target}.{key}")
     mapper = mappers[raw]
-    if _is_v02_profile(authorities):
+    if _requires_strict_calibration(authorities):
         _accepted_record_evidence(raw, mapper, id_field="mapper_id", expected_type=expected_type)
         if kind == "g2zbias" and (mapper.get("interpolation") != "piecewise_linear" or mapper.get("extrapolation") != "reject"):
             _fail(QCISReasonCode.SETTING_INVALID, f"{raw} must use piecewise_linear interpolation without extrapolation")
@@ -564,7 +658,7 @@ def _mapper_record(authorities: Mapping[str, Any], target: str, kind: str) -> tu
 
 
 def _mapper_evidence(authorities: Mapping[str, Any], mapper_id: str, mapper: Mapping[str, Any]) -> dict[str, Any]:
-    if _is_v02_profile(authorities):
+    if _requires_strict_calibration(authorities):
         return _accepted_record_evidence(
             mapper_id,
             mapper,
@@ -620,11 +714,27 @@ def _g2_to_flux(mapper: Mapping[str, Any], detune: float) -> float:
 
 
 def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authorities: Mapping[str, Any], registry: Mapping[str, Mapping[str, Any]], idle: Mapping[str, float], authority_sha256: Mapping[str, str], max_samples: int, macros: bool) -> QCISCompilation:
+    v03 = envelope.instruction_set_id == V03_INSTRUCTION_SET_ID
     cursors: dict[str, dict[str, int]] = {}
     frames: dict[str, float] = {}
     events: list[tuple[str, str, int, np.ndarray]] = []
     steps: list[dict[str, Any]] = []
     carriers: dict[str, float] = {}
+    drive_events: list[dict[str, Any]] = []
+    frame_references: dict[str, float] = {}
+    frame_authorities: dict[str, str] = {}
+    dt_ns = sample_rate_hz = 0.0
+    if v03:
+        dt_ns, sample_rate_hz = _v03_clock(authorities)
+        for target, record in registry.items():
+            if record.get("component") not in {"q1", "q2"} or "xy_channel" not in record:
+                continue
+            reference, evidence = _v03_reference_authority(registry, target)
+            component = str(record["component"])
+            frame_references[component] = reference
+            frame_authorities[component] = str(evidence["setting_hash"])
+        if set(frame_references) != {"q1", "q2"}:
+            _fail(QCISReasonCode.REFERENCE_FREQUENCY_INVALID, "v0.3 requires q1 and q2 frame references")
 
     def lanes(target: str) -> dict[str, int]:
         xy, z, _ = _capabilities(registry, target)
@@ -647,6 +757,8 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         return actual_start, end
 
     def record_carrier(target: str, frequency: float) -> None:
+        if v03:
+            return
         if target in carriers and carriers[target] != frequency:
             _fail(QCISReasonCode.CARRIER_CHANGE_UNSUPPORTED, f"carrier changes on {target}")
         carriers[target] = frequency
@@ -656,14 +768,35 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         if not xy or component not in {"q1", "q2"}:
             _fail(QCISReasonCode.MACRO_CALIBRATION_INCOMPLETE, f"macro target {target}")
         setting = _xy_setting(authorities, registry, target, setting_key)
-        record_carrier(target, float(setting["frequency"]))
         start, end = reserve(target, "xy", -1, int(setting["length"]))
         absolute_phase = phase + float(setting["phase_offset"]) + frames[target]
-        rotation = complex(math.cos(-absolute_phase), math.sin(-absolute_phase))
-        samples = np.asarray(setting["base"], dtype="<c16") * scale * rotation
+        base = np.asarray(setting["base"], dtype="<c16") * scale
+        if v03:
+            f_ref = frame_references[component]
+            samples = _v03_drive_samples(base, phase_total=absolute_phase, start=start, f_drive=float(setting["frequency"]), f_ref=f_ref, dt_ns=dt_ns, sample_rate_hz=sample_rate_hz)
+            event = {
+                "event_id": f"drive-{len(drive_events)}",
+                "source_instruction_index": instruction_index,
+                "target": target,
+                "transition": "12" if source_op == "X12" else "01",
+                "actual_start_sample": start,
+                "sample_count": int(setting["length"]),
+                "phase_rule_id": "qcis_v03_absolute_detuning_phase_v1",
+                "phase_total_rad": absolute_phase,
+                "f_drive_GHz": float(setting["frequency"]),
+                "f_ref_GHz": f_ref,
+                "detuning_GHz": float(setting["frequency"]) - f_ref,
+                "logical_array_contribution_sha256": sha256_bytes(samples.tobytes()),
+                "setting_evidence": setting["evidence"],
+            }
+            drive_events.append(event)
+        else:
+            record_carrier(target, float(setting["frequency"]))
+            rotation = complex(math.cos(-absolute_phase), math.sin(-absolute_phase))
+            samples = base * rotation
         events.append(("xy", component, start, samples.astype("<c16")))
         step = {"index": instruction_index, "op": source_op, "setting_id": setting["setting_id"], "phase": absolute_phase, "scale": scale, "emitted_interval": [start, end]}
-        if _is_v02_profile(authorities):
+        if _requires_strict_calibration(authorities):
             step["setting"] = setting["evidence"]
         steps.append(step)
 
@@ -739,7 +872,7 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
 
         use_f_raw = setting.get("use_f012zbias_mapper", False)
         use_g_raw = setting.get("use_g2zbias_mapper", False)
-        if _is_v02_profile(authorities) and (type(use_f_raw) is not bool or type(use_g_raw) is not bool):
+        if _requires_strict_calibration(authorities) and (type(use_f_raw) is not bool or type(use_g_raw) is not bool):
             _fail(QCISReasonCode.SETTING_INVALID, f"{setting_id} mapper switches must be boolean")
         use_f = bool(use_f_raw)
         use_g = bool(use_g_raw)
@@ -757,7 +890,7 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
                     lower_value, upper_value = float(lower), float(upper)
                     if math.isfinite(lower_value) and math.isfinite(upper_value) and lower_value <= upper_value:
                         bounds = (lower_value, upper_value)
-                if _is_v02_profile(authorities) and bounds is None:
+                if _requires_strict_calibration(authorities) and bounds is None:
                     _fail(QCISReasonCode.MAPPER_DOMAIN_ERROR, f"{target} requires finite device flux bounds for F012ZBIAS")
                 _, _, target_component = _capabilities(registry, target)
                 if bounds is not None and not bounds[0] <= idle[target_component] <= bounds[1]:
@@ -781,7 +914,7 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         frames[q0] -= q0_phase
         frames[q1] -= q1_phase
         step = {"index": instruction.index, "op": instruction.op, "setting_id": setting_id, "interval": [start, end], "mappers": mapper_evidence, "frame_corrections": {q0: -q0_phase, q1: -q1_phase}}
-        if _is_v02_profile(authorities):
+        if _requires_strict_calibration(authorities):
             step["setting"] = _setting_evidence(authorities, setting_id, setting)
         steps.append(step)
 
@@ -839,11 +972,30 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
                 samples = payload[:half] + 1j * payload[half:]
             else:
                 frequency = float(fields["frequency"])
-                record_carrier(target, frequency)
                 envelope_values, derivative = analytic_waveform(fields["wave_index"], fields["length"], fields["shape_parameter"])
                 base = float(fields["amplitude"]) * (envelope_values - 1j * float(fields["drag_alpha"]) * derivative)
                 phase = float(fields["phase"])
-                samples = base * complex(math.cos(-phase), math.sin(-phase))
+                if v03:
+                    f_ref = frame_references[component]
+                    samples = _v03_drive_samples(base, phase_total=phase, start=start, f_drive=frequency, f_ref=f_ref, dt_ns=dt_ns, sample_rate_hz=sample_rate_hz)
+                    drive_events.append({
+                        "event_id": f"drive-{len(drive_events)}",
+                        "source_instruction_index": instruction.index,
+                        "target": target,
+                        "transition": "01",
+                        "actual_start_sample": start,
+                        "sample_count": fields["length"],
+                        "phase_rule_id": "qcis_v03_absolute_detuning_phase_v1",
+                        "phase_total_rad": phase,
+                        "f_drive_GHz": frequency,
+                        "f_ref_GHz": f_ref,
+                        "detuning_GHz": frequency - f_ref,
+                        "logical_array_contribution_sha256": sha256_bytes(samples.tobytes()),
+                        "setting_evidence": None,
+                    })
+                else:
+                    record_carrier(target, frequency)
+                    samples = base * complex(math.cos(-phase), math.sin(-phase))
             events.append(("xy", component, start, np.asarray(samples, dtype="<c16")))
             steps.append({"index": instruction.index, "op": "PLSXY", "interval": [start, end]})
         elif instruction.op == "DTN":
@@ -857,7 +1009,7 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
             start, end = reserve(target, "z", -1, fields["length"])
             events.append(("flux", component, start, np.full(fields["length"], float(fields["amplitude"]), dtype="<f8")))
             step = {"index": instruction.index, "op": "DTN", "setting_id": detune_id, "interval": [start, end]}
-            if _is_v02_profile(authorities):
+            if _requires_strict_calibration(authorities):
                 step["setting"] = _setting_evidence(authorities, detune_id, detune_setting)
             steps.append(step)
         elif instruction.op in {"CZ", "FSIM"}:
@@ -914,7 +1066,11 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         xy_arrays[component][start:end] += samples
 
     ast_bytes = canonical_json_bytes(parsed.payload())
-    trace: dict[str, Any] = {"final_cursors": cursors, "final_frames": frames, "final_sample_count": sample_count, "schema_version": "0.2", "steps": steps}
+    trace: dict[str, Any] = {"final_cursors": cursors, "final_frames": frames, "final_sample_count": sample_count, "schema_version": "0.3" if v03 else "0.2", "steps": steps}
+    if v03:
+        trace["frame_reference_frequency_GHz"] = frame_references
+        trace["frame_reference_authority_sha256"] = frame_authorities
+        trace["drive_event_inventory"] = drive_events
     if macros:
         trace["authority_sha256"] = dict(authority_sha256)
     trace_bytes = canonical_json_bytes(trace)
@@ -922,19 +1078,21 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
     q1_flux, q2_flux, c_flux = (frozen_array(q1_flux, "<f8"), frozen_array(q2_flux, "<f8"), frozen_array(c_flux, "<f8"))
     arrays = {"q1_xy": q1_xy, "q2_xy": q2_xy, "q1_flux": q1_flux, "q2_flux": q2_flux, "c_flux": c_flux}
     array_sha256 = {name: sha256_bytes(value.tobytes()) for name, value in arrays.items()}
-    carrier_metadata = frozen_mapping(carriers)
+    carrier_metadata = frozen_mapping({} if v03 else carriers)
     carrier_metadata_bytes = canonical_json_bytes(dict(carrier_metadata))
-    coefficient_inventory_bytes = canonical_json_bytes(
-        {
+    coefficient_inventory = {
             "angular_conversion": "2*pi*GHz_to_rad_per_ns_once",
             "carrier_metadata_sha256": sha256_bytes(carrier_metadata_bytes),
             "dt_ns": float(authorities["clock"]["dt_ns"]),
             "epsilon_q1_c16_sha256": array_sha256["q1_xy"],
             "epsilon_q2_c16_sha256": array_sha256["q2_xy"],
             "sample_count": sample_count,
-            "schema_version": "0.2",
+            "schema_version": "0.3" if v03 else "0.2",
         }
-    )
+    if v03:
+        coefficient_inventory["frame_reference_authority_sha256"] = sha256_json(frame_authorities)
+        coefficient_inventory["frame_reference_frequency_GHz"] = frame_references
+    coefficient_inventory_bytes = canonical_json_bytes(coefficient_inventory)
     plan = QCISLogicalWaveformPlan(
         source=concrete,
         program=parsed,
@@ -943,6 +1101,10 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         trace_sha256=sha256_bytes(trace_bytes),
         q1_xy=q1_xy, q2_xy=q2_xy, q1_flux=q1_flux, q2_flux=q2_flux, c_flux=c_flux,
         carrier_metadata=carrier_metadata, array_sha256=frozen_mapping(array_sha256), authority_sha256=frozen_mapping(authority_sha256),
+        frame_reference_frequency_GHz=frozen_mapping(frame_references),
+        frame_reference_authority_sha256=frozen_mapping(frame_authorities),
+        drive_event_inventory=tuple(frozen_mapping(event) for event in drive_events),
+        drive_event_inventory_sha256=sha256_json(drive_events) if v03 else "",
     )
     return QCISCompilation(
         envelope=envelope, concrete_source=concrete, concrete_source_sha256=sha256_bytes(concrete.encode("utf-8")), plan=plan,
@@ -955,4 +1117,4 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
 
 # Kept here as well as in sqvm.qcis so consumers resolving the compiler module
 # have the frozen hand-off tamper oracles at the same stable import surface.
-from .verify import verify_coefficient_inventory, verify_compilation, verify_effective_controls
+from .verify import verify_coefficient_inventory, verify_compilation, verify_drive_event_inventory, verify_effective_controls

@@ -28,6 +28,8 @@ from .models import (
 
 PROGRAM_SCHEMA_VERSION = "0.1"
 INSTRUCTION_SET_ID = "qcis_stage7_calibration_v1"
+V03_PROGRAM_SCHEMA_VERSION = "0.3"
+V03_INSTRUCTION_SET_ID = "qcis_stage7_calibration_v3"
 SOURCE_FORMAT = "qcis_template"
 _ENVELOPE_KEYS = frozenset(
     {
@@ -133,9 +135,11 @@ def admit_program(
 
     program = _as_envelope(envelope)
     accepted_template = _as_template(template)
-    if program.program_schema_version != PROGRAM_SCHEMA_VERSION:
-        _fail(QCISReasonCode.BINDING_SET_MISMATCH, "unsupported program schema version")
-    if program.instruction_set_id != INSTRUCTION_SET_ID:
+    accepted_profiles = {
+        (PROGRAM_SCHEMA_VERSION, INSTRUCTION_SET_ID),
+        (V03_PROGRAM_SCHEMA_VERSION, V03_INSTRUCTION_SET_ID),
+    }
+    if (program.program_schema_version, program.instruction_set_id) not in accepted_profiles:
         _fail(QCISReasonCode.PROFILE_AUTHORITY_HASH_MISMATCH, "wrong instruction set")
     if program.source_format != SOURCE_FORMAT:
         _fail(QCISReasonCode.NONCANONICAL_SOURCE, "source_format must be qcis_template")
@@ -167,7 +171,7 @@ def admit_program(
     return program
 
 
-def parse_qcis(source: str, qagents: Mapping[str, Any] | None = None) -> QCISProgram:
+def parse_qcis(source: str, qagents: Mapping[str, Any] | None = None, *, schema_version: str = "0.2") -> QCISProgram:
     """Parse a fully materialized canonical QCIS source into an immutable AST."""
 
     validate_canonical_source(source, allow_placeholders=False)
@@ -184,7 +188,7 @@ def parse_qcis(source: str, qagents: Mapping[str, Any] | None = None) -> QCISPro
             _fail(QCISReasonCode.UNKNOWN_OPERATION, f"operation {op!r} is reserved or unknown")
         instruction = _parse_instruction(index, tokens, allowed_agents)
         instructions.append(instruction)
-    return QCISProgram(instructions=tuple(instructions))
+    return QCISProgram(instructions=tuple(instructions), schema_version=schema_version)
 
 
 def _agent(token: str, allowed_agents: frozenset[str]) -> str:

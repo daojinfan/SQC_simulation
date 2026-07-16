@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from .canonical import sha256_bytes
+from .canonical import sha256_bytes, sha256_json
 from .errors import QCISCompilationError, QCISReasonCode
 from .models import QCISCompilation
 
@@ -18,6 +18,14 @@ _EFFECTIVE_NAMES = tuple(f"effective_{name}" for name in _LOGICAL_NAMES)
 
 def _fail(code: QCISReasonCode, detail: str) -> None:
     raise QCISCompilationError(code, detail)
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(name): _plain(item) for name, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_plain(item) for item in value]
+    return value
 
 
 def _arrays(compilation: QCISCompilation, names: tuple[str, ...]) -> dict[str, np.ndarray]:
@@ -93,6 +101,29 @@ def verify_effective_controls(compilation: QCISCompilation, candidate: Any | Non
         code=QCISReasonCode.EFFECTIVE_CONTROL_HASH_MISMATCH,
         hash_names={name: name.removeprefix("effective_") for name in _EFFECTIVE_NAMES},
     )
+
+
+def verify_drive_event_inventory(compilation: QCISCompilation, candidate: Any | None = None) -> None:
+    """Verify v0.3 frame-reference and per-drive-event evidence as exact bytes."""
+
+    plan = compilation.plan
+    expected = {
+        "frame_reference_frequency_GHz": dict(plan.frame_reference_frequency_GHz),
+        "frame_reference_authority_sha256": dict(plan.frame_reference_authority_sha256),
+        "drive_event_inventory": [_plain(event) for event in plan.drive_event_inventory],
+    }
+    value = expected if candidate is None else candidate
+    if not isinstance(value, Mapping) or set(value) != set(expected) or value != expected:
+        _fail(QCISReasonCode.DRIVE_EVENT_EVIDENCE_MISMATCH, "v0.3 drive event evidence differs")
+    if not plan.drive_event_inventory_sha256 or sha256_json(expected["drive_event_inventory"]) != plan.drive_event_inventory_sha256:
+        _fail(QCISReasonCode.DRIVE_EVENT_EVIDENCE_MISMATCH, "v0.3 drive event inventory hash differs")
+    trace = _plain(plan.trace)
+    if (
+        trace.get("frame_reference_frequency_GHz") != expected["frame_reference_frequency_GHz"]
+        or trace.get("frame_reference_authority_sha256") != expected["frame_reference_authority_sha256"]
+        or trace.get("drive_event_inventory") != expected["drive_event_inventory"]
+    ):
+        _fail(QCISReasonCode.DRIVE_EVENT_EVIDENCE_MISMATCH, "v0.3 trace evidence differs")
 
 
 def verify_coefficient_inventory(compilation: QCISCompilation, candidate: Any | None = None) -> None:

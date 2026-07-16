@@ -18,11 +18,11 @@ from sqvm.qcis.models import (
     PhasedFSimCharacterization,
 )
 from sqvm.qcis.parser import admit_program, parse_qcis
-from sqvm.qcis.verify import verify_compilation, verify_coefficient_inventory, verify_effective_controls
+from sqvm.qcis.verify import verify_compilation, verify_coefficient_inventory, verify_drive_event_inventory, verify_effective_controls
 
 __all__ = [
     "BindingPosition", "BindingSpec", "PhasedFSimCharacterization", "ProgramEnvelope", "QCISAuthorities", "QCISBinding", "QCISCharacterizationMetric", "QCISCompilation",
     "QCISCompilationError", "QCISInstruction", "QCISLogicalWaveformPlan", "QCISProgram",
     "QCISReasonCode", "QCISScanValue", "QCISTemplate", "admit_program", "compile_qcis", "materialize_program",
-    "parse_qcis", "verify_coefficient_inventory", "verify_compilation", "verify_effective_controls",
+    "parse_qcis", "verify_coefficient_inventory", "verify_compilation", "verify_drive_event_inventory", "verify_effective_controls",
 ]
