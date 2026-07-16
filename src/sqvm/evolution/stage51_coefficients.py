@@ -88,7 +88,7 @@ def build_evolution_coefficient_plan(admitted: Stage51EvolutionInput, context: S
             fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, name)
         array.setflags(write=False); arrays[name] = array
         raw = array.tobytes()
-        inventory[name] = MappingProxyType({"dtype": dtype, "shape": (int(array.size),), "unit": unit, "byte_length": len(raw), "sha256": hashlib.sha256(raw).hexdigest().upper()})
+        inventory[name] = MappingProxyType({"dtype": dtype, "shape": [int(array.size)], "element_count": int(array.size), "byte_count": len(raw), "unit": unit, "sha256": hashlib.sha256(raw).hexdigest().upper()})
     probe = _model_probe(authority, context, {"q1": float(arrays["absolute_flux_q1"][0]), "c": float(arrays["absolute_flux_c"][0]), "q2": float(arrays["absolute_flux_q2"][0])})
     payload = {
         "control_binding": plain(admitted.control_binding), "physics_authority_binding": plain(binding), "clock": {"dt_ns": 0.5},
@@ -119,7 +119,7 @@ def publish_evolution_coefficient_artifact(plan: EvolutionCoefficientPlan, conte
         staging.mkdir(); rows = []
         for name, array in plan.arrays.items():
             path = staging / "arrays" / f"{name}.bin"; path.parent.mkdir(exist_ok=True); raw = array.tobytes(); path.write_bytes(raw)
-            rows.append({"name": name, "path": path.relative_to(staging).as_posix(), **plain(plan.coefficient_inventory[name])})
+            rows.append({"name": name, "path": f"arrays/{name}.bin", **plain(plan.coefficient_inventory[name])})
         inventory = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_array_inventory", "artifact_version": "0.1", "arrays": sorted(rows, key=lambda row: row["name"])}
         (staging / INVENTORY_NAME).write_bytes(canonical_json_bytes(inventory)); (staging / PLAN_NAME).write_bytes(canonical_json_bytes(_payload(plan)))
         shutil.copyfile(context.source_snapshot, staging / SOURCE_NAME); shutil.copyfile(context.environment_snapshot, staging / ENVIRONMENT_NAME)
@@ -144,10 +144,20 @@ def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51P
     if report.get("ok") is not True or receipt.get("status") != "published" or report.get("manifest_sha256") != raw_file_sha256(root / MANIFEST_NAME) or receipt.get("manifest_sha256") != raw_file_sha256(root / MANIFEST_NAME) or plan.get("coefficient_plan_id") != receipt.get("coefficient_plan_id"):
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "terminal bindings")
     rows = inventory.get("arrays")
-    if not isinstance(rows, list) or len(rows) != len(ARRAYS): fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "array inventory")
+    if set(inventory) != {"schema_version", "artifact_type", "artifact_version", "arrays"} or inventory.get("schema_version") != "0.1" or inventory.get("artifact_type") != "stage_05_1_coefficient_array_inventory" or inventory.get("artifact_version") != "0.1" or not isinstance(rows, list) or len(rows) != len(ARRAYS): fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "array inventory")
+    seen: set[str] = set(); plan_rows: dict[str, Any] = {}
     for row in rows:
-        if not isinstance(row, Mapping) or set(row) != {"name", "path", "dtype", "shape", "unit", "byte_length", "sha256"}: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "inventory row")
-        if row["name"] not in ARRAYS or row["dtype"] != ARRAYS[row["name"]][0] or row["unit"] != ARRAYS[row["name"]][1]: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, row["name"])
-        raw = (root / row["path"]).read_bytes()
-        if len(raw) != row["byte_length"] or hashlib.sha256(raw).hexdigest().upper() != row["sha256"]: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, row["name"])
+        if not isinstance(row, Mapping) or set(row) != {"name", "path", "dtype", "shape", "element_count", "byte_count", "unit", "sha256"}: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "inventory row")
+        name = row["name"]
+        if name not in ARRAYS or name in seen or row["path"] != f"arrays/{name}.bin" or Path(row["path"]).is_absolute() or ".." in Path(row["path"]).parts: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, str(name))
+        seen.add(name); dtype, unit = ARRAYS[name]; count = row["element_count"]
+        if row["dtype"] != dtype or row["unit"] != unit or type(count) is not int or count <= 0 or row["shape"] != [count] or row["byte_count"] != np.dtype(dtype).itemsize * count: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, name)
+        raw = safe_file(root, root / row["path"], Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED).read_bytes()
+        if len(raw) != row["byte_count"] or hashlib.sha256(raw).hexdigest().upper() != row["sha256"] or not np.all(np.isfinite(np.frombuffer(raw, dtype=dtype))): fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, name)
+        plan_rows[name] = {key: row[key] for key in ("dtype", "shape", "element_count", "byte_count", "unit", "sha256")}
+    if seen != set(ARRAYS) or plan.get("coefficient_inventory") != plan_rows:
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "plan inventory")
+    payload = {key: plan[key] for key in ("control_binding", "physics_authority_binding", "clock", "frame_reference_frequency_GHz", "operator_inventory", "coefficient_inventory", "initial_state_spec", "observable_spec", "solver_spec")}
+    if plan.get("coefficient_plan_id") != canonical_sha256(payload):
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "coefficient_plan_id")
     return VerifiedCoefficientHandle(plan["coefficient_plan_id"], root, raw_file_sha256(root / MANIFEST_NAME), raw_file_sha256(root / RECEIPT_NAME), raw_file_sha256(root / INVENTORY_NAME), receipt["physics_authority_id"])
