@@ -7,8 +7,10 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
-from sqvm.control.registry import CHANNEL_ORDER
-from sqvm.control.stage4_config import GROUP_CONTRACT, LANE_ORDER
+import numpy as np
+
+from sqvm.control.registry import CHANNEL_ORDER, load_control_channel_registry
+from sqvm.control.stage4_config import GROUP_CONTRACT, LANE_ORDER, load_control_chain_config
 from sqvm.control.stage4_models import ControlChainConfig
 
 from .models import ControlChannelRegistry
@@ -30,6 +32,7 @@ def build_parameterized_control_context(
     channel_registry: ControlChannelRegistry,
     device_flux_limits_phi0: Mapping[str, Mapping[str, Any] | tuple[float, float]],
     *,
+    device_limit_authority_sha256: str,
     repository_root: Path,
     output_root: Path,
     authority_sha256: Mapping[str, str],
@@ -47,6 +50,15 @@ def build_parameterized_control_context(
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "accepted Stage 4 compatibility approval is required")
     if not isinstance(repository_root, Path) or not isinstance(output_root, Path) or not repository_root.is_absolute() or not output_root.is_absolute():
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "repository_root and output_root must be absolute Paths")
+    repository_root = repository_root.resolve()
+    for label, path in (("control config", control_chain_config.source_path), ("channel registry", channel_registry.source_path)):
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(repository_root)
+        except ValueError:
+            _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, f"{label} is outside repository root")
+        if path.is_symlink() or not resolved.is_file():
+            _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, f"{label} source is not an admitted file")
     for name, value in (("compiler_source_snapshot", compiler_source_snapshot), ("environment_snapshot", environment_snapshot), ("publication_policy", publication_policy)):
         if not isinstance(value, Mapping):
             _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, f"{name} must be a mapping")
@@ -54,12 +66,24 @@ def build_parameterized_control_context(
         _fail(ParameterizedControlReasonCode.CLOCK_MISMATCH, "Stage 4.1 binds the accepted 0.5 ns clock")
     if tuple(control_chain_config.lane_order) != LANE_ORDER or set(control_chain_config.lanes) != set(LANE_ORDER):
         _fail(ParameterizedControlReasonCode.NAMED_MAPPING_INVALID, "AWG lane order differs from accepted Stage 4")
+    dac = control_chain_config.dac
+    if set(dac) != {"bits", "full_scale_min_V", "full_scale_max_exclusive_V", "rounding", "code_min", "code_max", "lsb_V"} or dac["bits"] != 16 or dac["rounding"] != "half_even" or dac["code_min"] != -32768 or dac["code_max"] != 32767 or float(dac["lsb_V"]) <= 0.0:
+        _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "DAC contract differs from accepted Stage 4")
+    for lane, row in control_chain_config.lanes.items():
+        if set(row) != {"latency_samples", "fir"} or type(row["latency_samples"]) is not int or row["latency_samples"] < 0 or not isinstance(row["fir"], tuple) or not row["fir"] or any(not math.isfinite(float(value)) for value in row["fir"]):
+            _fail(ParameterizedControlReasonCode.LATENCY_CONTRACT_INVALID, f"invalid lane electronics:{lane}")
     if set(control_chain_config.static_mixing) != set(GROUP_CONTRACT):
         _fail(ParameterizedControlReasonCode.MIXING_MATRIX_INVALID, "mixing groups differ from accepted Stage 4")
     for group, (lanes, coordinates) in GROUP_CONTRACT.items():
         row = control_chain_config.static_mixing[group]
         if tuple(row.get("input_lanes", ())) != lanes or tuple(row.get("output_coordinates", ())) != coordinates:
             _fail(ParameterizedControlReasonCode.NAMED_MAPPING_INVALID, f"{group} mixing names differ")
+        matrix = np.asarray(row.get("matrix"), dtype="<f8")
+        condition = float(np.linalg.cond(matrix)) if matrix.shape == (len(lanes), len(lanes)) and np.isfinite(matrix).all() else math.inf
+        maximum = float(control_chain_config.acceptance.get("max_condition_number", math.nan))
+        reported = row.get("condition_number_2")
+        if isinstance(reported, bool) or not isinstance(reported, (int, float)) or not math.isfinite(condition) or not math.isfinite(maximum) or condition > maximum or not math.isclose(condition, float(reported), rel_tol=1e-12, abs_tol=1e-12):
+            _fail(ParameterizedControlReasonCode.MIXING_MATRIX_INVALID, f"{group} mixing matrix is not admitted")
     channel_map = channel_registry.channel_map()
     if set(channel_map) != set(CHANNEL_ORDER) or not _REQUIRED_CHANNELS.issubset(channel_map):
         _fail(ParameterizedControlReasonCode.NAMED_MAPPING_INVALID, "channel registry is not the accepted seven-channel registry")
@@ -73,22 +97,50 @@ def build_parameterized_control_context(
     if set(idle) != set(_FLUX_NAMES):
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "idle flux names are not exact")
     limits = _limits(device_flux_limits_phi0)
+    if not isinstance(device_limit_authority_sha256, str) or _HASH.fullmatch(device_limit_authority_sha256) is None:
+        _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "device limit authority hash is invalid")
     for name in _FLUX_NAMES:
         idle_value = float(idle[name])
         if not limits[name][0] <= idle_value <= limits[name][1]:
             _fail(ParameterizedControlReasonCode.DEVICE_LIMIT_EXCEEDED, f"idle flux for {name} is outside device bounds")
+    if not _same_control_config(control_chain_config, load_control_chain_config(control_chain_config.source_path)):
+        _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "control config differs from its admitted source")
+    if channel_registry != load_control_channel_registry(channel_registry.source_path):
+        _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "channel registry differs from its admitted source")
     return ParameterizedControlContext(
         repository_root=repository_root,
-        output_root=output_root,
+        output_root=output_root.resolve(),
         control_chain_config=control_chain_config,
         channel_registry=channel_registry,
         device_flux_limits_phi0=freeze_mapping(limits),
+        device_limit_authority_sha256=device_limit_authority_sha256,
         authority_sha256=freeze_mapping(_hashes(authority_sha256, "control authority")),
         expected_plan_authority_sha256=freeze_mapping(_hashes(expected_plan_authority_sha256, "plan authority")),
         stage4_compatibility_approved=True,
         compiler_source_snapshot=freeze_mapping(compiler_source_snapshot),
         environment_snapshot=freeze_mapping(environment_snapshot),
         publication_policy=freeze_mapping(publication_policy),
+    )
+
+
+def validate_parameterized_control_context(context: ParameterizedControlContext) -> None:
+    """Re-run admission so direct construction or nested mutation cannot bypass the factory."""
+
+    if not isinstance(context, ParameterizedControlContext):
+        _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "typed Stage 4.1 context is required")
+    build_parameterized_control_context(
+        context.control_chain_config,
+        context.channel_registry,
+        context.device_flux_limits_phi0,
+        device_limit_authority_sha256=context.device_limit_authority_sha256,
+        repository_root=context.repository_root,
+        output_root=context.output_root,
+        authority_sha256=context.authority_sha256,
+        expected_plan_authority_sha256=context.expected_plan_authority_sha256,
+        stage4_compatibility_approved=context.stage4_compatibility_approved,
+        compiler_source_snapshot=context.compiler_source_snapshot,
+        environment_snapshot=context.environment_snapshot,
+        publication_policy=context.publication_policy,
     )
 
 
@@ -112,6 +164,20 @@ def _limits(value: Mapping[str, Mapping[str, Any] | tuple[float, float]]) -> dic
             _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, f"{name} device limit order is invalid")
         result[name] = (float(lower), float(upper))
     return result
+
+
+def _same_control_config(left: ControlChainConfig, right: ControlChainConfig) -> bool:
+    scalar_fields = ("source_path", "profile", "inputs", "sample_rate_Hz", "dt_ns", "dac", "lane_order", "lanes", "idle_flux_phi0", "acceptance")
+    if any(getattr(left, name) != getattr(right, name) for name in scalar_fields) or set(left.static_mixing) != set(right.static_mixing):
+        return False
+    for group in left.static_mixing:
+        left_row, right_row = left.static_mixing[group], right.static_mixing[group]
+        for name in ("input_lanes", "output_coordinates", "condition_number_2"):
+            if left_row[name] != right_row[name]:
+                return False
+        if not np.array_equal(left_row["matrix"], right_row["matrix"]):
+            return False
+    return True
 
 
 def _hashes(value: Mapping[str, str], label: str) -> dict[str, str]:

@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from .canonical import sha256_bytes, sha256_json
+from .canonical import canonical_json_bytes, sha256_bytes, sha256_json
 from .errors import QCISCompilationError, QCISReasonCode
 from .models import QCISCompilation
 
@@ -78,6 +78,15 @@ def verify_compilation(compilation: QCISCompilation, candidate: Any | None = Non
     are still verified from the compilation artifact.
     """
 
+    if not isinstance(compilation, QCISCompilation):
+        _fail(QCISReasonCode.LOGICAL_WAVEFORM_HASH_MISMATCH, "typed QCISCompilation is required")
+    plan = compilation.plan
+    if plan.source != compilation.concrete_source or sha256_bytes(compilation.concrete_source.encode("utf-8")) != compilation.concrete_source_sha256:
+        _fail(QCISReasonCode.LOGICAL_WAVEFORM_HASH_MISMATCH, "concrete source hash differs")
+    if sha256_bytes(compilation.ast_bytes) != plan.ast_sha256 or compilation.ast_bytes != canonical_json_bytes(plan.program.payload()):
+        _fail(QCISReasonCode.LOGICAL_WAVEFORM_HASH_MISMATCH, "AST bytes differ")
+    if sha256_bytes(compilation.trace_bytes) != plan.trace_sha256 or compilation.trace_bytes != canonical_json_bytes(_plain(plan.trace)):
+        _fail(QCISReasonCode.LOGICAL_WAVEFORM_HASH_MISMATCH, "trace bytes differ")
     expected = _arrays(compilation, _LOGICAL_NAMES)
     _verify_arrays(
         compilation,
@@ -108,6 +117,8 @@ def verify_drive_event_inventory(compilation: QCISCompilation, candidate: Any | 
 
     plan = compilation.plan
     expected = {
+        "dt_ns": plan.dt_ns,
+        "sample_rate_Hz": plan.sample_rate_Hz,
         "frame_reference_frequency_GHz": dict(plan.frame_reference_frequency_GHz),
         "frame_reference_authority_sha256": dict(plan.frame_reference_authority_sha256),
         "drive_event_inventory": [_plain(event) for event in plan.drive_event_inventory],
@@ -119,7 +130,9 @@ def verify_drive_event_inventory(compilation: QCISCompilation, candidate: Any | 
         _fail(QCISReasonCode.DRIVE_EVENT_EVIDENCE_MISMATCH, "v0.3 drive event inventory hash differs")
     trace = _plain(plan.trace)
     if (
-        trace.get("frame_reference_frequency_GHz") != expected["frame_reference_frequency_GHz"]
+        trace.get("dt_ns") != expected["dt_ns"]
+        or trace.get("sample_rate_Hz") != expected["sample_rate_Hz"]
+        or trace.get("frame_reference_frequency_GHz") != expected["frame_reference_frequency_GHz"]
         or trace.get("frame_reference_authority_sha256") != expected["frame_reference_authority_sha256"]
         or trace.get("drive_event_inventory") != expected["drive_event_inventory"]
     ):

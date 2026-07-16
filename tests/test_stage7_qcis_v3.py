@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import math
+from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from sqvm.qcis import QCISCompilationError, QCISReasonCode, admit_program, compile_qcis, verify_compilation, verify_drive_event_inventory
 from sqvm.qcis.canonical import sha256_bytes, sha256_json
+from sqvm.control import (
+    ParameterizedControlError,
+    ParameterizedControlReasonCode,
+    adapt_qcis_v03_compilation,
+    build_parameterized_control_context,
+    compile_qcis_waveform_plan,
+    load_control_chain_config,
+    load_control_channel_registry,
+    verify_parameterized_control_artifact,
+    write_parameterized_control_artifact,
+)
 
 
 def _sha(source: str) -> str:
@@ -224,6 +237,8 @@ def test_v03_accepts_negative_and_strictly_sub_nyquist_detuning(frequency: float
 def test_v03_reference_and_event_tampering_fail_closed():
     result = _compile("X12 Q1\n")
     candidate = {
+        "dt_ns": result.plan.dt_ns,
+        "sample_rate_Hz": result.plan.sample_rate_Hz,
         "frame_reference_frequency_GHz": dict(result.plan.frame_reference_frequency_GHz),
         "frame_reference_authority_sha256": dict(result.plan.frame_reference_authority_sha256),
         "drive_event_inventory": [dict(event) for event in result.plan.drive_event_inventory],
@@ -237,6 +252,21 @@ def test_v03_reference_and_event_tampering_fail_closed():
     arrays["q1_xy"][0] *= -1.0
     with pytest.raises(QCISCompilationError) as captured:
         verify_compilation(result, arrays)
+    assert captured.value.code == QCISReasonCode.LOGICAL_WAVEFORM_HASH_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda result: replace(result, concrete_source=result.concrete_source + "I Q1 1\n"),
+        lambda result: replace(result, ast_bytes=result.ast_bytes + b" "),
+        lambda result: replace(result, trace_bytes=result.trace_bytes + b" "),
+    ],
+)
+def test_v03_handoff_verifies_source_ast_and_trace_bytes(mutate):
+    result = _compile("X Q1\n")
+    with pytest.raises(QCISCompilationError) as captured:
+        verify_compilation(mutate(result))
     assert captured.value.code == QCISReasonCode.LOGICAL_WAVEFORM_HASH_MISMATCH
 
 
@@ -283,3 +313,55 @@ def test_v03_rejects_macro_settings_that_duplicate_absolute_drive_frequency():
     with pytest.raises(QCISCompilationError) as captured:
         _compile(source, authorities)
     assert captured.value.code == QCISReasonCode.SETTING_INVALID
+
+
+def test_v03_compilation_reaches_a_verified_stage41_control_handle(tmp_path: Path):
+    qcis = _compile("PLSXY Q1 0 -1 2 0.001 5.1 0 0 2\n")
+    config = load_control_chain_config("configs/control/2q1c2r_control_smoke.yaml")
+    registry = load_control_channel_registry("configs/control/2q1c2r_channels.yaml")
+    context = build_parameterized_control_context(
+        config,
+        registry,
+        {name: (-0.5, 0.5) for name in ("q1", "q2", "c")},
+        device_limit_authority_sha256="D" * 64,
+        repository_root=Path.cwd().resolve(),
+        output_root=tmp_path.resolve(),
+        authority_sha256={"stage4_1": "A" * 64},
+        expected_plan_authority_sha256=qcis.plan.authority_sha256,
+        stage4_compatibility_approved=True,
+        compiler_source_snapshot={"source_sha256": "B" * 64},
+        environment_snapshot={"environment_sha256": "C" * 64},
+        publication_policy={"mode": "atomic_no_replace"},
+    )
+    admitted = adapt_qcis_v03_compilation(qcis, "point_integration", context)
+    compilation = compile_qcis_waveform_plan(admitted, context)
+    publication = write_parameterized_control_artifact(compilation, context, tmp_path / "point_integration")
+    handle = verify_parameterized_control_artifact(publication["artifact_root"], context, admitted)
+
+    assert handle.schema_version == "0.1"
+    assert handle.control_id == publication["control_id"]
+    assert np.max(np.abs(handle.xy_drive_GHz["q1"][0])) > 0.0
+    assert np.array_equal(
+        handle.absolute_flux_phi0["c"],
+        np.full(handle.time_center_ns.size, 0.27, dtype="<f8"),
+    )
+
+
+def test_stage41_adapter_rejects_a_qcis_clock_mismatch(tmp_path: Path):
+    source = "X Q1\n"
+    authorities = _authorities(source)
+    authorities["clock"] = {"dt_ns": 1.0, "sample_rate_Hz": 1_000_000_000.0}
+    _refresh_expected(authorities)
+    qcis = _compile(source, authorities)
+    context = build_parameterized_control_context(
+        load_control_chain_config("configs/control/2q1c2r_control_smoke.yaml"),
+        load_control_channel_registry("configs/control/2q1c2r_channels.yaml"),
+        {name: (-0.5, 0.5) for name in ("q1", "q2", "c")},
+        device_limit_authority_sha256="D" * 64,
+        repository_root=Path.cwd().resolve(), output_root=tmp_path.resolve(),
+        authority_sha256={"stage4_1": "A" * 64}, expected_plan_authority_sha256=qcis.plan.authority_sha256,
+        stage4_compatibility_approved=True, compiler_source_snapshot={}, environment_snapshot={}, publication_policy={},
+    )
+    with pytest.raises(ParameterizedControlError) as captured:
+        adapt_qcis_v03_compilation(qcis, "point_clock", context)
+    assert captured.value.code == ParameterizedControlReasonCode.CLOCK_MISMATCH

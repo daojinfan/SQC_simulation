@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 
 from sqvm.control.stage4_config import GROUP_CONTRACT, LANE_ORDER
+from sqvm.qcis.canonical import sha256_json
 from .stage4_1_models import (
     LogicalArrayInventoryRow,
     ParameterizedControlCompilation,
@@ -38,7 +39,7 @@ _ARRAYS = {
 _TOP_LEVEL = {
     "schema_version", "profile_id", "point_id", "concrete_source_sha256", "ast_sha256", "trace_sha256",
     "sample_count", "dt_ns", "logical", "frame_reference_frequency_GHz", "frame_reference_authority_sha256",
-    "array_inventory", "drive_event_inventory", "authority_sha256",
+    "array_inventory", "drive_event_inventory", "drive_event_inventory_sha256", "authority_sha256",
 }
 _EVENT_KEYS = {
     "event_id", "source_instruction_index", "target", "transition", "actual_start_sample", "sample_count",
@@ -56,7 +57,10 @@ def compile_qcis_waveform_plan(
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "ParameterizedControlContext is required")
     if not isinstance(plan, QCISV03LogicalWaveformPlan):
         _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "compile_qcis_waveform_plan requires a typed v0.3 plan")
-    logical = plan
+    from .stage4_1_config import validate_parameterized_control_context
+
+    validate_parameterized_control_context(context)
+    logical = readmit_qcis_v03_plan(plan, context)
     config = context.control_chain_config
     _validate_matrices(config)
     n = logical.sample_count
@@ -200,7 +204,13 @@ def admit_qcis_v03_plan(plan: Mapping[str, Any] | Any, context: ParameterizedCon
     if set(frame_reference_authority) != {"q1", "q2"}:
         _fail(ParameterizedControlReasonCode.PLAN_AUTHORITY_MISMATCH, "frame reference authority names are invalid")
     arrays = _logical_arrays(plan.get("logical"), plan.get("array_inventory"), sample_count)
-    events = _events(plan.get("drive_event_inventory"), sample_count)
+    events = _events(
+        plan.get("drive_event_inventory"), sample_count, frame_reference,
+        float(context.control_chain_config.sample_rate_Hz),
+    )
+    event_sha256 = plan.get("drive_event_inventory_sha256")
+    if not isinstance(event_sha256, str) or _HASH.fullmatch(event_sha256) is None or event_sha256 != sha256_json(list(events)):
+        _fail(ParameterizedControlReasonCode.PLAN_HASH_MISMATCH, "drive event inventory hash differs")
     return QCISV03LogicalWaveformPlan(
         schema_version="0.3",
         profile_id="qcis_stage7_calibration_v3",
@@ -221,8 +231,47 @@ def admit_qcis_v03_plan(plan: Mapping[str, Any] | Any, context: ParameterizedCon
         frame_reference_authority_sha256=freeze_mapping(frame_reference_authority),
         array_inventory=freeze_mapping(_inventory(plan["array_inventory"], arrays, sample_count)),
         drive_event_inventory=tuple(freeze_mapping(event) for event in events),
+        drive_event_inventory_sha256=event_sha256,
         authority_sha256=freeze_mapping(authorities),
     )
+
+
+def readmit_qcis_v03_plan(plan: QCISV03LogicalWaveformPlan, context: ParameterizedControlContext) -> QCISV03LogicalWaveformPlan:
+    inventory = {
+        name: {
+            "name": row.name,
+            "dtype": row.dtype,
+            "shape": list(row.shape),
+            "unit": row.unit,
+            "byte_length": row.byte_length,
+            "sha256": row.sha256,
+        }
+        for name, row in plan.array_inventory.items()
+    }
+    raw = {
+        "schema_version": plan.schema_version,
+        "profile_id": plan.profile_id,
+        "point_id": plan.point_id,
+        "concrete_source_sha256": plan.concrete_source_sha256,
+        "ast_sha256": plan.ast_sha256,
+        "trace_sha256": plan.trace_sha256,
+        "sample_count": plan.sample_count,
+        "dt_ns": plan.dt_ns,
+        "logical": {
+            "xy_delta_GHz": {
+                "q1": {"i": plan.xy_q1_i, "q": plan.xy_q1_q},
+                "q2": {"i": plan.xy_q2_i, "q": plan.xy_q2_q},
+            },
+            "flux_delta_phi0": {"q1": plan.flux_q1, "q2": plan.flux_q2, "c": plan.flux_c},
+        },
+        "frame_reference_frequency_GHz": plan.frame_reference_frequency_GHz,
+        "frame_reference_authority_sha256": plan.frame_reference_authority_sha256,
+        "array_inventory": inventory,
+        "drive_event_inventory": [dict(event) for event in plan.drive_event_inventory],
+        "drive_event_inventory_sha256": plan.drive_event_inventory_sha256,
+        "authority_sha256": plan.authority_sha256,
+    }
+    return admit_qcis_v03_plan(raw, context)
 
 
 def adapt_qcis_v03_compilation(
@@ -230,11 +279,25 @@ def adapt_qcis_v03_compilation(
 ) -> QCISV03LogicalWaveformPlan:
     """Adapt a QCIS v0.3 compilation by splitting its complex I/Q arrays once."""
 
+    from sqvm.qcis import QCISCompilationError, verify_compilation, verify_drive_event_inventory
+    from sqvm.qcis.models import QCISCompilation
+
+    if not isinstance(compilation, QCISCompilation):
+        _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "a typed QCISCompilation is required")
     source_plan = getattr(compilation, "plan", None)
-    if source_plan is None or getattr(source_plan, "schema_version", None) != "0.3":
+    source_program = getattr(source_plan, "program", None)
+    if source_plan is None or getattr(source_program, "schema_version", None) != "0.3":
         _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "QCISCompilation must contain a v0.3 logical plan")
-    if getattr(source_plan, "profile_id", None) != "qcis_stage7_calibration_v3":
+    envelope = getattr(compilation, "envelope", None)
+    if getattr(envelope, "program_schema_version", None) != "0.3" or getattr(envelope, "instruction_set_id", None) != "qcis_stage7_calibration_v3":
         _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "QCISCompilation profile is not qcis v3")
+    if source_plan.dt_ns != float(context.control_chain_config.dt_ns) or source_plan.sample_rate_Hz != float(context.control_chain_config.sample_rate_Hz):
+        _fail(ParameterizedControlReasonCode.CLOCK_MISMATCH, "QCIS v0.3 clock differs from the bound Stage 4.1 clock")
+    try:
+        verify_compilation(compilation)
+        verify_drive_event_inventory(compilation)
+    except QCISCompilationError as exc:
+        _fail(ParameterizedControlReasonCode.PLAN_HASH_MISMATCH, f"QCIS compilation verification failed: {exc}")
     if not isinstance(point_id, str) or _IDENTIFIER.fullmatch(point_id) is None:
         _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "point_id is invalid")
     q1_xy, q2_xy = getattr(compilation, "q1_xy", None), getattr(compilation, "q2_xy", None)
@@ -267,7 +330,7 @@ def adapt_qcis_v03_compilation(
         "ast_sha256": getattr(source_plan, "ast_sha256", None),
         "trace_sha256": getattr(source_plan, "trace_sha256", None),
         "sample_count": n,
-        "dt_ns": getattr(source_plan, "dt_ns", None),
+        "dt_ns": source_plan.dt_ns,
         "logical": {
             "xy_delta_GHz": {"q1": {"i": arrays["logical.xy_delta_GHz.q1.i"], "q": arrays["logical.xy_delta_GHz.q1.q"]}, "q2": {"i": arrays["logical.xy_delta_GHz.q2.i"], "q": arrays["logical.xy_delta_GHz.q2.q"]}},
             "flux_delta_phi0": {"q1": arrays["logical.flux_delta_phi0.q1"], "q2": arrays["logical.flux_delta_phi0.q2"], "c": arrays["logical.flux_delta_phi0.c"]},
@@ -275,7 +338,8 @@ def adapt_qcis_v03_compilation(
         "frame_reference_frequency_GHz": getattr(source_plan, "frame_reference_frequency_GHz", None),
         "frame_reference_authority_sha256": getattr(source_plan, "frame_reference_authority_sha256", None),
         "array_inventory": inventory,
-        "drive_event_inventory": getattr(source_plan, "drive_event_inventory", None),
+        "drive_event_inventory": [dict(event) for event in source_plan.drive_event_inventory],
+        "drive_event_inventory_sha256": source_plan.drive_event_inventory_sha256,
         "authority_sha256": getattr(source_plan, "authority_sha256", None),
     }
     return admit_qcis_v03_plan(raw, context)
@@ -334,7 +398,7 @@ def _frame_reference(value: Any) -> dict[str, float]:
     return result
 
 
-def _events(value: Any, n: int) -> tuple[Mapping[str, Any], ...]:
+def _events(value: Any, n: int, frame_reference: Mapping[str, float], sample_rate_hz: float) -> tuple[Mapping[str, Any], ...]:
     if not isinstance(value, list):
         _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "logical_event_inventory must be a list")
     seen: set[str] = set()
@@ -348,7 +412,7 @@ def _events(value: Any, n: int) -> tuple[Mapping[str, Any], ...]:
         start, count = row["actual_start_sample"], row["sample_count"]
         if type(start) is not int or type(count) is not int or start < 0 or count <= 0 or start + count > n:
             _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "logical event sample range is invalid")
-        if type(row["source_instruction_index"]) is not int or any(not isinstance(row[name], str) or not row[name] for name in ("transition", "phase_rule_id")):
+        if type(row["source_instruction_index"]) is not int or row["source_instruction_index"] < 0 or row["transition"] not in {"01", "12"} or row["phase_rule_id"] != "qcis_v03_absolute_detuning_phase_v1":
             _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "logical event metadata is invalid")
         for name in ("phase_total_rad", "f_drive_GHz", "f_ref_GHz", "detuning_GHz"):
             item = row[name]
@@ -361,12 +425,18 @@ def _events(value: Any, n: int) -> tuple[Mapping[str, Any], ...]:
             abs_tol=1e-12,
         ):
             _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "drive event detuning does not match f_drive-f_ref")
+        component = {"Q1": "q1", "Q2": "q2"}[target]
+        if float(row["f_ref_GHz"]) != frame_reference[component] or abs(float(row["detuning_GHz"])) >= sample_rate_hz / 2.0 / 1e9:
+            _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "drive event frame or Nyquist contract is invalid")
         if not isinstance(row["logical_array_contribution_sha256"], str) or _HASH.fullmatch(row["logical_array_contribution_sha256"]) is None:
             _fail(ParameterizedControlReasonCode.PLAN_HASH_MISMATCH, "logical event contribution hash is invalid")
-        if not isinstance(row["setting_evidence"], Mapping):
+        setting = row["setting_evidence"]
+        if setting is not None and (not isinstance(setting, Mapping) or set(setting) != {"setting_id", "revision", "setting_hash", "calibration_run_id"} or not isinstance(setting["setting_id"], str) or not setting["setting_id"] or type(setting["revision"]) is not int or setting["revision"] <= 0 or not isinstance(setting["setting_hash"], str) or _HASH.fullmatch(setting["setting_hash"]) is None or not isinstance(setting["calibration_run_id"], str) or not setting["calibration_run_id"]):
             _fail(ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID, "logical event setting evidence is invalid")
         seen.add(event_id)
-        events.append(dict(row))
+        normalized = dict(row)
+        normalized["setting_evidence"] = None if setting is None else dict(setting)
+        events.append(normalized)
     return tuple(events)
 
 
@@ -383,7 +453,8 @@ def _validate_matrices(config: Any) -> None:
     for group in ("xy", "z"):
         matrix = np.asarray(config.static_mixing[group]["matrix"], dtype="<f8")
         expected = len(GROUP_CONTRACT[group][0])
-        if matrix.shape != (expected, expected) or not np.isfinite(matrix).all() or np.linalg.det(matrix) == 0.0:
+        condition = float(np.linalg.cond(matrix)) if matrix.shape == (expected, expected) and np.isfinite(matrix).all() else math.inf
+        if not math.isfinite(condition) or condition > float(config.acceptance["max_condition_number"]):
             _fail(ParameterizedControlReasonCode.MIXING_MATRIX_INVALID, f"{group} matrix is invalid")
 
 

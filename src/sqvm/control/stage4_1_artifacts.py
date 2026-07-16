@@ -1,14 +1,14 @@
 """Atomic raw-binary publication for Stage 4.1 control points.
 
-This module deliberately accepts a Mapping/duck-typed compilation result.  The
-typed core owns the concrete dataclasses and only needs to expose the documented
-field names at this boundary.
+The public writer admits only the typed pre-publication result and context. The
+artifact itself remains language-neutral canonical JSON plus raw binary arrays.
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
+from dataclasses import asdict, is_dataclass
 from decimal import Decimal
 from pathlib import Path
 import shutil
@@ -19,6 +19,8 @@ import numpy as np
 
 from sqvm.hamiltonian.provenance import canonical_json_bytes, raw_file_sha256
 from sqvm.runtime.storage import atomic_publish, inventory_tree
+from sqvm.control.stage4_1_models import ParameterizedControlCompilation, ParameterizedControlContext, ParameterizedControlError
+from sqvm.control.stage4_1_config import validate_parameterized_control_context
 
 
 CONTROL_NAME = "control.json"
@@ -29,6 +31,14 @@ RECEIPT_NAME = "receipt.json"
 SOURCE_SNAPSHOT_NAME = "source_snapshot.json"
 ENVIRONMENT_SNAPSHOT_NAME = "environment_snapshot.json"
 _TERMINAL = {MANIFEST_NAME, REPORT_NAME, RECEIPT_NAME}
+_REQUIRED_CHECKS = {
+    "logical_plan_schema_valid", "logical_plan_hashes_valid", "logical_arrays_valid",
+    "authority_bindings_valid", "sample_grid_exact", "named_mapping_exact",
+    "static_matrices_valid", "latency_alignment_exact", "no_dac_clipping",
+    "quantization_error_within_bound", "forward_reconstruction_matches_reference",
+    "idle_added_exactly_once", "effective_arrays_finite", "device_limits_satisfied",
+    "stage4_compatibility_approval_valid",
+}
 
 
 class Stage41ArtifactError(ValueError):
@@ -42,6 +52,12 @@ class Stage41ArtifactError(ValueError):
 def write_parameterized_control_artifact(compilation: Any, context: Any, output_dir: str | Path) -> Mapping[str, Any]:
     """Publish one accepted point through sibling staging and no-replace rename."""
 
+    if not isinstance(compilation, ParameterizedControlCompilation) or not isinstance(context, ParameterizedControlContext):
+        _fail("PLAN_SCHEMA_INVALID", "typed Stage 4.1 compilation and context are required")
+    try:
+        validate_parameterized_control_context(context)
+    except ParameterizedControlError as exc:
+        _fail(exc.code.value, exc.detail)
     normalized = _normalize_compilation(compilation, context)
     output_root = Path(_field(context, "output_root")).resolve()
     target = _inside(Path(output_dir), output_root)
@@ -112,8 +128,8 @@ def _normalize_compilation(compilation: Any, context: Any) -> dict[str, Any]:
     point_id = _field(compilation, "point_id")
     if not isinstance(point_id, str) or not point_id.isascii() or not point_id:
         _fail("PLAN_SCHEMA_INVALID", "point_id")
-    if _field(compilation, "status", "accepted") != "accepted":
-        _fail("PLAN_SCHEMA_INVALID", "only accepted compilations publish")
+    if _field(compilation, "status", None) != "compiled_prepublication":
+        _fail("PLAN_SCHEMA_INVALID", "only compiled prepublication results publish")
     config = _field(context, "control_chain_config")
     dt = _field(config, "dt_ns")
     if not _finite(dt):
@@ -123,9 +139,9 @@ def _normalize_compilation(compilation: Any, context: Any) -> dict[str, Any]:
     effective = _mapping(_field(compilation, "effective_arrays"), "effective_arrays")
     logical_xy = _xy_arrays(logical.get("xy_delta_GHz", logical.get("xy_drive_GHz")), "logical XY")
     has_delta, has_absolute = "flux_delta_phi0" in logical, "flux_absolute_phi0" in logical
-    if has_delta == has_absolute:
+    if not has_delta or has_absolute:
         _fail("ARRAY_CONTRACT_INVALID", "logical flux semantics")
-    logical_flux = _named_arrays(logical["flux_delta_phi0"] if has_delta else logical["flux_absolute_phi0"], ("q1", "q2", "c"), "logical flux")
+    logical_flux = _named_arrays(logical["flux_delta_phi0"], ("q1", "q2", "c"), "logical flux")
     requested, codes, reconstructed, delivered = _awg_arrays(awg)
     effective_xy = _xy_arrays(effective.get("xy_drive_GHz"), "effective XY")
     effective_delta = _named_arrays(effective.get("flux_delta_phi0"), ("q1", "q2", "c"), "effective delta")
@@ -145,8 +161,8 @@ def _normalize_compilation(compilation: Any, context: Any) -> dict[str, Any]:
         _fail("NAMED_MAPPING_INVALID", "AWG lane names")
     arrays: dict[str, tuple[np.ndarray, str]] = {}
     for name, value in {"time_center_ns": logical_time, **logical_xy,
-                        **{f"{mode}_flux_{'delta' if has_delta else 'absolute'}": logical_flux[mode] for mode in ("q1", "q2", "c")}}.items():
-        arrays[f"logical/{name}"] = (value, "ns" if name == "time_center_ns" else "GHz" if name.endswith(("_i", "_q")) else "Phi0")
+                        **{f"{mode}_flux_delta": logical_flux[mode] for mode in ("q1", "q2", "c")}}.items():
+        arrays[f"logical/{name}"] = (value, "ns" if name == "time_center_ns" else "GHz" if name.endswith(("_i", "_q")) else "Phi/Phi0")
     arrays["awg/time_center_ns"] = (awg_time, "ns")
     for lane in requested:
         arrays[f"awg/{lane}/requested_voltage"] = (requested[lane], "V")
@@ -158,14 +174,24 @@ def _normalize_compilation(compilation: Any, context: Any) -> dict[str, Any]:
         arrays[f"effective/{mode}_i"] = (effective_xy[f"{mode}_i"], "GHz")
         arrays[f"effective/{mode}_q"] = (effective_xy[f"{mode}_q"], "GHz")
     for mode in ("q1", "q2", "c"):
-        arrays[f"effective/{mode}_flux_delta"] = (effective_delta[mode], "Phi0")
-        arrays[f"effective/{mode}_flux_absolute"] = (effective_absolute[mode], "Phi0")
+        arrays[f"effective/{mode}_flux_delta"] = (effective_delta[mode], "Phi/Phi0")
+        arrays[f"effective/{mode}_flux_absolute"] = (effective_absolute[mode], "Phi/Phi0")
+    source_snapshot = _mapping(_field(context, "compiler_source_snapshot", {}), "source snapshot")
+    environment_snapshot = _mapping(_field(context, "environment_snapshot", {}), "environment snapshot")
+    authority_binding = _mapping(_field(compilation, "authority_binding"), "authority binding")
+    authority_binding["compiler_source_snapshot_sha256"] = hashlib.sha256(canonical_json_bytes(source_snapshot)).hexdigest().upper()
+    authority_binding["environment_snapshot_sha256"] = hashlib.sha256(canonical_json_bytes(environment_snapshot)).hexdigest().upper()
+    authority_binding["control_config_sha256"] = raw_file_sha256(context.control_chain_config.source_path)
+    authority_binding["channel_registry_sha256"] = raw_file_sha256(context.channel_registry.source_path)
+    authority_binding["device_flux_limits_sha256"] = hashlib.sha256(canonical_json_bytes(_plain(context.device_flux_limits_phi0))).hexdigest().upper()
+    authority_binding["device_limit_authority_sha256"] = context.device_limit_authority_sha256
+    authority_binding["publication_policy_sha256"] = hashlib.sha256(canonical_json_bytes(_plain(context.publication_policy))).hexdigest().upper()
     return {
         "point_id": point_id, "clock": {"dt_ns": float(dt), "logical_sample_count": n, "awg_sample_count": awg_time.size, "effective_sample_count": p},
-        "source_binding": _mapping(_field(compilation, "source_binding"), "source binding"), "authority_binding": _mapping(_field(compilation, "authority_binding"), "authority binding"),
+        "source_binding": _mapping(_field(compilation, "source_binding"), "source binding"), "authority_binding": authority_binding,
         "arrays": arrays, "metrics": _mapping(_field(compilation, "metrics", {}), "metrics"),
-        "checks": _checks(_field(compilation, "checks")), "source_snapshot": _mapping(_field(context, "compiler_source_snapshot", {}), "source snapshot"),
-        "environment_snapshot": _mapping(_field(context, "environment_snapshot", {}), "environment snapshot"),
+        "checks": _checks(_field(compilation, "checks")), "source_snapshot": source_snapshot,
+        "environment_snapshot": environment_snapshot,
         "frame_reference_frequency_GHz": _frame(logical),
     }
 
@@ -251,7 +277,7 @@ def _effective_sha(inventory: Mapping[str, Any]) -> str:
 
 
 def _control_id(value: Mapping[str, Any], inventory: Mapping[str, Any], effective_sha: str) -> str:
-    content = {"point_id": value["point_id"], "source_binding": value["source_binding"], "authority_binding": value["authority_binding"], "array_inventory": inventory, "effective_control_sha256": effective_sha}
+    content = {"point_id": value["point_id"], "clock": value["clock"], "source_binding": value["source_binding"], "authority_binding": value["authority_binding"], "array_inventory": inventory, "effective_control_sha256": effective_sha}
     return hashlib.sha256(canonical_json_bytes(content)).hexdigest().upper()
 
 
@@ -259,7 +285,8 @@ def _checks(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, (list, tuple)) or not value:
         _fail("PLAN_SCHEMA_INVALID", "checks")
     rows = [dict(item) for item in value if isinstance(item, Mapping)]
-    if len(rows) != len(value) or any(set(item) != {"name", "passed", "reason_code", "evidence_ref"} or item["passed"] is not True for item in rows):
+    names = [item.get("name") for item in rows]
+    if len(rows) != len(value) or set(names) != _REQUIRED_CHECKS or len(names) != len(set(names)) or any(set(item) != {"name", "passed", "reason_code", "evidence_ref"} or item["passed"] is not True for item in rows):
         _fail("PLAN_SCHEMA_INVALID", "checks")
     return rows
 
@@ -267,7 +294,17 @@ def _checks(value: Any) -> list[dict[str, Any]]:
 def _mapping(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         _fail("PLAN_SCHEMA_INVALID", label)
-    return dict(value)
+    return {str(key): _plain(item) for key, item in value.items()}
+
+
+def _plain(value: Any) -> Any:
+    if is_dataclass(value):
+        return _plain(asdict(value))
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
 
 
 def _field(value: Any, name: str, default: Any = ... ) -> Any:

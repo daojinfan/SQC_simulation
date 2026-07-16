@@ -24,6 +24,7 @@ from sqvm.control import (
     load_logical_schedule,
 )
 from sqvm.control.stage4_1_compile import _quantize_half_even
+from sqvm.qcis.canonical import sha256_json
 
 
 def _sha(value: np.ndarray) -> str:
@@ -41,6 +42,7 @@ def _context(*, bounds: tuple[float, float] = (-0.5, 0.5)):
         config,
         registry,
         {name: bounds for name in ("q1", "q2", "c")},
+        device_limit_authority_sha256="D" * 64,
         repository_root=Path.cwd(),
         output_root=(Path.cwd() / "output").resolve(),
         authority_sha256=_hashes("A"),
@@ -84,6 +86,7 @@ def _plan(*, n: int = 4, q1_flux: float = 0.0, schema_version: str = "0.3") -> d
         "frame_reference_authority_sha256": {"q1": "4" * 64, "q2": "5" * 64},
         "array_inventory": inventory,
         "drive_event_inventory": [],
+        "drive_event_inventory_sha256": sha256_json([]),
         "authority_sha256": _hashes("B"),
     }
 
@@ -116,13 +119,13 @@ def _event() -> dict:
         "transition": "01",
         "actual_start_sample": 0,
         "sample_count": 1,
-        "phase_rule_id": "qcis_v03_absolute_time",
+        "phase_rule_id": "qcis_v03_absolute_detuning_phase_v1",
         "phase_total_rad": 0.0,
         "f_drive_GHz": 5.1,
         "f_ref_GHz": 5.0,
         "detuning_GHz": 0.1,
         "logical_array_contribution_sha256": "6" * 64,
-        "setting_evidence": {"setting_id": "q1_xy_v3", "revision": 1},
+        "setting_evidence": {"setting_id": "q1_xy_v3", "revision": 1, "setting_hash": "7" * 64, "calibration_run_id": "q1_xy_v3_run"},
     }
 
 
@@ -138,13 +141,13 @@ def test_v03_plan_runs_full_electronics_chain_and_adds_idle_once():
         )
     assert result.dac_codes["q1_z"].dtype == np.dtype("<i8")
     assert result.effective_time_center_ns.size > result.plan.sample_count
-    assert result.logical_arrays["q1_flux_delta"] is result.plan.flux_q1
+    assert result.logical_arrays["flux_delta_phi0"]["q1"] is result.plan.flux_q1
     assert result.awg_arrays["q1_z"]["dac_codes"] is result.dac_codes["q1_z"]
-    assert result.effective_arrays["q1_flux_absolute"] is result.effective_absolute_flux_phi0["q1"]
+    assert result.effective_arrays["absolute_flux_phi0"]["q1"] is result.effective_absolute_flux_phi0["q1"]
     assert result.source_binding["point_id"] == result.point_id
     assert result.authority_binding["control_authority_sha256"] == _hashes("A")
     with pytest.raises((TypeError, ValueError, RuntimeError)):
-        result.effective_arrays["q1_flux_absolute"][0] = 0.0
+        result.effective_arrays["absolute_flux_phi0"]["q1"][0] = 0.0
 
 
 def test_zero_delta_reconstructs_the_idle_vector_at_every_effective_sample():
@@ -193,6 +196,7 @@ def test_drive_event_frequency_relation_and_context_attacks_fail_closed():
     context = _context()
     plan = _plan()
     plan["drive_event_inventory"] = [_event()]
+    plan["drive_event_inventory_sha256"] = sha256_json(plan["drive_event_inventory"])
     assert _admitted(plan, context).drive_event_inventory[0]["target"] == "Q1"
     plan["drive_event_inventory"][0]["detuning_GHz"] = 0.2
     with pytest.raises(ParameterizedControlError) as captured:
@@ -203,6 +207,7 @@ def test_drive_event_frequency_relation_and_context_attacks_fail_closed():
     event = _event()
     event["setting_evidence"] = []
     plan["drive_event_inventory"] = [event]
+    plan["drive_event_inventory_sha256"] = sha256_json(plan["drive_event_inventory"])
     with pytest.raises(ParameterizedControlError) as captured:
         _admitted(plan, context)
     assert captured.value.code == ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID
@@ -220,7 +225,8 @@ def test_drive_event_frequency_relation_and_context_attacks_fail_closed():
         build_parameterized_control_context(
             replace(config, static_mixing={**config.static_mixing, "z": bad_z}),
             context.channel_registry,
-            context.device_flux_limits_phi0,
+                context.device_flux_limits_phi0,
+                device_limit_authority_sha256=context.device_limit_authority_sha256,
             repository_root=context.repository_root,
             output_root=context.output_root,
             authority_sha256=context.authority_sha256,
@@ -236,7 +242,8 @@ def test_drive_event_frequency_relation_and_context_attacks_fail_closed():
         build_parameterized_control_context(
             config,
             context.channel_registry,
-            context.device_flux_limits_phi0,
+                context.device_flux_limits_phi0,
+                device_limit_authority_sha256=context.device_limit_authority_sha256,
             repository_root=context.repository_root,
             output_root=context.output_root,
             authority_sha256={"qcis": "not-a-sha"},
@@ -248,8 +255,23 @@ def test_drive_event_frequency_relation_and_context_attacks_fail_closed():
         )
     assert captured.value.code == ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID
 
+    altered_dac = {**config.dac, "lsb_V": config.dac["lsb_V"] * 2}
+    with pytest.raises(ParameterizedControlError) as captured:
+        build_parameterized_control_context(
+            replace(config, dac=altered_dac), context.channel_registry, context.device_flux_limits_phi0,
+            device_limit_authority_sha256=context.device_limit_authority_sha256,
+            repository_root=context.repository_root, output_root=context.output_root,
+            authority_sha256=context.authority_sha256,
+            expected_plan_authority_sha256=context.expected_plan_authority_sha256,
+            stage4_compatibility_approved=True,
+            compiler_source_snapshot=context.compiler_source_snapshot,
+            environment_snapshot=context.environment_snapshot,
+            publication_policy=context.publication_policy,
+        )
+    assert captured.value.code == ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID
 
-def test_qcis_compilation_adapter_splits_complex_arrays_and_binds_point_id():
+
+def test_qcis_compilation_adapter_rejects_structural_test_doubles():
     context = _context()
     q1 = np.asarray([1.0 + 2.0j, 3.0 + 4.0j], dtype="<c16")
     q2 = np.asarray([5.0 + 6.0j, 7.0 + 8.0j], dtype="<c16")
@@ -273,10 +295,9 @@ def test_qcis_compilation_adapter_splits_complex_arrays_and_binds_point_id():
         q2_flux=np.zeros(2, dtype="<f8"),
         c_flux=np.zeros(2, dtype="<f8"),
     )
-    adapted = adapt_qcis_v03_compilation(compilation, "point_007", context)
-    assert adapted.point_id == "point_007"
-    assert np.array_equal(adapted.xy_q1_i, [1.0, 3.0])
-    assert np.array_equal(adapted.xy_q2_q, [6.0, 8.0])
+    with pytest.raises(ParameterizedControlError) as captured:
+        adapt_qcis_v03_compilation(compilation, "point_007", context)
+    assert captured.value.code == ParameterizedControlReasonCode.PLAN_SCHEMA_INVALID
 
 
 def test_legacy_smoke_compiler_replays_a_frozen_awg_code_oracle_without_stage41():
@@ -317,6 +338,24 @@ def test_v03_adapter_rejects_v02_hash_tampering_and_aggregate_device_bound_viola
         context = _context()
         compile_qcis_waveform_plan(admit_qcis_v03_plan(_plan(q1_flux=0.45), context), context)
     assert captured.value.code == ParameterizedControlReasonCode.DEVICE_LIMIT_EXCEEDED
+
+
+def test_compile_readmits_typed_plans_and_revalidates_nested_context_state():
+    context = _context()
+    admitted = _admitted(_plan(), context)
+    forged = replace(admitted, flux_q1=np.full(admitted.sample_count, 0.1, dtype="<f8"))
+    with pytest.raises(ParameterizedControlError) as captured:
+        compile_qcis_waveform_plan(forged, context)
+    assert captured.value.code == ParameterizedControlReasonCode.PLAN_HASH_MISMATCH
+
+    xy = dict(context.control_chain_config.static_mixing["xy"])
+    xy["matrix"] = np.asarray(xy["matrix"], dtype="<f8").copy()
+    xy["matrix"][0, 0] *= 10.0
+    config = replace(context.control_chain_config, static_mixing={**context.control_chain_config.static_mixing, "xy": xy})
+    mutated = replace(context, control_chain_config=config)
+    with pytest.raises(ParameterizedControlError) as captured:
+        compile_qcis_waveform_plan(admitted, mutated)
+    assert captured.value.code == ParameterizedControlReasonCode.MIXING_MATRIX_INVALID
 
 
 def test_v03_dac_overflow_rejects_without_clipping():

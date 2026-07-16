@@ -19,6 +19,7 @@ from sqvm.control.registry import load_control_channel_registry
 from sqvm.control.stage4_artifacts import build_stage4_acceptance_approval, validate_stage4_acceptance_approval, write_control_signal_artifacts
 from sqvm.control.stage4_compile import compile_control_schedule
 from sqvm.control.stage4_1_compile import adapt_qcis_v03_compilation, admit_qcis_v03_plan, compile_qcis_waveform_plan
+from sqvm.control.stage4_1_artifacts import Stage41ArtifactError, write_parameterized_control_artifact
 from sqvm.control.stage4_1_config import build_parameterized_control_context
 from sqvm.control.stage4_1_models import (
     LogicalArrayInventoryRow,
@@ -41,6 +42,7 @@ from sqvm.control.stage4_models import (
     Stage5ReadinessReport,
 )
 from sqvm.control.stage4_verify import verify_control_signal
+from sqvm.control.stage4_1_verify import VerifiedControlHandle, verify_parameterized_control_artifact
 
 __all__ = [
     "ControlChannelCompatibilityReport",
@@ -62,6 +64,8 @@ __all__ = [
     "ParameterizedControlError",
     "ParameterizedControlReasonCode",
     "QCISV03LogicalWaveformPlan",
+    "Stage41ArtifactError",
+    "VerifiedControlHandle",
     "build_control_channel_approval",
     "build_control_channel_manifest",
     "load_control_channel_registry",
@@ -78,6 +82,8 @@ __all__ = [
     "adapt_qcis_v03_compilation",
     "build_parameterized_control_context",
     "compile_qcis_waveform_plan",
+    "write_parameterized_control_artifact",
+    "verify_parameterized_control_artifact",
     "write_control_signal_artifacts",
     "build_stage4_acceptance_approval",
     "verify_control_signal",

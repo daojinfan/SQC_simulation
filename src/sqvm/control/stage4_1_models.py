@@ -89,6 +89,7 @@ class QCISV03LogicalWaveformPlan:
     frame_reference_authority_sha256: Mapping[str, str]
     array_inventory: Mapping[str, LogicalArrayInventoryRow]
     drive_event_inventory: tuple[Mapping[str, Any], ...]
+    drive_event_inventory_sha256: str
     authority_sha256: Mapping[str, str]
 
 
@@ -101,6 +102,7 @@ class ParameterizedControlContext:
     control_chain_config: ControlChainConfig
     channel_registry: ControlChannelRegistry
     device_flux_limits_phi0: Mapping[str, tuple[float, float]]
+    device_limit_authority_sha256: str
     authority_sha256: Mapping[str, str]
     expected_plan_authority_sha256: Mapping[str, str]
     stage4_compatibility_approved: bool
@@ -137,36 +139,45 @@ class ParameterizedControlCompilation:
         return self.plan.point_id
 
     @property
-    def logical_arrays(self) -> Mapping[str, np.ndarray]:
+    def logical_arrays(self) -> Mapping[str, Any]:
         return freeze_mapping({
-            "q1_i": self.plan.xy_q1_i,
-            "q1_q": self.plan.xy_q1_q,
-            "q2_i": self.plan.xy_q2_i,
-            "q2_q": self.plan.xy_q2_q,
-            "q1_flux_delta": self.plan.flux_q1,
-            "q2_flux_delta": self.plan.flux_q2,
-            "c_flux_delta": self.plan.flux_c,
+            "time_center_ns": self.logical_time_center_ns,
+            "xy_delta_GHz": {
+                "q1": {"i": self.plan.xy_q1_i, "q": self.plan.xy_q1_q},
+                "q2": {"i": self.plan.xy_q2_i, "q": self.plan.xy_q2_q},
+            },
+            "flux_delta_phi0": {
+                "q1": self.plan.flux_q1,
+                "q2": self.plan.flux_q2,
+                "c": self.plan.flux_c,
+            },
+            "frame_reference_frequency_GHz": self.plan.frame_reference_frequency_GHz,
         })
 
     @property
-    def awg_arrays(self) -> Mapping[str, Mapping[str, np.ndarray]]:
-        return freeze_mapping({
-            lane: freeze_mapping({
+    def awg_arrays(self) -> Mapping[str, Any]:
+        arrays: dict[str, Any] = {"time_center_ns": self.awg_time_center_ns}
+        arrays.update({
+            lane: {
                 "requested_voltage": self.requested_voltage_V[lane],
                 "dac_codes": self.dac_codes[lane],
                 "reconstructed_voltage": self.reconstructed_voltage_V[lane],
                 "delivered_voltage": self.delivered_voltage_V[lane],
-            })
+            }
             for lane in self.requested_voltage_V
         })
+        return freeze_mapping(arrays)
 
     @property
-    def effective_arrays(self) -> Mapping[str, np.ndarray]:
+    def effective_arrays(self) -> Mapping[str, Any]:
         return freeze_mapping({
             "time_center_ns": self.effective_time_center_ns,
-            **self.effective_xy_drive_GHz,
-            **{f"{name}_flux_delta": value for name, value in self.effective_flux_delta_phi0.items()},
-            **{f"{name}_flux_absolute": value for name, value in self.effective_absolute_flux_phi0.items()},
+            "xy_drive_GHz": {
+                "q1": {"i": self.effective_xy_drive_GHz["q1_i"], "q": self.effective_xy_drive_GHz["q1_q"]},
+                "q2": {"i": self.effective_xy_drive_GHz["q2_i"], "q": self.effective_xy_drive_GHz["q2_q"]},
+            },
+            "flux_delta_phi0": self.effective_flux_delta_phi0,
+            "absolute_flux_phi0": self.effective_absolute_flux_phi0,
         })
 
     @property
@@ -177,6 +188,8 @@ class ParameterizedControlCompilation:
             "ast_sha256": self.plan.ast_sha256,
             "trace_sha256": self.plan.trace_sha256,
             "logical_array_inventory": self.plan.array_inventory,
+            "logical_event_inventory": self.plan.drive_event_inventory,
+            "logical_event_inventory_sha256": self.plan.drive_event_inventory_sha256,
         })
 
     @property

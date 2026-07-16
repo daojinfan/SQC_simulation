@@ -1068,6 +1068,8 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
     ast_bytes = canonical_json_bytes(parsed.payload())
     trace: dict[str, Any] = {"final_cursors": cursors, "final_frames": frames, "final_sample_count": sample_count, "schema_version": "0.3" if v03 else "0.2", "steps": steps}
     if v03:
+        trace["dt_ns"] = dt_ns
+        trace["sample_rate_Hz"] = sample_rate_hz
         trace["frame_reference_frequency_GHz"] = frame_references
         trace["frame_reference_authority_sha256"] = frame_authorities
         trace["drive_event_inventory"] = drive_events
@@ -1105,6 +1107,8 @@ def _compile_plan(envelope: ProgramEnvelope, concrete: str, parsed: Any, authori
         frame_reference_authority_sha256=frozen_mapping(frame_authorities),
         drive_event_inventory=tuple(frozen_mapping(event) for event in drive_events),
         drive_event_inventory_sha256=sha256_json(drive_events) if v03 else "",
+        dt_ns=dt_ns if v03 else None,
+        sample_rate_Hz=sample_rate_hz if v03 else None,
     )
     return QCISCompilation(
         envelope=envelope, concrete_source=concrete, concrete_source_sha256=sha256_bytes(concrete.encode("utf-8")), plan=plan,

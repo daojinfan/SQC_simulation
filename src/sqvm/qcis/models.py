@@ -196,6 +196,8 @@ class QCISLogicalWaveformPlan:
     frame_reference_authority_sha256: Mapping[str, str] = field(default_factory=dict)
     drive_event_inventory: tuple[Mapping[str, Any], ...] = ()
     drive_event_inventory_sha256: str = ""
+    dt_ns: float | None = None
+    sample_rate_Hz: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
