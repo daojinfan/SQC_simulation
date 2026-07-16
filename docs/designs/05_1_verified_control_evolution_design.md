@@ -101,6 +101,39 @@ order `q1,c,q2`, charge cutoffs, local dimensions, operator construction, solver
 and initial-state rule. Experiments cannot override them. Missing, stale, unapproved, symlinked, out-of-root,
 or hash-mismatched authorities fail before output reservation.
 
+The numerical source is a separately approved `Stage51PhysicsAuthority`, not the legacy Stage 5 runtime config.
+The legacy config contains Stage 4 logical schedule and control paths and therefore may be cited as review
+provenance but may never be opened by the Stage 5.1 numerical path. The authority has exact schema:
+
+```text
+schema_version = 0.1
+artifact_type = stage_05_1_physics_authority
+artifact_version = 0.1
+status = approved
+device = {path, raw_sha256}
+hamiltonian = {path, raw_sha256}
+model = {
+  tensor_order: [q1, c, q2],
+  charge_cutoffs: [1, 1, 1],
+  reference_state_count: 16
+}
+frame = {rwa_projection: number_sector_v1}
+solver = <the exact accepted Stage 5 smoke solver mapping>
+tolerances = <the exact accepted Stage 5 tolerance mapping>
+accepted_stage5_bindings = {design_path/sha256, amendment_path/sha256}
+source_snapshot_sha256
+environment_snapshot_sha256
+publication_policy_sha256
+authority_id
+```
+
+`authority_id` is the SHA-256 of the canonical payload excluding only `authority_id`. A separate approval
+artifact binds the exact authority ID, authority raw-file hash, this design raw-file hash, approval record, and
+reviewer role. Device and Hamiltonian paths must be repository-relative regular files and are admitted with the
+same no-follow, exact-key, canonical-value, and raw-hash rules as other Stage 5.1 authorities. Rebuilding the
+model may read only those two numerical files. Source/environment snapshots and approval records are evidence,
+not alternative numerical inputs.
+
 ## 4. Time and control semantics
 
 Let `N` be the handle sample count and `dt=0.5 ns`. The signed centers must satisfy exactly:
@@ -209,11 +242,29 @@ does not change the public plan.
 The initial-state and labeling rules remain those accepted by Stage 5 unless separately changed by review:
 
 - form the complete lab-frame static Hamiltonian at the first effective absolute-flux sample;
-- choose its phase-fixed lowest eigenvector as `g_lab`;
+- choose its phase-fixed lowest eigenvector as `g_lab`; phase fixing selects the first maximum-magnitude
+  component, makes it real and non-negative, and rejects a nonfinite or zero vector;
 - start the interaction-picture solver with `psi_IP(t0)=U(t0).dag*g_lab`;
 - construct and validate the accepted lab-frame computational projectors in `q1,c,q2` order;
 - transform projectors into the interaction frame at each requested edge;
 - report populations for `000,100,001,101`, leakage, norm error, and final-state fidelity evidence.
+
+Every computational projector must be finite and Hermitian and pass both
+`||P_i^2-P_i|| <= projector_orthogonality` and, for `i != j`,
+`||P_i P_j|| <= projector_orthogonality`. Projector matrices and their hashes are part of the result evidence.
+The initial and final state bytes must be unchanged when an eigensolver supplies an otherwise equivalent input
+eigenvector with a different global phase.
+
+The Stage 5.1 fidelity is verifier replay consistency, not gate fidelity:
+
+```text
+replay_fidelity = |<psi_final_worker | psi_final_independent_replay>|^2
+```
+
+The independent verifier reruns the approved bounded smoke evolution from the published coefficient artifact
+and physics authority, phase-aligns only for diagnostics, and evaluates the phase-invariant expression above.
+No target gate, target ket, process fidelity, QPT, XEB, or calibration claim is inferred. Those belong to the
+owning calibration experiment.
 
 Stage 5.1 does not infer a gate label or target state from QCIS. A future calibration experiment owns the target
 observable and fit interpretation outside this kernel.
@@ -257,10 +308,31 @@ control/coefficient/physics binding, and the same acyclic `manifest -> report ->
 Stage 4.1. Publication is sibling staging plus same-volume atomic no-replace rename. Failed points publish no
 successful artifact or reusable result handle.
 
+Both artifact schemas use exact-key canonical JSON metadata plus raw little-endian arrays. The coefficient
+inventory records, for every array, exact logical name, relative path, dtype, shape, element count, byte count,
+and raw SHA-256. The evolution inventory records:
+
+```text
+states/initial_state.bin     <c16 [D]
+states/final_state.bin       <c16 [D]
+observables/population_000   <f8  [N+1]
+observables/population_100   <f8  [N+1]
+observables/population_001   <f8  [N+1]
+observables/population_101   <f8  [N+1]
+observables/leakage          <f8  [N+1]
+observables/norm_error       <f8  [N+1]
+```
+
+The evolution payload also records solver diagnostics, projector hashes, replay fidelity, and exact control,
+physics-authority, coefficient-plan, coefficient-manifest, source, and environment bindings. The manifest
+hashes the payload, inventory, raw arrays, and snapshots. The verification report binds the manifest hash and
+all required checks. The receipt binds the manifest hash, report hash, control ID, coefficient plan ID,
+physics authority ID, and result ID. No file may hash a downstream file, preserving the acyclic topology.
+
 The independent verifier starts from the coefficient raw arrays and accepted physics authorities. It rebuilds
 edges, complex drives, flux triples, operators, initial state, and selected Hamiltonian probes; it then checks
-the worker result and receipt. The owning Stage 7 verifier separately traces the control ID back through QCIS
-and Stage 4.1.
+the worker result and receipt and, for the bounded smoke profile, independently reruns the evolution to compute
+replay fidelity. The owning Stage 7 verifier separately traces the control ID back through QCIS and Stage 4.1.
 
 ## 10. Public API draft
 
@@ -343,6 +415,8 @@ operators_finite_and_hermitian
 coefficient_arrays_finite
 angular_conversion_applied_once
 initial_state_valid
+initial_state_phase_canonical
+computational_projectors_valid
 solver_authority_valid
 ```
 
@@ -361,6 +435,8 @@ Tests must include:
 - every control/authority/operator/coefficient/result single-byte tamper;
 - duplicate `2*pi`, missing `2*pi`, direct QCIS access, mapper reuse, and logical/AWG access guards;
 - two-level zero/constant/Rabi oracles and comparison against the accepted Stage 5 fixed scenario;
+- global-phase perturbation with byte-identical serialized initial/final states, projector idempotence and
+  pairwise orthogonality, and independent-replay fidelity;
 - QuTiP worker crash, timeout, option drift, interpreter drift, nonfinite output, and partial publication;
 - same-environment byte determinism and cross-environment numerical-tolerance evidence;
 - Windows/POSIX path, symlink/junction, target-exists, and atomic-publication failures.
@@ -395,6 +471,13 @@ The user confirmed all five Stage 5.1 review items on 2026-07-16:
    numerical-accuracy profile.
 5. Dissipation, noise, readout, fitting, calibration recommendations, and calibration-setting updates remain
    outside Stage 5.1.
+6. Stage 5.1 uses a separately approved physics authority containing only device, Hamiltonian, smoke model,
+   frame, solver, tolerance, and provenance bindings. The legacy Stage 5 config is not a runtime input.
+7. `replay_fidelity` is the phase-invariant final-state overlap between the worker and independent verifier
+   replay. It is not a gate, process, QPT, or XEB fidelity.
+8. Coefficient and evolution artifacts use exact-key JSON inventories, raw little-endian arrays, complete
+   content hashes, and the acyclic `manifest -> verification_report -> receipt` publication topology defined
+   in Section 9.
 
 These decisions freeze the Stage 5.1 implementation boundary and authorize the implementation sequence in
 Section 14. They do not authorize Stage 6 non-null programs, physical backend registration, or Stage 7 scans.
