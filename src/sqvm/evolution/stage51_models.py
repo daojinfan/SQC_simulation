@@ -109,3 +109,15 @@ class VerifiedEvolutionHandle:
     manifest_sha256: str
     receipt_sha256: str
     replay_fidelity: float
+
+
+@dataclass(frozen=True, slots=True)
+class Stage51NumericalResult:
+    edge_time_ns: np.ndarray
+    initial_state: np.ndarray
+    final_state: np.ndarray
+    populations: Mapping[str, np.ndarray]
+    leakage: np.ndarray
+    norm_error: np.ndarray
+    projector_sha256: Mapping[str, str]
+    diagnostics: Mapping[str, Any]
