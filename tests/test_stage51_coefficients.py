@@ -43,6 +43,7 @@ def _patch_authority(monkeypatch):
     binding = MappingProxyType({"physics_authority": "P", "physics_authority_id": "authority-1", "device": "D", "hamiltonian": "H", "design": "X", "approval": "Y", "solver_validation": "S", "source_snapshot": "O", "environment_snapshot": "E", "publication_policy": "L"})
     monkeypatch.setattr(module, "admit_physics_authority", lambda context: (authority, binding))
     monkeypatch.setattr(module, "_model_probe", lambda authority, context, flux: MappingProxyType({"tensor_order": ["q1", "c", "q2"], "dimension": 27, "static_probe_sha256": "M"}))
+    monkeypatch.setattr(module, "admit_verified_control", lambda handle, context: _input())
 
 
 def test_signed_zoh_plan_and_raw_artifact_are_deterministic(monkeypatch, tmp_path):
@@ -52,9 +53,10 @@ def test_signed_zoh_plan_and_raw_artifact_are_deterministic(monkeypatch, tmp_pat
     second = build_evolution_coefficient_plan(admitted, context)
     assert first.coefficient_plan_id == second.coefficient_plan_id
     assert np.array_equal(first.arrays["time_edge_ns"], [-0.5, 0.0, 0.5, 1.0])
-    handle = publish_evolution_coefficient_artifact(first, context, tmp_path / "coefficient")
-    assert verify_evolution_coefficient_artifact(handle.artifact_root, context).coefficient_plan_id == first.coefficient_plan_id
+    source_handle = object()
+    handle = publish_evolution_coefficient_artifact(first, context, tmp_path / "coefficient", source_handle)
+    assert verify_evolution_coefficient_artifact(handle.artifact_root, context, source_handle).coefficient_plan_id == first.coefficient_plan_id
     path = handle.artifact_root / "arrays" / "epsilon_q1.bin"
     path.write_bytes(bytes([path.read_bytes()[0] ^ 1]) + path.read_bytes()[1:])
     with pytest.raises(Stage51EvolutionError):
-        verify_evolution_coefficient_artifact(handle.artifact_root, context)
+        verify_evolution_coefficient_artifact(handle.artifact_root, context, source_handle)

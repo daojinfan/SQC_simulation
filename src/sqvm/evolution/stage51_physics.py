@@ -42,8 +42,9 @@ def phase_invariant_overlap(left: np.ndarray, right: np.ndarray) -> float:
 
 
 def _arrays(handle: VerifiedCoefficientHandle, context: Stage51PhysicsContext) -> dict[str, np.ndarray]:
-    verified = verify_evolution_coefficient_artifact(handle.artifact_root, context)
-    if verified != handle:
+    verified = verify_evolution_coefficient_artifact(handle.artifact_root, context, handle.source_control_handle)
+    fields = ("coefficient_plan_id", "artifact_root", "manifest_sha256", "receipt_sha256", "inventory_sha256", "physics_authority_id")
+    if any(getattr(verified, name) != getattr(handle, name) for name in fields) or verified.source_control_handle is not handle.source_control_handle:
         fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "stale coefficient handle")
     inventory = read_json(handle.artifact_root / "array_inventory.json", Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED)
     result = {row["name"]: np.frombuffer((handle.artifact_root / row["path"]).read_bytes(), dtype=row["dtype"]).copy() for row in inventory["arrays"]}

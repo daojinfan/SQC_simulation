@@ -16,7 +16,8 @@ from sqvm.device.capacitance import build_capacitance_matrix
 from sqvm.device.junction import resolve_junction_parameters
 from sqvm.device.spec import load_device
 from sqvm.evolution.physics import zoh_edges
-from sqvm.evolution.stage51_authority import admit_physics_authority, canonical_sha256, fail, plain, read_json, safe_file
+from sqvm.evolution.stage51_authority import admit_physics_authority, admit_verified_control, canonical_sha256, fail, plain, read_json, safe_file
+from sqvm.control.stage4_1_verify import VerifiedControlHandle
 from sqvm.evolution.stage51_models import (
     EvolutionCoefficientPlan, Stage51EvolutionInput, Stage51FailureCode,
     Stage51PhysicsContext, VerifiedCoefficientHandle,
@@ -106,7 +107,11 @@ def _payload(plan: EvolutionCoefficientPlan) -> dict[str, Any]:
     return {"schema_version": plan.schema_version, "coefficient_plan_id": plan.coefficient_plan_id, "control_binding": plain(plan.control_binding), "physics_authority_binding": plain(plan.physics_authority_binding), "clock": plain(plan.clock), "frame_reference_frequency_GHz": plain(plan.frame_reference_frequency_GHz), "operator_inventory": plain(plan.operator_inventory), "coefficient_inventory": plain(plan.coefficient_inventory), "initial_state_spec": plain(plan.initial_state_spec), "observable_spec": plain(plan.observable_spec), "solver_spec": plain(plan.solver_spec), "checks": plain(plan.checks)}
 
 
-def verify_evolution_coefficient_staging(staging: Path, context: Stage51PhysicsContext, expected_plan: EvolutionCoefficientPlan) -> tuple[Mapping[str, Any], ...]:
+def exact_plan_equal(left: EvolutionCoefficientPlan, right: EvolutionCoefficientPlan) -> bool:
+    return _payload(left) == _payload(right) and set(left.arrays) == set(right.arrays) and all(np.array_equal(left.arrays[name], right.arrays[name]) for name in left.arrays)
+
+
+def verify_evolution_coefficient_staging(staging: Path, context: Stage51PhysicsContext, source_control_handle: VerifiedControlHandle) -> tuple[Mapping[str, Any], ...]:
     """Independent payload-layer replay before any terminal metadata exists."""
     root = Path(staging).resolve()
     expected_files = {PLAN_NAME, INVENTORY_NAME, SOURCE_NAME, ENVIRONMENT_NAME, *{f"arrays/{name}.bin" for name in ARRAYS}}
@@ -114,6 +119,7 @@ def verify_evolution_coefficient_staging(staging: Path, context: Stage51PhysicsC
     if files != expected_files:
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "staging file set")
     plan, inventory = read_json(root / PLAN_NAME, Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED), read_json(root / INVENTORY_NAME, Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED)
+    expected_plan = build_evolution_coefficient_plan(admit_verified_control(source_control_handle, context), context)
     if plan != _payload(expected_plan):
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "staging plan")
     if raw_file_sha256(root / SOURCE_NAME) != raw_file_sha256(context.source_snapshot) or raw_file_sha256(root / ENVIRONMENT_NAME) != raw_file_sha256(context.environment_snapshot):
@@ -131,10 +137,13 @@ def verify_evolution_coefficient_staging(staging: Path, context: Stage51PhysicsC
     return tuple(MappingProxyType({"name": name, "passed": True}) for name in CHECKS)
 
 
-def publish_evolution_coefficient_artifact(plan: EvolutionCoefficientPlan, context: Stage51PhysicsContext, output_dir: Path) -> VerifiedCoefficientHandle:
+def publish_evolution_coefficient_artifact(plan: EvolutionCoefficientPlan, context: Stage51PhysicsContext, output_dir: Path, source_control_handle: VerifiedControlHandle) -> VerifiedCoefficientHandle:
     if not isinstance(plan, EvolutionCoefficientPlan):
         fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "plan")
-    admit_physics_authority(context)
+    admitted = admit_verified_control(source_control_handle, context)
+    rebuilt = build_evolution_coefficient_plan(admitted, context)
+    if not exact_plan_equal(plan, rebuilt):
+        fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "plan is not bound to source control handle")
     output = context.output_root.resolve(); target = Path(output_dir).resolve()
     try: target.relative_to(output)
     except ValueError: fail(Stage51FailureCode.PUBLICATION_CONFLICT, "outside output root")
@@ -148,7 +157,7 @@ def publish_evolution_coefficient_artifact(plan: EvolutionCoefficientPlan, conte
         inventory = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_array_inventory", "artifact_version": "0.1", "arrays": sorted(rows, key=lambda row: row["name"])}
         (staging / INVENTORY_NAME).write_bytes(canonical_json_bytes(inventory)); (staging / PLAN_NAME).write_bytes(canonical_json_bytes(_payload(plan)))
         shutil.copyfile(context.source_snapshot, staging / SOURCE_NAME); shutil.copyfile(context.environment_snapshot, staging / ENVIRONMENT_NAME)
-        replay_checks = verify_evolution_coefficient_staging(staging, context, plan)
+        replay_checks = verify_evolution_coefficient_staging(staging, context, source_control_handle)
         payload_files = [{"path": row["path"], "byte_length": row["byte_length"], "raw_sha256": row["raw_sha256"]} for row in inventory_tree_no_follow(staging) if row.get("entry_type") == "file"]
         manifest = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_manifest", "artifact_version": "0.1", "coefficient_plan_id": plan.coefficient_plan_id, "payload_files": payload_files, "plan_sha256": raw_file_sha256(staging / PLAN_NAME), "inventory_sha256": raw_file_sha256(staging / INVENTORY_NAME)}
         (staging / MANIFEST_NAME).write_bytes(canonical_json_bytes(manifest)); manifest_sha = raw_file_sha256(staging / MANIFEST_NAME)
@@ -156,15 +165,15 @@ def publish_evolution_coefficient_artifact(plan: EvolutionCoefficientPlan, conte
         (staging / REPORT_NAME).write_bytes(canonical_json_bytes(report)); report_sha = raw_file_sha256(staging / REPORT_NAME)
         receipt = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_receipt", "artifact_version": "0.1", "coefficient_plan_id": plan.coefficient_plan_id, "status": "published", "manifest_sha256": manifest_sha, "verification_report_sha256": report_sha, "physics_authority_id": plan.physics_authority_binding["physics_authority_id"]}
         (staging / RECEIPT_NAME).write_bytes(canonical_json_bytes(receipt)); receipt_sha = raw_file_sha256(staging / RECEIPT_NAME)
-        verify_evolution_coefficient_artifact(staging, context)
+        verify_evolution_coefficient_artifact(staging, context, source_control_handle)
         atomic_publish(staging, target)
-        return VerifiedCoefficientHandle(plan.coefficient_plan_id, target, manifest_sha, receipt_sha, raw_file_sha256(target / INVENTORY_NAME), plan.physics_authority_binding["physics_authority_id"])
+        return VerifiedCoefficientHandle(plan.coefficient_plan_id, target, manifest_sha, receipt_sha, raw_file_sha256(target / INVENTORY_NAME), plan.physics_authority_binding["physics_authority_id"], source_control_handle)
     except Exception:
         if staging.exists(): shutil.rmtree(staging)
         raise
 
 
-def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51PhysicsContext) -> VerifiedCoefficientHandle:
+def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51PhysicsContext, expected_source_control_handle: VerifiedControlHandle | None = None) -> VerifiedCoefficientHandle:
     root = Path(artifact_root).resolve(); output = context.output_root.resolve()
     try: root.relative_to(output)
     except ValueError: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "outside output root")
@@ -185,7 +194,7 @@ def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51P
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "terminal bindings")
     rows = inventory.get("arrays")
     if set(inventory) != {"schema_version", "artifact_type", "artifact_version", "arrays"} or inventory.get("schema_version") != "0.1" or inventory.get("artifact_type") != "stage_05_1_coefficient_array_inventory" or inventory.get("artifact_version") != "0.1" or not isinstance(rows, list) or len(rows) != len(ARRAYS): fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "array inventory")
-    seen: set[str] = set(); plan_rows: dict[str, Any] = {}
+    seen: set[str] = set(); plan_rows: dict[str, Any] = {}; artifact_arrays: dict[str, np.ndarray] = {}
     for row in rows:
         if not isinstance(row, Mapping) or set(row) != {"name", "path", "dtype", "shape", "element_count", "byte_count", "unit", "sha256"}: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "inventory row")
         name = row["name"]
@@ -193,7 +202,9 @@ def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51P
         seen.add(name); dtype, unit = ARRAYS[name]; count = row["element_count"]
         if row["dtype"] != dtype or row["unit"] != unit or type(count) is not int or count <= 0 or row["shape"] != [count] or row["byte_count"] != np.dtype(dtype).itemsize * count: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, name)
         raw = safe_file(root, root / row["path"], Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED).read_bytes()
-        if len(raw) != row["byte_count"] or hashlib.sha256(raw).hexdigest().upper() != row["sha256"] or not np.all(np.isfinite(np.frombuffer(raw, dtype=dtype))): fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, name)
+        array = np.frombuffer(raw, dtype=dtype)
+        if len(raw) != row["byte_count"] or hashlib.sha256(raw).hexdigest().upper() != row["sha256"] or not np.all(np.isfinite(array)): fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, name)
+        artifact_arrays[name] = array
         plan_rows[name] = {key: row[key] for key in ("dtype", "shape", "element_count", "byte_count", "unit", "sha256")}
     if seen != set(ARRAYS) or plan.get("coefficient_inventory") != plan_rows:
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "plan inventory")
@@ -203,4 +214,9 @@ def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51P
     _, authority_binding = admit_physics_authority(context)
     if plain(plan.get("physics_authority_binding")) != plain(authority_binding) or receipt.get("physics_authority_id") != authority_binding["physics_authority_id"]:
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "physics authority binding")
-    return VerifiedCoefficientHandle(plan["coefficient_plan_id"], root, raw_file_sha256(root / MANIFEST_NAME), raw_file_sha256(root / RECEIPT_NAME), raw_file_sha256(root / INVENTORY_NAME), receipt["physics_authority_id"])
+    if expected_source_control_handle is None:
+        fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "process-local source control handle required")
+    rebuilt = build_evolution_coefficient_plan(admit_verified_control(expected_source_control_handle, context), context)
+    if plan != _payload(rebuilt) or any(not np.array_equal(artifact_arrays[name], rebuilt.arrays[name]) for name in ARRAYS):
+        fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "artifact plan is not bound to source control handle")
+    return VerifiedCoefficientHandle(plan["coefficient_plan_id"], root, raw_file_sha256(root / MANIFEST_NAME), raw_file_sha256(root / RECEIPT_NAME), raw_file_sha256(root / INVENTORY_NAME), receipt["physics_authority_id"], expected_source_control_handle)

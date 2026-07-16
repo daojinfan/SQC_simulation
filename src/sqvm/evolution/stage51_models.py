@@ -91,6 +91,7 @@ class VerifiedCoefficientHandle:
     receipt_sha256: str
     inventory_sha256: str
     physics_authority_id: str
+    source_control_handle: Any
 
 
 @dataclass(frozen=True, slots=True)
