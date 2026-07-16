@@ -123,7 +123,8 @@ def publish_evolution_coefficient_artifact(plan: EvolutionCoefficientPlan, conte
         inventory = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_array_inventory", "artifact_version": "0.1", "arrays": sorted(rows, key=lambda row: row["name"])}
         (staging / INVENTORY_NAME).write_bytes(canonical_json_bytes(inventory)); (staging / PLAN_NAME).write_bytes(canonical_json_bytes(_payload(plan)))
         shutil.copyfile(context.source_snapshot, staging / SOURCE_NAME); shutil.copyfile(context.environment_snapshot, staging / ENVIRONMENT_NAME)
-        manifest = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_manifest", "artifact_version": "0.1", "coefficient_plan_id": plan.coefficient_plan_id, "payload_files": inventory_tree_no_follow(staging), "plan_sha256": raw_file_sha256(staging / PLAN_NAME), "inventory_sha256": raw_file_sha256(staging / INVENTORY_NAME)}
+        payload_files = [{"path": row["path"], "byte_length": row["byte_length"], "raw_sha256": row["raw_sha256"]} for row in inventory_tree_no_follow(staging) if row.get("entry_type") == "file"]
+        manifest = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_manifest", "artifact_version": "0.1", "coefficient_plan_id": plan.coefficient_plan_id, "payload_files": payload_files, "plan_sha256": raw_file_sha256(staging / PLAN_NAME), "inventory_sha256": raw_file_sha256(staging / INVENTORY_NAME)}
         (staging / MANIFEST_NAME).write_bytes(canonical_json_bytes(manifest)); manifest_sha = raw_file_sha256(staging / MANIFEST_NAME)
         report = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_verification_report", "artifact_version": "0.1", "coefficient_plan_id": plan.coefficient_plan_id, "ok": True, "checks": plain(plan.checks), "manifest_sha256": manifest_sha}
         (staging / REPORT_NAME).write_bytes(canonical_json_bytes(report)); report_sha = raw_file_sha256(staging / REPORT_NAME)
@@ -140,8 +141,20 @@ def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51P
     root = Path(artifact_root).resolve(); output = context.output_root.resolve()
     try: root.relative_to(output)
     except ValueError: fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "outside output root")
+    expected_files = {PLAN_NAME, INVENTORY_NAME, SOURCE_NAME, ENVIRONMENT_NAME, MANIFEST_NAME, REPORT_NAME, RECEIPT_NAME, *{f"arrays/{name}.bin" for name in ARRAYS}}
+    actual_files = {row["path"] for row in inventory_tree_no_follow(root) if row.get("entry_type") == "file"}
+    if actual_files != expected_files:
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "published file set")
     plan, inventory, manifest, report, receipt = (read_json(root / name, Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED) for name in (PLAN_NAME, INVENTORY_NAME, MANIFEST_NAME, REPORT_NAME, RECEIPT_NAME))
-    if report.get("ok") is not True or receipt.get("status") != "published" or report.get("manifest_sha256") != raw_file_sha256(root / MANIFEST_NAME) or receipt.get("manifest_sha256") != raw_file_sha256(root / MANIFEST_NAME) or plan.get("coefficient_plan_id") != receipt.get("coefficient_plan_id"):
+    manifest_sha, report_sha, inventory_sha = raw_file_sha256(root / MANIFEST_NAME), raw_file_sha256(root / REPORT_NAME), raw_file_sha256(root / INVENTORY_NAME)
+    if set(manifest) != {"schema_version", "artifact_type", "artifact_version", "coefficient_plan_id", "payload_files", "plan_sha256", "inventory_sha256"} or manifest.get("schema_version") != "0.1" or manifest.get("artifact_type") != "stage_05_1_coefficient_manifest" or manifest.get("artifact_version") != "0.1":
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "manifest schema")
+    payload_files = [{"path": row["path"], "byte_length": row["byte_length"], "raw_sha256": row["raw_sha256"]} for row in inventory_tree_no_follow(root) if row.get("entry_type") == "file" and row["path"] not in {MANIFEST_NAME, REPORT_NAME, RECEIPT_NAME}]
+    if manifest.get("payload_files") != payload_files or manifest.get("plan_sha256") != raw_file_sha256(root / PLAN_NAME) or manifest.get("inventory_sha256") != inventory_sha or manifest.get("coefficient_plan_id") != plan.get("coefficient_plan_id"):
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "manifest bindings")
+    if set(report) != {"schema_version", "artifact_type", "artifact_version", "coefficient_plan_id", "ok", "checks", "manifest_sha256"} or report.get("schema_version") != "0.1" or report.get("artifact_type") != "stage_05_1_coefficient_verification_report" or report.get("artifact_version") != "0.1" or report.get("ok") is not True or report.get("manifest_sha256") != manifest_sha or report.get("coefficient_plan_id") != plan.get("coefficient_plan_id"):
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "report schema")
+    if set(receipt) != {"schema_version", "artifact_type", "artifact_version", "coefficient_plan_id", "status", "manifest_sha256", "verification_report_sha256", "physics_authority_id"} or receipt.get("schema_version") != "0.1" or receipt.get("artifact_type") != "stage_05_1_coefficient_receipt" or receipt.get("artifact_version") != "0.1" or receipt.get("status") != "published" or receipt.get("manifest_sha256") != manifest_sha or receipt.get("verification_report_sha256") != report_sha or plan.get("coefficient_plan_id") != receipt.get("coefficient_plan_id"):
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "terminal bindings")
     rows = inventory.get("arrays")
     if set(inventory) != {"schema_version", "artifact_type", "artifact_version", "arrays"} or inventory.get("schema_version") != "0.1" or inventory.get("artifact_type") != "stage_05_1_coefficient_array_inventory" or inventory.get("artifact_version") != "0.1" or not isinstance(rows, list) or len(rows) != len(ARRAYS): fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "array inventory")
@@ -160,4 +173,7 @@ def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51P
     payload = {key: plan[key] for key in ("control_binding", "physics_authority_binding", "clock", "frame_reference_frequency_GHz", "operator_inventory", "coefficient_inventory", "initial_state_spec", "observable_spec", "solver_spec")}
     if plan.get("coefficient_plan_id") != canonical_sha256(payload):
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "coefficient_plan_id")
+    _, authority_binding = admit_physics_authority(context)
+    if plain(plan.get("physics_authority_binding")) != plain(authority_binding) or receipt.get("physics_authority_id") != authority_binding["physics_authority_id"]:
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "physics authority binding")
     return VerifiedCoefficientHandle(plan["coefficient_plan_id"], root, raw_file_sha256(root / MANIFEST_NAME), raw_file_sha256(root / RECEIPT_NAME), raw_file_sha256(root / INVENTORY_NAME), receipt["physics_authority_id"])
