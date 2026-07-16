@@ -106,6 +106,31 @@ def _payload(plan: EvolutionCoefficientPlan) -> dict[str, Any]:
     return {"schema_version": plan.schema_version, "coefficient_plan_id": plan.coefficient_plan_id, "control_binding": plain(plan.control_binding), "physics_authority_binding": plain(plan.physics_authority_binding), "clock": plain(plan.clock), "frame_reference_frequency_GHz": plain(plan.frame_reference_frequency_GHz), "operator_inventory": plain(plan.operator_inventory), "coefficient_inventory": plain(plan.coefficient_inventory), "initial_state_spec": plain(plan.initial_state_spec), "observable_spec": plain(plan.observable_spec), "solver_spec": plain(plan.solver_spec), "checks": plain(plan.checks)}
 
 
+def verify_evolution_coefficient_staging(staging: Path, context: Stage51PhysicsContext, expected_plan: EvolutionCoefficientPlan) -> tuple[Mapping[str, Any], ...]:
+    """Independent payload-layer replay before any terminal metadata exists."""
+    root = Path(staging).resolve()
+    expected_files = {PLAN_NAME, INVENTORY_NAME, SOURCE_NAME, ENVIRONMENT_NAME, *{f"arrays/{name}.bin" for name in ARRAYS}}
+    files = {row["path"] for row in inventory_tree_no_follow(root) if row.get("entry_type") == "file"}
+    if files != expected_files:
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "staging file set")
+    plan, inventory = read_json(root / PLAN_NAME, Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED), read_json(root / INVENTORY_NAME, Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED)
+    if plan != _payload(expected_plan):
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "staging plan")
+    if raw_file_sha256(root / SOURCE_NAME) != raw_file_sha256(context.source_snapshot) or raw_file_sha256(root / ENVIRONMENT_NAME) != raw_file_sha256(context.environment_snapshot):
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "staging snapshots")
+    rows = inventory.get("arrays") if isinstance(inventory, Mapping) else None
+    if not isinstance(rows, list) or {row.get("name") for row in rows if isinstance(row, Mapping)} != set(ARRAYS):
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "staging inventory")
+    for row in rows:
+        name = row["name"]
+        if row.get("path") != f"arrays/{name}.bin" or row.get("dtype") != ARRAYS[name][0] or row.get("unit") != ARRAYS[name][1] or raw_file_sha256(safe_file(root, root / row["path"], Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED)) != row.get("sha256"):
+            fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, f"staging {name}")
+    _, binding = admit_physics_authority(context)
+    if plain(plan.get("physics_authority_binding")) != plain(binding):
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "staging authority")
+    return tuple(MappingProxyType({"name": name, "passed": True}) for name in CHECKS)
+
+
 def publish_evolution_coefficient_artifact(plan: EvolutionCoefficientPlan, context: Stage51PhysicsContext, output_dir: Path) -> VerifiedCoefficientHandle:
     if not isinstance(plan, EvolutionCoefficientPlan):
         fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "plan")
@@ -123,13 +148,15 @@ def publish_evolution_coefficient_artifact(plan: EvolutionCoefficientPlan, conte
         inventory = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_array_inventory", "artifact_version": "0.1", "arrays": sorted(rows, key=lambda row: row["name"])}
         (staging / INVENTORY_NAME).write_bytes(canonical_json_bytes(inventory)); (staging / PLAN_NAME).write_bytes(canonical_json_bytes(_payload(plan)))
         shutil.copyfile(context.source_snapshot, staging / SOURCE_NAME); shutil.copyfile(context.environment_snapshot, staging / ENVIRONMENT_NAME)
+        replay_checks = verify_evolution_coefficient_staging(staging, context, plan)
         payload_files = [{"path": row["path"], "byte_length": row["byte_length"], "raw_sha256": row["raw_sha256"]} for row in inventory_tree_no_follow(staging) if row.get("entry_type") == "file"]
         manifest = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_manifest", "artifact_version": "0.1", "coefficient_plan_id": plan.coefficient_plan_id, "payload_files": payload_files, "plan_sha256": raw_file_sha256(staging / PLAN_NAME), "inventory_sha256": raw_file_sha256(staging / INVENTORY_NAME)}
         (staging / MANIFEST_NAME).write_bytes(canonical_json_bytes(manifest)); manifest_sha = raw_file_sha256(staging / MANIFEST_NAME)
-        report = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_verification_report", "artifact_version": "0.1", "coefficient_plan_id": plan.coefficient_plan_id, "ok": True, "checks": plain(plan.checks), "manifest_sha256": manifest_sha}
+        report = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_verification_report", "artifact_version": "0.1", "coefficient_plan_id": plan.coefficient_plan_id, "ok": True, "checks": plain(replay_checks), "manifest_sha256": manifest_sha}
         (staging / REPORT_NAME).write_bytes(canonical_json_bytes(report)); report_sha = raw_file_sha256(staging / REPORT_NAME)
         receipt = {"schema_version": "0.1", "artifact_type": "stage_05_1_coefficient_receipt", "artifact_version": "0.1", "coefficient_plan_id": plan.coefficient_plan_id, "status": "published", "manifest_sha256": manifest_sha, "verification_report_sha256": report_sha, "physics_authority_id": plan.physics_authority_binding["physics_authority_id"]}
         (staging / RECEIPT_NAME).write_bytes(canonical_json_bytes(receipt)); receipt_sha = raw_file_sha256(staging / RECEIPT_NAME)
+        verify_evolution_coefficient_artifact(staging, context)
         atomic_publish(staging, target)
         return VerifiedCoefficientHandle(plan.coefficient_plan_id, target, manifest_sha, receipt_sha, raw_file_sha256(target / INVENTORY_NAME), plan.physics_authority_binding["physics_authority_id"])
     except Exception:
