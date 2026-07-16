@@ -181,6 +181,8 @@ def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51P
     actual_files = {row["path"] for row in inventory_tree_no_follow(root) if row.get("entry_type") == "file"}
     if actual_files != expected_files:
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "published file set")
+    if raw_file_sha256(root / SOURCE_NAME) != raw_file_sha256(context.source_snapshot) or raw_file_sha256(root / ENVIRONMENT_NAME) != raw_file_sha256(context.environment_snapshot):
+        fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "published snapshots")
     plan, inventory, manifest, report, receipt = (read_json(root / name, Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED) for name in (PLAN_NAME, INVENTORY_NAME, MANIFEST_NAME, REPORT_NAME, RECEIPT_NAME))
     manifest_sha, report_sha, inventory_sha = raw_file_sha256(root / MANIFEST_NAME), raw_file_sha256(root / REPORT_NAME), raw_file_sha256(root / INVENTORY_NAME)
     if set(manifest) != {"schema_version", "artifact_type", "artifact_version", "coefficient_plan_id", "payload_files", "plan_sha256", "inventory_sha256"} or manifest.get("schema_version") != "0.1" or manifest.get("artifact_type") != "stage_05_1_coefficient_manifest" or manifest.get("artifact_version") != "0.1":
@@ -214,6 +216,14 @@ def verify_evolution_coefficient_artifact(artifact_root: Path, context: Stage51P
     _, authority_binding = admit_physics_authority(context)
     if plain(plan.get("physics_authority_binding")) != plain(authority_binding) or receipt.get("physics_authority_id") != authority_binding["physics_authority_id"]:
         fail(Stage51FailureCode.ARTIFACT_VERIFICATION_FAILED, "physics authority binding")
+    authority, _ = admit_physics_authority(context)
+    probe = _model_probe(authority, context, {
+        "q1": float(artifact_arrays["absolute_flux_q1"][0]),
+        "c": float(artifact_arrays["absolute_flux_c"][0]),
+        "q2": float(artifact_arrays["absolute_flux_q2"][0]),
+    })
+    if plan.get("operator_inventory") != plain(probe):
+        fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, "static probe mismatch")
     if expected_source_control_handle is None:
         fail(Stage51FailureCode.COEFFICIENT_PLAN_INVALID, "process-local source control handle required")
     rebuilt = build_evolution_coefficient_plan(admit_verified_control(expected_source_control_handle, context), context)
