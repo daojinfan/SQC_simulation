@@ -10,7 +10,7 @@
     {"path": "src/sqvm/evolution/input.py", "raw_sha256": "10173CE2DA9D168C492FC0B84F72D5F97D3962D0295CD90921C6CBAD7D1D60F0"},
     {"path": "src/sqvm/evolution/models.py", "raw_sha256": "79F0905F8DE2D7E96403B1CABF56FFB7A7686A30D39D7150A7AC6DC75E010D8E"},
     {"path": "src/sqvm/evolution/physics.py", "raw_sha256": "F0DFC9BD5C246BD799CB1B05F75EE9D81C03C6A2ADCF3355519D234DE949E06B"},
-    {"path": "src/sqvm/evolution/stage51_artifacts.py", "raw_sha256": "325B50727A1E8442EDB2800DAD03C3015F0BD4352C5A730E8B28FCCE977D4377"},
+    {"path": "src/sqvm/evolution/stage51_artifacts.py", "raw_sha256": "2D26E206ABCDDDA6A26FBC62B6843865F158A5D41BD88D0538EA92AAC54C75C0"},
     {"path": "src/sqvm/evolution/stage51_authority.py", "raw_sha256": "820745B6529D777D9A0DCFC576002DB3D0CF630DBDD6D3DD8F2563F7F8BB7551"},
     {"path": "src/sqvm/evolution/stage51_coefficients.py", "raw_sha256": "E0E19DA0B429D205C9EC2D486E8D0A38E22925F13DDF102644B322504791976F"},
     {"path": "src/sqvm/evolution/stage51_context.py", "raw_sha256": "7A64750BE8A3A77455E2F734D1FB01179024E0C38F35A0B4BD547DD1E1E9712D"},
