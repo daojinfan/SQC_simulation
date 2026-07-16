@@ -18,6 +18,16 @@ from sqvm.control.models import (
 from sqvm.control.registry import load_control_channel_registry
 from sqvm.control.stage4_artifacts import build_stage4_acceptance_approval, validate_stage4_acceptance_approval, write_control_signal_artifacts
 from sqvm.control.stage4_compile import compile_control_schedule
+from sqvm.control.stage4_1_compile import adapt_qcis_v03_compilation, admit_qcis_v03_plan, compile_qcis_waveform_plan
+from sqvm.control.stage4_1_config import build_parameterized_control_context
+from sqvm.control.stage4_1_models import (
+    LogicalArrayInventoryRow,
+    ParameterizedControlCompilation,
+    ParameterizedControlContext,
+    ParameterizedControlError,
+    ParameterizedControlReasonCode,
+    QCISV03LogicalWaveformPlan,
+)
 from sqvm.control.stage4_config import load_control_chain_config, load_logical_schedule, validate_logical_schedule
 from sqvm.control.stage4_models import (
     ControlArtifactSet,
@@ -42,10 +52,16 @@ __all__ = [
     "ControlChainConfig",
     "ControlCompilationResult",
     "ControlRunReceipt",
+    "LogicalArrayInventoryRow",
     "LogicalPulse",
     "LogicalSchedule",
     "ScheduleValidationReport",
     "Stage5ReadinessReport",
+    "ParameterizedControlCompilation",
+    "ParameterizedControlContext",
+    "ParameterizedControlError",
+    "ParameterizedControlReasonCode",
+    "QCISV03LogicalWaveformPlan",
     "build_control_channel_approval",
     "build_control_channel_manifest",
     "load_control_channel_registry",
@@ -58,6 +74,10 @@ __all__ = [
     "load_logical_schedule",
     "validate_logical_schedule",
     "compile_control_schedule",
+    "admit_qcis_v03_plan",
+    "adapt_qcis_v03_compilation",
+    "build_parameterized_control_context",
+    "compile_qcis_waveform_plan",
     "write_control_signal_artifacts",
     "build_stage4_acceptance_approval",
     "verify_control_signal",
