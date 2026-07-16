@@ -17,7 +17,7 @@ from sqvm.device.spec import load_device
 from sqvm.evolution.models import EffectiveScenario, RebuiltModel, Stage5Config, Stage5Input, Stage5PathAdmission
 from sqvm.evolution.physics import (
     _build_frame, _lab_reference, _qutip, _static_hamiltonian,
-    angular_rad_per_ns, evolve_stage5_scenario,
+    angular_rad_per_ns, evolve_stage5_scenario, zoh_edges,
 )
 from sqvm.evolution.stage51_authority import admit_physics_authority, fail, read_json
 from sqvm.evolution.stage51_coefficients import (
@@ -155,27 +155,78 @@ def _physics_preflight(stage5: Stage5Input) -> tuple[Mapping[str, str], tuple[Ma
     scenario = stage5.scenarios["stage51"]
     qt = _qutip()
     frame = _build_frame(stage5, scenario, qt)
-    for name, operator in {"frame_generator": frame["f_generator"], **{f"drive_{key}": value for key, value in frame["d_plus"].items()}}.items():
+    dimension = frame["dimension"]
+    operator_tolerance = 1.0e-10
+    frame_generator = frame["f_generator"]
+    for name, operator in {"frame_generator": frame_generator, **{f"drive_{key}_plus": value for key, value in frame["d_plus"].items()}}.items():
         matrix = np.asarray(operator.full(), dtype=np.complex128)
-        if not np.all(np.isfinite(matrix)):
+        if matrix.shape != (dimension, dimension) or not np.all(np.isfinite(matrix)):
             fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, name)
-    seen_flux: set[tuple[float, float, float]] = set()
+    frame_matrix = np.asarray(frame_generator.full(), dtype=np.complex128)
+    if float(np.linalg.norm(frame_matrix - frame_matrix.conj().T)) > operator_tolerance:
+        fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, "frame generator Hermiticity")
+    for mode, drive_plus in frame["d_plus"].items():
+        drive_minus = drive_plus.dag()
+        plus = np.asarray(drive_plus.full(), dtype=np.complex128)
+        minus = np.asarray(drive_minus.full(), dtype=np.complex128)
+        if minus.shape != plus.shape or not np.all(np.isfinite(minus)) or not np.array_equal(minus, plus.conj().T):
+            fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, f"drive {mode} adjoint")
+    static_by_index: dict[int, Any] = {}
+    seen_flux: dict[tuple[float, float, float], Any] = {}
     for index in range(scenario.time_center_ns.size):
         key = tuple(float(scenario.absolute_flux_phi0[name][index]) for name in ("q1", "c", "q2"))
-        if key in seen_flux:
-            continue
-        seen_flux.add(key)
-        static = _static_hamiltonian(stage5, scenario, index, qt)
+        static = seen_flux.get(key)
+        if static is None:
+            static = _static_hamiltonian(stage5, scenario, index, qt)
+            seen_flux[key] = static
         matrix = np.asarray(static.full(), dtype=np.complex128)
-        if not np.all(np.isfinite(matrix)) or float(np.linalg.norm(matrix - matrix.conj().T)) > 1e-10:
+        if matrix.shape != (dimension, dimension) or not np.all(np.isfinite(matrix)) or float(np.linalg.norm(matrix - matrix.conj().T)) > operator_tolerance:
             fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, "static Hamiltonian")
+        static_by_index[index] = static
+    edges = zoh_edges(scenario.time_center_ns)
+    drive_magnitude = np.asarray([
+        abs(scenario.xy_iq_GHz["q1"][0][index] + 1j * scenario.xy_iq_GHz["q1"][1][index])
+        + abs(scenario.xy_iq_GHz["q2"][0][index] + 1j * scenario.xy_iq_GHz["q2"][1][index])
+        for index in range(scenario.time_center_ns.size)
+    ])
+    representative = {0, scenario.time_center_ns.size - 1, int(np.argmax(drive_magnitude))}
+    identity = np.eye(dimension, dtype=np.complex128)
+
+    def checked_unitary(time_ns: float):
+        unitary = frame["u"](time_ns)
+        matrix = np.asarray(unitary.full(), dtype=np.complex128)
+        if not np.all(np.isfinite(matrix)) or float(np.linalg.norm(matrix.conj().T @ matrix - identity)) > operator_tolerance:
+            fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, "frame unitary")
+        return unitary
+
+    checked_unitary(float(edges[0]))
+    checked_unitary(float(edges[-1]))
+    for index in sorted(representative):
+        time_ns = float(edges[index])
+        unitary = checked_unitary(time_ns)
+        drive = sum((
+            0.5 * (
+                (scenario.xy_iq_GHz[mode][0][index] + 1j * scenario.xy_iq_GHz[mode][1][index]) * frame["d_plus"][mode]
+                + (scenario.xy_iq_GHz[mode][0][index] - 1j * scenario.xy_iq_GHz[mode][1][index]) * frame["d_plus"][mode].dag()
+            )
+            for mode in ("q1", "q2")
+        ), qt.Qobj(np.zeros((dimension, dimension), dtype=complex), dims=frame["dims"]))
+        h_ip = unitary.dag() * static_by_index[index] * unitary - frame_generator + drive
+        h_ip_matrix = np.asarray(h_ip.full(), dtype=np.complex128)
+        if not np.all(np.isfinite(h_ip_matrix)) or float(np.linalg.norm(h_ip_matrix - h_ip_matrix.conj().T)) > operator_tolerance:
+            fail(Stage51FailureCode.OPERATOR_CONSTRUCTION_FAILED, "interaction-picture Hamiltonian")
+        angular = np.asarray(angular_rad_per_ns(h_ip).full(), dtype=np.complex128)
+        if not np.array_equal(angular, angular_rad_per_ns(1.0) * h_ip_matrix):
+            fail(Stage51FailureCode.ANGULAR_CONVERSION_VIOLATION, "interaction-picture Hamiltonian")
     reference = _lab_reference(stage5, scenario, frame, qt)
+    lab_state = np.asarray(reference["psi_lab"].full(), dtype=np.complex128).reshape(-1)
+    lab_pivot = int(np.flatnonzero(np.abs(lab_state) == np.abs(lab_state).max())[0])
+    if lab_state[lab_pivot].real < 0.0 or abs(float(lab_state[lab_pivot].imag)) > 1.0e-14:
+        fail(Stage51FailureCode.INITIAL_STATE_INVALID, "lab-ground phase")
     state = np.asarray(reference["psi_ip"].full(), dtype=np.complex128).reshape(-1)
-    if not np.all(np.isfinite(state)) or abs(float(np.vdot(state, state).real) - 1.0) > stage5.admission.config.tolerances["norm_error"]:
+    if not np.all(np.isfinite(lab_state)) or not np.all(np.isfinite(state)) or abs(float(np.vdot(lab_state, lab_state).real) - 1.0) > stage5.admission.config.tolerances["norm_error"] or abs(float(np.vdot(state, state).real) - 1.0) > stage5.admission.config.tolerances["norm_error"]:
         fail(Stage51FailureCode.INITIAL_STATE_INVALID, "interaction-picture initial state")
     projector_hashes, projector_checks = _projector_evidence(reference["projectors"], stage5.admission.config.tolerances["projector_orthogonality"])
-    if not np.isfinite(float(angular_rad_per_ns(1.0))):
-        fail(Stage51FailureCode.ANGULAR_CONVERSION_VIOLATION, "angular conversion")
     return projector_hashes, projector_checks
 
 

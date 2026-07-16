@@ -155,7 +155,7 @@ def _lab_reference(stage5_input: Stage5Input, scenario: EffectiveScenario, frame
     psi_lab = qt.Qobj(vectors[:, 0], dims=[frame["dims"][0], [1, 1, 1]])
     edge0 = zoh_edges(scenario.time_center_ns)[0]
     psi_ip = frame["u"](float(edge0)).dag() * psi_lab
-    return {"psi_ip": psi_ip, "projectors": projectors, "metadata": {"state": "physical_lab_ground", "t0_ns": float(edge0), "labels": [{"label": label, "lab_eigen_index": int(column), "overlap": float(overlaps[row, column])} for row, (label, column) in enumerate(assignments.items())]}}
+    return {"psi_lab": psi_lab, "psi_ip": psi_ip, "projectors": projectors, "metadata": {"state": "physical_lab_ground", "t0_ns": float(edge0), "labels": [{"label": label, "lab_eigen_index": int(column), "overlap": float(overlaps[row, column])} for row, (label, column) in enumerate(assignments.items())]}}
 
 
 def _static_hamiltonian(stage5_input: Stage5Input, scenario: EffectiveScenario, index: int, qt):

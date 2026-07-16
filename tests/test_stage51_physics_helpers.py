@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from sqvm.evolution.stage51_models import Stage51EvolutionError
-from sqvm.evolution.stage51_physics import _phase_fixed, _projector_evidence, phase_invariant_overlap
+from sqvm.evolution.stage51_physics import _phase_fixed, _physics_preflight, _projector_evidence, phase_invariant_overlap
+from sqvm.evolution.input import load_stage5_input
+from sqvm.evolution.physics import _smoke_window
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SMOKE = ROOT / "configs/evolution/2q1c_qutip_smoke.yaml"
 
 
 def test_phase_fix_is_global_phase_deterministic():
@@ -48,3 +57,17 @@ def test_phase_invariant_overlap_normalizes_inputs():
     left = np.asarray([1.0, 1.0j], dtype="<c16")
     right = 3.0 * np.exp(0.42j) * left
     assert phase_invariant_overlap(left, right) == pytest.approx(1.0)
+
+
+def test_real_accepted_model_passes_complete_stage51_physics_preflight():
+    accepted = load_stage5_input(SMOKE, ROOT)
+    source = accepted.scenarios["xy_drag"]
+    scenario = replace(_smoke_window(source, 97, 4), scenario_id="stage51")
+    admission = replace(accepted.admission, config=replace(accepted.admission.config, profile="stage51"))
+    stage51 = replace(accepted, admission=admission, scenarios={"stage51": scenario})
+
+    hashes, checks = _physics_preflight(stage51)
+
+    assert set(hashes) == {"000", "100", "001", "101"}
+    assert len(checks) == 10
+    assert all(check["passed"] for check in checks)
