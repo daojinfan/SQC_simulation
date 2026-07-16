@@ -5,5 +5,14 @@ from sqvm.evolution.config import admit_stage5_config_paths
 from sqvm.evolution.input import load_stage5_input
 from sqvm.evolution.models import FormalScaleQualificationRequired
 from sqvm.evolution.physics import angular_rad_per_ns, evolve_stage5_scenario, zoh_edges
+from sqvm.evolution.stage51_authority import admit_verified_control
+from sqvm.evolution.stage51_coefficients import (
+    build_evolution_coefficient_plan, publish_evolution_coefficient_artifact,
+    verify_evolution_coefficient_artifact,
+)
+from sqvm.evolution.stage51_models import (
+    EvolutionCoefficientPlan, Stage51EvolutionError, Stage51FailureCode,
+    Stage51PhysicsContext, VerifiedCoefficientHandle,
+)
 
-__all__ = ["FormalScaleQualificationRequired", "admit_stage5_config_paths", "angular_rad_per_ns", "evolve_stage5_scenario", "load_stage5_input", "run_stage5_evolution", "zoh_edges"]
+__all__ = ["EvolutionCoefficientPlan", "FormalScaleQualificationRequired", "Stage51EvolutionError", "Stage51FailureCode", "Stage51PhysicsContext", "VerifiedCoefficientHandle", "admit_stage5_config_paths", "admit_verified_control", "angular_rad_per_ns", "build_evolution_coefficient_plan", "evolve_stage5_scenario", "load_stage5_input", "publish_evolution_coefficient_artifact", "run_stage5_evolution", "verify_evolution_coefficient_artifact", "zoh_edges"]
