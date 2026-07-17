@@ -52,3 +52,27 @@ py -3.12 -m venv .venv
 Generated evidence remains under the ignored `output/` tree. The reviewed hashes and scope are recorded in
 `docs/results/2026-07-14-stage5-v0-2-smoke.md`. The formal profile is intentionally fail-closed in v0.2 and
 requires a separate formal-scale qualification; smoke completion is not Stage 6 readiness.
+
+## 校准 Web 控制台
+
+Windows 下直接双击项目根目录的 `start_calibration_web.cmd`。程序会自动定位 Python、启动服务，并在默认浏览器中打开控制台。
+
+也可以在 PowerShell 中启动：
+
+```powershell
+.\start_calibration_web.cmd
+```
+
+默认地址为 `http://127.0.0.1:8765`。保持命令行窗口打开，按 `Ctrl+C` 停止服务。需要更换端口或禁止自动打开浏览器时：
+
+```powershell
+.\start_calibration_web.cmd --port 8877 --no-browser
+```
+
+原始服务入口仍可用于脚本调用：
+
+```powershell
+python scripts/run_calibration_web.py
+```
+
+实验仍通过 Python API 运行；Web 控制台只负责配置管理和实验结果查看，不执行 QuTiP 任务。

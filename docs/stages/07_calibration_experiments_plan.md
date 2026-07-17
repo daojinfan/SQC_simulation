@@ -45,17 +45,30 @@ experiment-to-Hamiltonian shortcuts are forbidden.
 - deterministic fake Rabi, Ramsey-frame, and CZ-barrier fixtures;
 - no model-derived physics backend and no calibration acceptance from fake data.
 
-### Stage 7.1: single-qubit model calibration
+### Stage 7.1: qubit model calibration
 
 Ordered workflows:
 
 ```text
-q1: spectroscopy -> Rabi amplitude at policy duration -> Ramsey frequency -> DRAG dragAlpha -> X2P/Y2P
-q2: spectroscopy -> Rabi amplitude at policy duration -> Ramsey frequency -> DRAG dragAlpha -> X2P/Y2P
+registered qubit target: spectroscopy -> Rabi amplitude at policy duration -> Ramsey frequency -> DRAG dragAlpha -> X2P/Y2P
 ```
 
-Each arrow is an atomic accepted-simulation child on one lineage. q2 begins from the completed q1 lineage head;
-parallel calibration branches are forbidden in the MVP.
+Spectroscopy target selection is capability based and is not hard-coded to Q1 or Q2. One target may run in
+`single` mode, or two supported targets may run in one `parallel_lockstep` QCIS circuit with equal-duration,
+absolute-time PLSXY pulses. A parallel spectroscopy run has one parent snapshot and one joint evidence graph;
+it is not two concurrent configuration-writing branches. Target-specific candidates remain independently
+reviewable, and all accepted deltas are applied atomically in one child snapshot revision.
+
+Parallel spectroscopy must pass registered single-drive confirmation and cross-impact gates before its
+candidates become recommendation eligible. This amendment does not authorize parallel Rabi, Ramsey, DRAG,
+or gate-setting calibration; those workflows remain ordered until separately designed and approved.
+
+Implementation status: `qubit_spectroscopy_calibration_v1` now provides a bounded pilot of this complete
+spectroscopy-only workflow. It reuses `run_circuits` for coarse, refined, and single-confirmation circuits,
+publishes datasets/analysis/gates/plot/candidates atomically, and requires an explicit accept/reject transaction
+before creating an `accepted_simulation` frequency snapshot. Its outputs remain `bounded_smoke_only`; this
+implementation does not open the production physics authority described by the entry gate above and does not
+authorize the later Rabi/Ramsey/DRAG workflows.
 
 ### Stage 7.2: coupler model calibration
 
@@ -237,7 +250,9 @@ configuration only until a later hardware/measurement contract exists.
 1. The four-phase delivery order is approved.
 2. The local approval identity is canonical actor ID plus mandatory reason and typed confirmation; signatures
    remain deferred until Stage 9.
-3. Model simulation is single-qubit first, completing q1 before q2 on one append-only lineage.
+3. Model spectroscopy may target one registered qubit or run two supported targets in one authority-bound
+   `parallel_lockstep` experiment. Target candidates remain independently reviewable and accepted deltas are
+   applied in one append-only child revision. Rabi, Ramsey, DRAG, and gate-setting workflows remain ordered.
 4. The MVP CZ direction is q1-to-q2 only.
 5. Freeze numerical scan ranges, fit thresholds, refinement tolerances, and recommendation validity ranges only
    after Stage 5 formal qualification and a reviewed feasibility pilot; placeholder thresholds are forbidden.
