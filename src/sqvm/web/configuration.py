@@ -18,6 +18,15 @@ import yaml
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.qcis.canonical import sha256_json
 from sqvm.runtime.journal import utc_now_text
+from sqvm.web.configuration_schema import (
+    draftify_calibration,
+    editor_view,
+    initial_typed_calibration,
+    load_frozen_schema,
+    publish_calibration,
+    validate_document,
+    validate_editable,
+)
 
 
 _ACTOR_ID = re.compile(r"[a-z][a-z0-9._-]{2,63}$")
@@ -64,8 +73,9 @@ _ACCEPTANCE_FIELDS = {
 
 
 class ConfigurationManagementError(ValueError):
-    def __init__(self, message: str, *, status: int = 422) -> None:
+    def __init__(self, message: str, *, status: int = 422, field_errors: Sequence[Mapping[str, str]] = ()) -> None:
         self.status = status
+        self.field_errors = [dict(item) for item in field_errors]
         super().__init__(message)
 
 
@@ -78,6 +88,7 @@ class PlatformConfigurationStore:
         storage_root: str | Path | None = None,
     ) -> None:
         self.repository_root = Path(repository_root).resolve()
+        self.schema = load_frozen_schema(self.repository_root)
         self.root = self._inside(
             storage_root or self.repository_root / "output" / "platform-configurations",
             "configuration storage",
@@ -93,7 +104,7 @@ class PlatformConfigurationStore:
         snapshots = self.snapshots()
         active = self.active_configurations()
         return {
-            "schema_version": "0.1",
+            "schema_version": "0.2",
             "checkpoint_limit": _MAX_CHECKPOINTS,
             "automatic_snapshot_limit": _MAX_AUTOMATIC_SNAPSHOTS,
             "drafts": drafts,
@@ -132,7 +143,9 @@ class PlatformConfigurationStore:
                         "content_sha256": row["content_sha256"],
                     }
                 )
-        return {**payload, "checkpoints": checkpoints}
+        source_path = path.parent / "source_candidate.json"
+        source_candidate = self._load_json(source_path, "source candidate") if source_path.is_file() else None
+        return {**payload, "checkpoints": checkpoints, "editor_view": editor_view(), "field_errors": [], "source_candidate": source_candidate}
 
     def create_draft(
         self,
@@ -147,12 +160,13 @@ class PlatformConfigurationStore:
         self._text(name, "name", 1, 96)
         self._text(note, "note", 0, 1024)
         sections = self._editable_sections(base_configuration)
+        sections["calibration_values"] = draftify_calibration(sections["calibration_values"])
         draft_id = str(uuid.uuid4())
         now = utc_now_text()
         payload = {
-            "schema_version": "0.1",
+            "schema_version": "0.2",
             "artifact_type": "platform_configuration_draft",
-            "artifact_version": "0.1",
+            "artifact_version": "0.2",
             "draft_id": draft_id,
             "device_id": self._base_device_id(base_configuration),
             "name": name,
@@ -162,14 +176,12 @@ class PlatformConfigurationStore:
             "updated_utc": now,
             "checkpoint": 0,
             "parent": self._base_reference(base_configuration),
-            "source_candidate": copy.deepcopy(source_candidate),
             "readonly": self._readonly_sections(base_configuration),
             "editable": sections,
             "content_sha256": sha256_json(sections),
             "validation": {
                 "status": "not_validated",
                 "validated_content_sha256": None,
-                "checks": [],
                 "requires_requalification": True,
             },
         }
@@ -177,6 +189,8 @@ class PlatformConfigurationStore:
         directory.mkdir(parents=True, exist_ok=False)
         self._atomic_json(directory / "draft.json", payload)
         self._write_checkpoint(payload)
+        if source_candidate:
+            self._atomic_json(directory / "source_candidate.json", dict(source_candidate))
         self._audit("draft_created", actor_id, {"draft_id": draft_id})
         return self.draft(draft_id)
 
@@ -198,6 +212,9 @@ class PlatformConfigurationStore:
             raise ConfigurationManagementError("draft changed since it was loaded", status=409)
         normalized = self._validate_editable_shape(editable)
         self._assert_system_fields_unchanged(payload["editable"], normalized)
+        write_errors = [row for row in validate_editable(normalized, published=False) if row["code"] in {"additional", "generated"} or "physical" in row["message"].lower()]
+        if write_errors:
+            raise ConfigurationManagementError("editable input contains generated or unsupported fields", field_errors=write_errors)
         payload["name"] = name
         payload["note"] = note
         payload["actor_id"] = actor_id
@@ -208,7 +225,6 @@ class PlatformConfigurationStore:
         payload["validation"] = {
             "status": "not_validated",
             "validated_content_sha256": None,
-            "checks": [],
             "requires_requalification": True,
         }
         self._atomic_json(self._draft_path(draft_id), payload)
@@ -245,17 +261,20 @@ class PlatformConfigurationStore:
             ):
                 raise ConfigurationManagementError("candidate is not eligible")
             existing = qagents.setdefault(target, {}).get("reference_frequency_authority", {})
-            revision = existing.get("revision") if isinstance(existing, Mapping) else None
+            revision = (existing.get("base_revision") if isinstance(existing, Mapping) and type(existing.get("base_revision")) is int else existing.get("revision") if isinstance(existing, Mapping) else None)
             reference = {
                 "reference_frequency_GHz": float(frequency),
                 "frequency_source": "accepted_simulation",
-                "calibration_run_id": experiment_run_id,
-                "revision": revision if type(revision) is int else 0,
+                "status": "draft",
+                "base_revision": revision if type(revision) is int else 0,
+                "base_setting_hash": existing.get("base_setting_hash") if isinstance(existing, Mapping) and isinstance(existing.get("base_setting_hash"), str) else existing.get("setting_hash") if isinstance(existing, Mapping) and isinstance(existing.get("setting_hash"), str) else None,
+                "calibration_run_id": None,
+                "revision": None,
+                "setting_hash": None,
             }
-            reference["setting_hash"] = sha256_json(reference)
             qagents[target]["reference_frequency_authority"] = reference
             applied.append(target)
-        payload["source_candidate"] = {
+        source_candidate = {
             "experiment_run_id": experiment_run_id,
             "recommendation_id": recommendation_id,
             "targets": applied,
@@ -271,10 +290,10 @@ class PlatformConfigurationStore:
         payload["validation"] = {
             "status": "not_validated",
             "validated_content_sha256": None,
-            "checks": [],
             "requires_requalification": self._requires_requalification(payload),
         }
         self._atomic_json(self._draft_path(draft_id), payload)
+        self._atomic_json(self._draft_path(draft_id).parent / "source_candidate.json", source_candidate)
         self._write_checkpoint(payload)
         self._audit(
             "experiment_candidates_applied",
@@ -283,15 +302,46 @@ class PlatformConfigurationStore:
         )
         return self.draft(draft_id)
 
+    def initialize_calibration_draft(
+        self,
+        draft_id: str,
+        *,
+        actor_id: str,
+        expected_content_sha256: str,
+    ) -> dict[str, Any]:
+        """Initialize the only supported structured calibration authoring template."""
+
+        self._actor(actor_id)
+        payload = self._load_json(self._draft_path(draft_id), "draft")
+        if payload["content_sha256"] != expected_content_sha256:
+            raise ConfigurationManagementError("draft changed since it was loaded", status=409)
+        if payload["editable"].get("calibration_values") != {}:
+            raise ConfigurationManagementError("calibration draft is already initialized")
+        editable = copy.deepcopy(payload["editable"])
+        editable["calibration_values"] = initial_typed_calibration()
+        errors = validate_editable(editable, published=False)
+        if errors:
+            raise ConfigurationManagementError("typed calibration template is invalid", field_errors=errors)
+        payload["editable"] = editable
+        payload["actor_id"] = actor_id
+        payload["updated_utc"] = utc_now_text()
+        payload["checkpoint"] += 1
+        payload["content_sha256"] = sha256_json(editable)
+        payload["validation"] = {"status": "not_validated", "validated_content_sha256": None, "requires_requalification": self._requires_requalification(payload)}
+        self._atomic_json(self._draft_path(draft_id), payload)
+        self._write_checkpoint(payload)
+        self._audit("draft_calibration_initialized", actor_id, {"draft_id": draft_id})
+        return self.draft(draft_id)
+
     def validate_draft(self, draft_id: str, *, actor_id: str) -> dict[str, Any]:
         self._actor(actor_id)
         payload = self._load_json(self._draft_path(draft_id), "draft")
-        checks = self._validation_checks(payload)
-        passed = all(row["passed"] for row in checks)
+        field_errors = validate_editable(payload.get("editable"), published=False)
+        checks = [self._check("editable_schema", not field_errors, "v0.2 editable schema is valid" if not field_errors else field_errors[0]["message"])]
+        passed = not field_errors
         payload["validation"] = {
             "status": "valid" if passed else "invalid",
             "validated_content_sha256": payload["content_sha256"] if passed else None,
-            "checks": checks,
             "requires_requalification": self._requires_requalification(payload),
         }
         payload["updated_utc"] = utc_now_text()
@@ -301,7 +351,7 @@ class PlatformConfigurationStore:
             actor_id,
             {"draft_id": draft_id, "passed": passed},
         )
-        return payload["validation"]
+        return {**payload["validation"], "checks": checks, "field_errors": field_errors, "editor_view": editor_view()}
 
     def publish_draft(
         self,
@@ -327,7 +377,7 @@ class PlatformConfigurationStore:
         ):
             raise ConfigurationManagementError("draft must be validated before publish")
         parent_content = draft.get("parent", {}).get("content_sha256")
-        if parent_content == draft["content_sha256"]:
+        if parent_content == draft["content_sha256"] and draft.get("parent", {}).get("configuration_id") != "uncalibrated":
             raise ConfigurationManagementError("configuration has no publishable changes")
         snapshot_id = str(uuid.uuid4())
         now = utc_now_text()
@@ -335,17 +385,21 @@ class PlatformConfigurationStore:
             self._draft_path(draft_id).parent / "checkpoints" / "00000000.json",
             "initial draft checkpoint",
         )
-        editable = self._regenerate_system_fields(
-            draft["editable"],
-            base_checkpoint["editable"],
-            calibration_run_id=f"manual_{snapshot_id}",
-            source_candidate=draft.get("source_candidate"),
+        source_path = self._draft_path(draft_id).parent / "source_candidate.json"
+        source_candidate = self._load_json(source_path, "source candidate") if source_path.is_file() else {}
+        candidate_runs = {target: str(source_candidate["experiment_run_id"]) for target in source_candidate.get("targets", [])} if isinstance(source_candidate, Mapping) and isinstance(source_candidate.get("experiment_run_id"), str) else {}
+        editable = copy.deepcopy(draft["editable"])
+        editable["calibration_values"] = publish_calibration(
+            draft["editable"]["calibration_values"],
+            base_checkpoint["editable"].get("calibration_values", {}),
+            manual_run_id=f"manual_{snapshot_id}",
+            candidate_runs=candidate_runs,
         )
         content_sha256 = sha256_json(editable)
         snapshot = {
-            "schema_version": "0.1",
+            "schema_version": "0.2",
             "artifact_type": "platform_configuration_snapshot",
-            "artifact_version": "0.1",
+            "artifact_version": "0.2",
             "snapshot_id": snapshot_id,
             "state_id": snapshot_id,
             "device_id": draft["device_id"],
@@ -356,17 +410,20 @@ class PlatformConfigurationStore:
             "status": "published",
             "keep": bool(keep),
             "parent": draft["parent"],
-            "source_draft_id": draft_id,
-            "source_candidate": draft.get("source_candidate"),
             "readonly": draft["readonly"],
             "editable": editable,
             "content_sha256": content_sha256,
             "requires_requalification": validation["requires_requalification"],
             "experiment_eligible": not validation["requires_requalification"],
         }
+        errors = validate_document(snapshot)
+        if errors:
+            raise ConfigurationManagementError(errors[0]["message"])
         directory = self.snapshots_root / snapshot_id
         directory.mkdir(parents=True, exist_ok=False)
         self._atomic_json(directory / "snapshot.json", snapshot)
+        if source_candidate:
+            self._atomic_json(directory / "source_candidate.json", source_candidate)
         if keep:
             self._pin(snapshot_id, actor_id)
         self._audit(
@@ -436,10 +493,15 @@ class PlatformConfigurationStore:
             raise ConfigurationManagementError(
                 "snapshot requires control requalification before it can become Active"
             )
+        if not snapshot.get("editable", {}).get("calibration_values"):
+            raise ConfigurationManagementError("uninitialized snapshot cannot become Active")
+        errors = validate_document(self._load_json(self._snapshot_path(snapshot_id), "platform snapshot"))
+        if errors:
+            raise ConfigurationManagementError("snapshot is not a valid PlatformConfiguration v0.2", field_errors=errors)
         payload = {
-            "schema_version": "0.1",
+            "schema_version": "0.2",
             "artifact_type": "platform_configuration_active_pointer",
-            "artifact_version": "0.1",
+            "artifact_version": "0.2",
             "device_id": snapshot["device_id"],
             "snapshot_id": snapshot_id,
             "snapshot_content_sha256": snapshot["content_sha256"],
@@ -493,8 +555,15 @@ class PlatformConfigurationStore:
                 continue
         return rows
 
+    def resolve_active_context(self, device_id: str = "demo_2q1c2r") -> Any:
+        """Resolve the only execution authority from this store's Active pointer."""
+
+        from sqvm.web.configuration_resolver import PlatformAuthorityResolver
+
+        return PlatformAuthorityResolver(self.repository_root, self.root).resolve(device_id)
+
     def bootstrap_configuration(self, calibration: Mapping[str, Any]) -> dict[str, Any]:
-        control_path = self.repository_root / "configs" / "control" / "2q1c2r_control_smoke.yaml"
+        control_path = self.repository_root / "configs" / "control" / "2q1c2r_control.yaml"
         try:
             control = yaml.safe_load(control_path.read_text("utf-8"))
         except (OSError, yaml.YAMLError) as exc:
@@ -515,20 +584,32 @@ class PlatformConfigurationStore:
         }
         editable = {
             "control_values": control_values,
-            "calibration_values": copy.deepcopy(calibration.get("values", {})),
+            "calibration_values": {},
         }
+        device_path = calibration.get("device_snapshot", "configs/devices/2q1c2r.yaml")
+        device_ref = self.repository_root / str(device_path)
+        device_sha = hashlib.sha256(device_ref.read_bytes()).hexdigest().upper()
+        instruction_profile = {"profile_id": "qcis_stage7_calibration_v3", "profile_version": "0.3"}
+        compiler = {"compiler_id": "sqvm_qcis_compiler_v3"}
         return {
-            "artifact_type": calibration.get("artifact_type", "legacy_calibration_snapshot"),
-            "configuration_id": calibration.get("calibration_id") or calibration.get("state_id"),
+            "schema_version": "0.2",
+            "artifact_type": "platform_configuration_legacy_migration",
+            "artifact_version": "0.2",
+            "configuration_id": calibration.get("calibration_id") or calibration.get("state_id", "uninitialized"),
             "state_id": calibration.get("state_id"),
             "device_id": "demo_2q1c2r",
-            "content_sha256": sha256_json(editable),
+            "status": "uninitialized",
             "device_ref": {
-                "path": calibration.get("device_snapshot"),
-                "sha256": calibration.get("device_snapshot_sha256"),
+                "path": str(device_path).replace("\\", "/"),
+                "sha256": device_sha,
             },
-            "authority_refs": calibration.get("authority_sha256s", {}),
+            "authority_refs": {
+                "device_sha256": device_sha,
+                "instruction_profile_sha256": sha256_json(instruction_profile),
+                "compiler_snapshot_sha256": sha256_json(compiler),
+            },
             "editable": editable,
+            "legacy_source_sha256": sha256_json(calibration),
         }
 
     def _validation_checks(self, draft: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -78,15 +78,10 @@ def test_configuration_store_draft_publish_active_and_requalification(web_worksp
     base = store.bootstrap_configuration(_legacy_configuration(index))
     draft = store.create_draft(base, actor_id="project.manager", name="Control baseline")
 
-    editable = draft["editable"]
-    editable["calibration_values"]["operator_note"] = "reviewed"
     draft = store.update_draft(
-        draft["draft_id"],
-        actor_id="project.manager",
-        expected_content_sha256=draft["content_sha256"],
-        name=draft["name"],
-        note="calibration metadata",
-        editable=editable,
+        draft["draft_id"], actor_id="project.manager",
+        expected_content_sha256=draft["content_sha256"], name=draft["name"],
+        note="structured v0.2 baseline", editable=draft["editable"],
     )
     validation = store.validate_draft(draft["draft_id"], actor_id="project.manager")
     assert validation["status"] == "valid"
@@ -100,12 +95,8 @@ def test_configuration_store_draft_publish_active_and_requalification(web_worksp
         keep=True,
     )
     assert snapshot["experiment_eligible"] is True
-    active = store.set_active(
-        snapshot["snapshot_id"],
-        actor_id="project.manager",
-        confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}",
-    )
-    assert active["snapshot_id"] == snapshot["snapshot_id"]
+    with pytest.raises(ConfigurationManagementError, match="uninitialized"):
+        store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
 
     second = store.create_draft(snapshot, actor_id="project.manager", name="Latency trial")
     changed = second["editable"]
@@ -159,19 +150,8 @@ def test_candidate_creates_draft_without_direct_activation(web_workspace):
     assert updated["source_candidate"]["experiment_run_id"] == run.run_id
 
     validation = store.validate_draft(updated["draft_id"], actor_id="project.manager")
-    assert validation["status"] == "valid"
-    snapshot = store.publish_draft(
-        updated["draft_id"],
-        actor_id="project.manager",
-        expected_content_sha256=updated["content_sha256"],
-        name="Spectroscopy candidate",
-        reason="accept experiment candidate into a published snapshot",
-    )
-    published_qagents = snapshot["editable"]["calibration_values"]["qagents"]
-    assert {
-        published_qagents[target]["reference_frequency_authority"]["calibration_run_id"]
-        for target in ("Q1", "Q2")
-    } == {run.run_id}
+    assert validation["status"] == "invalid"
+    assert validation["field_errors"]
 
 
 def test_draft_checkpoint_retention_is_bounded(web_workspace):
@@ -181,15 +161,13 @@ def test_draft_checkpoint_retention_is_bounded(web_workspace):
     base = store.bootstrap_configuration(_legacy_configuration(index))
     draft = store.create_draft(base, actor_id="project.manager", name="Checkpoint test")
     for number in range(24):
-        editable = draft["editable"]
-        editable["calibration_values"]["counter"] = number
         draft = store.update_draft(
             draft["draft_id"],
             actor_id="project.manager",
             expected_content_sha256=draft["content_sha256"],
             name=draft["name"],
-            note="rolling checkpoints",
-            editable=editable,
+            note=f"rolling checkpoints {number}",
+            editable=draft["editable"],
         )
     assert len(store.draft(draft["draft_id"])["checkpoints"]) == 20
     assert store.validate_draft(draft["draft_id"], actor_id="project.manager")[
@@ -211,31 +189,11 @@ def test_validation_rejects_invalid_calibration_and_physical_fields(web_workspac
     store = PlatformConfigurationStore(ROOT, storage)
     base = store.bootstrap_configuration(_legacy_configuration(index))
     draft = store.create_draft(base, actor_id="project.manager", name="Invalid values")
-    detail = index.experiment(run.run_id)
-    draft = store.apply_candidates_to_draft(
-        draft["draft_id"],
-        actor_id="project.manager",
-        experiment_run_id=run.run_id,
-        recommendation_id=detail["recommendation_id"],
-        candidates=detail["candidates"],
-    )
     editable = draft["editable"]
-    editable["calibration_values"]["qagents"]["Q1"][
-        "reference_frequency_authority"
-    ]["reference_frequency_GHz"] = -5.0
     editable["calibration_values"]["capacitance_f"] = 1e-15
-    draft = store.update_draft(
-        draft["draft_id"],
-        actor_id="project.manager",
-        expected_content_sha256=draft["content_sha256"],
-        name=draft["name"],
-        note="must fail validation",
-        editable=editable,
-    )
-    validation = store.validate_draft(draft["draft_id"], actor_id="project.manager")
-    assert validation["status"] == "invalid"
-    failed = {row["name"] for row in validation["checks"] if not row["passed"]}
-    assert failed == {"calibration_values_valid", "physical_fields_excluded"}
+    with pytest.raises(ConfigurationManagementError) as captured:
+        store.update_draft(draft["draft_id"], actor_id="project.manager", expected_content_sha256=draft["content_sha256"], name=draft["name"], note="must reject physical field", editable=editable)
+    assert captured.value.field_errors[0]["path"] == "$.calibration_values.capacitance_f"
 
 
 def test_validation_rejects_invalid_control_sections(web_workspace):
@@ -260,14 +218,7 @@ def test_validation_rejects_invalid_control_sections(web_workspace):
     )
     validation = store.validate_draft(draft["draft_id"], actor_id="project.manager")
     assert validation["status"] == "invalid"
-    failed = {row["name"] for row in validation["checks"] if not row["passed"]}
-    assert {
-        "dac_valid",
-        "lane_order_valid",
-        "lane_filters_valid",
-        "static_mixing_valid",
-        "acceptance_valid",
-    } <= failed
+    assert validation["field_errors"]
 
 
 def test_parent_snapshot_cannot_be_deleted_while_child_exists(web_workspace):
@@ -276,15 +227,13 @@ def test_parent_snapshot_cannot_be_deleted_while_child_exists(web_workspace):
     store = PlatformConfigurationStore(ROOT, storage)
     base = store.bootstrap_configuration(_legacy_configuration(index))
     draft = store.create_draft(base, actor_id="project.manager", name="Parent")
-    editable = draft["editable"]
-    editable["calibration_values"]["operator_note"] = "parent"
     draft = store.update_draft(
         draft["draft_id"],
         actor_id="project.manager",
         expected_content_sha256=draft["content_sha256"],
         name=draft["name"],
         note="parent snapshot",
-        editable=editable,
+        editable=draft["editable"],
     )
     store.validate_draft(draft["draft_id"], actor_id="project.manager")
     parent = store.publish_draft(

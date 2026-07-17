@@ -108,6 +108,9 @@ class CircuitExecutionContext:
     settable_paths: frozenset[str] = frozenset()
     initial_state_id: str = "lab_ground"
     observable_set_id: str = "dressed_computational_populations_v1"
+    platform_snapshot_id: str | None = None
+    platform_snapshot_content_sha256: str | None = None
+    authority_context_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +184,7 @@ class CompiledCircuit:
     overlay_sha256: str
     overlays: tuple[Mapping[str, Any], ...]
     compilation: QCISCompilation
+    platform_context: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +306,11 @@ def compile_circuit(
         overlay_sha256,
         overlays,
         compilation,
+        MappingProxyType({
+            "snapshot_id": context.platform_snapshot_id,
+            "snapshot_content_sha256": context.platform_snapshot_content_sha256,
+            "authority_context_sha256": context.authority_context_sha256,
+        }) if context.platform_snapshot_id is not None else None,
     )
 
 
@@ -471,6 +480,10 @@ def _validate_context(context: CircuitExecutionContext) -> None:
         _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "only lab_ground is admitted by the smoke backend")
     if context.observable_set_id != "dressed_computational_populations_v1":
         _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "unsupported observable_set_id")
+    platform = (context.platform_snapshot_id, context.platform_snapshot_content_sha256, context.authority_context_sha256)
+    if any(value is not None for value in platform):
+        if not all(isinstance(value, str) and re.fullmatch(r"[0-9A-Fa-f]{64}", value) is not None for value in platform[1:]) or not isinstance(platform[0], str) or not platform[0]:
+            _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "platform context binding is invalid")
 
 
 def _normalize_readout_qubit(
@@ -846,6 +859,8 @@ def _publish_circuit_execution_evidence(
                 "recommendation_eligible": False,
             },
         }
+        if compiled.platform_context is not None:
+            evidence["platform_configuration"] = dict(compiled.platform_context)
         evidence_sha256 = write_canonical_new(staging / "evidence.json", evidence)
         manifest_sha256 = write_canonical_new(
             staging / "manifest.json",
@@ -966,12 +981,15 @@ def _verify_circuit_execution_evidence(
         "qualification_scope": handle.qualification_scope,
         "recommendation_eligible": False,
     }
-    if (
-        set(evidence) != {
+    expected_evidence_keys = {
             "schema_version", "artifact_type", "status", "circuit_id", "qcis",
             "set_overlay", "compilation", "execution_contract", "model_evidence",
             "final_observables", "claim",
         }
+    if compiled.platform_context is not None:
+        expected_evidence_keys.add("platform_configuration")
+    if (
+        set(evidence) != expected_evidence_keys
         or evidence.get("schema_version") != _EXECUTION_SCHEMA_VERSION
         or evidence.get("artifact_type") != "qcis_circuit_execution_evidence"
         or evidence.get("status") != "published"
@@ -986,6 +1004,7 @@ def _verify_circuit_execution_evidence(
         or _raw_sha256(model_root / "receipt.json") != handle.receipt_sha256
         or evidence.get("final_observables") != expected_final_observables
         or evidence.get("claim") != expected_claim
+        or (compiled.platform_context is not None and evidence.get("platform_configuration") != dict(compiled.platform_context))
         or manifest != expected_manifest
         or receipt != expected_receipt
     ):

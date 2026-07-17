@@ -37,7 +37,10 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
         try:
             self._get()
         except (WebArtifactError, ConfigurationManagementError) as exc:
-            self._json(exc.status, {"error": str(exc), "status": exc.status})
+            payload = {"error": str(exc), "status": exc.status}
+            if isinstance(exc, ConfigurationManagementError):
+                payload["field_errors"] = exc.field_errors
+            self._json(exc.status, payload)
         except Exception:
             self._json(500, {"error": "internal server error", "status": 500})
 
@@ -128,7 +131,10 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
         try:
             self._mutation_route(method)
         except (WebArtifactError, ConfigurationManagementError) as exc:
-            self._json(exc.status, {"error": str(exc), "status": exc.status})
+            payload = {"error": str(exc), "status": exc.status}
+            if isinstance(exc, ConfigurationManagementError):
+                payload["field_errors"] = exc.field_errors
+            self._json(exc.status, payload)
         except Exception:
             self._json(500, {"error": "internal server error", "status": 500})
 
@@ -206,6 +212,14 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                 result = self.server.store.validate_draft(
                     draft_id,
                     actor_id=payload.get("actor_id"),
+                )
+                self._json(200, result)
+                return
+            if method == "POST" and tail[1:] == ["initialize-calibration"]:
+                result = self.server.store.initialize_calibration_draft(
+                    draft_id,
+                    actor_id=payload.get("actor_id"),
+                    expected_content_sha256=payload.get("expected_content_sha256"),
                 )
                 self._json(200, result)
                 return

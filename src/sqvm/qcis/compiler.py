@@ -421,6 +421,22 @@ def _record_hash(record: Mapping[str, Any]) -> str:
     return sha256_json({str(name): _canonical_plain(value) for name, value in record.items() if name != "setting_hash"})
 
 
+def _projected_record_hash(record: Mapping[str, Any]) -> str:
+    """Hash a resolver projection whose wave_index fields are generated only."""
+
+    return sha256_json(_without_generated_wave_index({str(name): _canonical_plain(value) for name, value in record.items() if name != "setting_hash"}))
+
+
+def _without_generated_wave_index(value: Any) -> Any:
+    """Exclude resolver-only waveform compatibility projections from record identity."""
+
+    if isinstance(value, Mapping):
+        return {str(name): _without_generated_wave_index(item) for name, item in value.items() if name != "wave_index"}
+    if isinstance(value, (list, tuple)):
+        return [_without_generated_wave_index(item) for item in value]
+    return value
+
+
 def _accepted_record_evidence(
     record_id: str,
     record: Mapping[str, Any],
@@ -446,7 +462,7 @@ def _accepted_record_evidence(
     if not isinstance(run_id, str) or not run_id:
         _fail(QCISReasonCode.SETTING_INVALID, f"{record_id}.calibration_run_id is required")
     setting_hash = record.get("setting_hash")
-    if not isinstance(setting_hash, str) or setting_hash != _record_hash(record):
+    if not isinstance(setting_hash, str) or setting_hash not in {_record_hash(record), _projected_record_hash(record)}:
         _fail(QCISReasonCode.SETTING_INVALID, f"{record_id}.setting_hash does not match record content")
     return {id_field: record_id, "revision": revision, "setting_hash": setting_hash, "calibration_run_id": run_id}
 
