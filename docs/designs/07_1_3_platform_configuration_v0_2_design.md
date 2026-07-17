@@ -242,9 +242,10 @@ validate selected accepted records and mapper domains; then construct immutable 
 v0.2 new-write shapes, missing records, unknown fields, or non-finite values before execution.
 
 The API returns `schema_version`, complete `readonly`, complete `editable`, `content_sha256`,
-`validation`, and an editability manifest. Form and Advanced JSON submit the same exact `editable` root with
-`expected_content_sha256`; the server owns lifecycle, generated fields, and concurrency checks. The resolver is
-backend-only. `SET` remains a circuit-local overlay with its own policy hash and cannot persist configuration.
+`validation`, and an editability manifest. Structured forms submit the exact `editable` root with
+`expected_content_sha256`; Advanced JSON is read-only evidence and is not a second write path. The server owns
+lifecycle, generated fields, and concurrency checks. The resolver is backend-only. `SET` remains a circuit-local
+overlay with its own policy hash and cannot persist configuration.
 
 ## 7. v0.1 migration and non-goals
 
