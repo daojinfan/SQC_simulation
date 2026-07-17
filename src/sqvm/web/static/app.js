@@ -5,7 +5,6 @@ const state = {
   experiments: [],
   detail: null,
   configTab: "snapshots",
-  editorMode: "form",
   draftDirty: false,
   draftEditVersion: 0,
   draftSaveTimer: null,
@@ -44,7 +43,12 @@ async function api(path, options = {}) {
   const payload = response.headers.get("Content-Type")?.includes("application/json")
     ? await response.json()
     : null;
-  if (!response.ok) throw new Error(payload?.error || `请求失败（${response.status}）`);
+  if (!response.ok) {
+    const error = new Error(payload?.error || `请求失败（${response.status}）`);
+    error.status = response.status;
+    error.fieldErrors = payload?.field_errors || payload?.validation?.field_errors || [];
+    throw error;
+  }
   return payload;
 }
 
@@ -210,11 +214,12 @@ async function renderPlatformSnapshot(id) {
   setLoading();
   try {
     const item = await api(`/api/v1/platform-snapshots/${id}`);
+    const capabilities = editorCapabilities(item);
     const actions = `
       <button id="snapshot-draft" class="button secondary">创建草稿</button>
       <button id="snapshot-keep" class="button secondary">${item.keep ? "取消长期保存" : "长期保存"}</button>
       <button id="snapshot-delete" class="button danger" ${item.active || item.keep ? "disabled" : ""} title="${item.active ? "当前生效快照不能删除" : item.keep ? "请先取消长期保存再删除" : "删除未被引用的快照"}">删除</button>
-      <button id="snapshot-active" class="button primary" ${item.active || !item.experiment_eligible ? "disabled" : ""}>设为当前配置</button>`;
+      <button id="snapshot-active" class="button primary" ${item.active || !item.experiment_eligible || !capabilities.canActivate ? "disabled" : ""}>设为当前配置</button>`;
     app.innerHTML = `
       ${detailHeader(item.name, item.snapshot_id, [item.active ? "active" : "published", item.experiment_eligible ? "eligible" : "requires_requalification"], actions)}
       ${item.requires_requalification ? `<section class="section warning-band">控制参数已变更，激活前必须重新完成 Stage 4.1 准入验证。</section>` : ""}
@@ -244,27 +249,25 @@ async function renderDraft(id) {
     const item = await api(`/api/v1/drafts/${id}`);
     state.detail = item;
     state.draftDirty = false;
+    const capabilities = editorCapabilities(item);
     app.innerHTML = `
       ${detailHeader(item.name, item.draft_id, ["draft", item.validation.status], `<button id="delete-draft" class="button danger">删除</button>`)}
       <section class="section">
-        <div class="tabs" role="tablist"><button data-editor="form" role="tab" aria-selected="${state.editorMode === "form"}" class="${state.editorMode === "form" ? "active" : ""}">表单</button><button data-editor="advanced" role="tab" aria-selected="${state.editorMode === "advanced"}" class="${state.editorMode === "advanced" ? "active" : ""}">高级 JSON</button></div>
-        <div class="toolbar"><button id="save-draft" class="button secondary">保存草稿</button><button id="validate-draft" class="button secondary">校验</button><button id="publish-draft" class="button primary" ${item.validation.status !== "valid" ? "disabled" : ""}>发布快照</button><span class="spacer"></span><span class="mono muted">检查点 ${item.checkpoint}</span></div>
+        <div class="toolbar"><button id="save-draft" class="button secondary" ${capabilities.canSave ? "" : "disabled"}>保存草稿</button><button id="validate-draft" class="button secondary" ${capabilities.canValidate ? "" : "disabled"}>校验</button><button id="publish-draft" class="button primary" ${capabilities.canPublish && item.validation.status === "valid" ? "" : "disabled"}>发布快照</button><span class="spacer"></span><span class="mono muted">检查点 ${item.checkpoint}</span></div>
+        <div id="field-errors" class="field-errors" hidden></div>
         ${draftEditor(item)}
       </section>
       <section class="section"><div class="section-head"><div><h2>校验结果</h2></div></div>${validationList(item.validation)}</section>`;
     app.oninput = markDraftDirty;
-    bindDraftFormSync();
-    document.querySelectorAll("[data-editor]").forEach((button) => button.addEventListener("click", async () => {
-      if (button.dataset.editor === state.editorMode) return;
-      if (state.draftDirty && !(await persistDraft())) return;
-      state.editorMode = button.dataset.editor;
-      await renderDraft(id);
-    }));
+    bindStructuredEditor();
     document.querySelector("#save-draft").addEventListener("click", () => persistDraft({ notify: true }));
     document.querySelector("#validate-draft").addEventListener("click", async () => {
       if (state.draftDirty && !(await persistDraft())) return;
-      await mutate(`/api/v1/drafts/${id}/validate`, { actor_id: actor() });
-      await renderDraft(id);
+      try {
+        const validation = await mutate(`/api/v1/drafts/${id}/validate`, { actor_id: actor() });
+        if (validation.field_errors?.length) showFieldErrors(validation.field_errors);
+        await renderDraft(id);
+      } catch (error) { showMutationError(error); }
     });
     document.querySelector("#publish-draft").addEventListener("click", () => openPublish(item));
     document.querySelector("#delete-draft").addEventListener("click", async () => {
@@ -276,58 +279,147 @@ async function renderDraft(id) {
 }
 
 function draftEditor(item) {
-  if (state.editorMode === "advanced") return `<textarea id="advanced-json" class="json-editor" spellcheck="false">${esc(JSON.stringify(item.editable, null, 2))}</textarea>`;
-  const control = item.editable.control_values;
-  const frequencies = platformFrequencyRows({ editable: item.editable });
-  const dac = control.dac;
-  return `<div class="config-group"><h3>时钟、DAC 与偏置</h3><div class="editor-grid">
-    <div class="field"><label for="draft-name">草稿名称</label><input id="draft-name" value="${esc(item.name)}"></div>
-    <div class="field"><label for="draft-note">备注</label><input id="draft-note" value="${esc(item.note || "")}"></div>
-    <div class="field"><label for="sample-rate">采样率（Hz）</label><input id="sample-rate" type="number" value="${control.clock.sample_rate_Hz}"></div>
-    <div class="field"><label for="dt-ns">采样间隔（ns）</label><input id="dt-ns" type="number" step="0.001" value="${control.clock.dt_ns}"></div>
-    <div class="field"><label for="dac-bits">DAC 位数</label><input id="dac-bits" type="number" step="1" value="${dac.bits}"></div>
-    <div class="field"><label for="dac-rounding">DAC 舍入模式</label><select id="dac-rounding"><option value="half_even" ${dac.rounding === "half_even" ? "selected" : ""}>half_even</option></select></div>
-    <div class="field"><label for="dac-min">DAC 满量程下限（V）</label><input id="dac-min" type="number" step="0.001" value="${dac.full_scale_min_V}"></div>
-    <div class="field"><label for="dac-max">DAC 满量程上限（V，开区间）</label><input id="dac-max" type="number" step="0.001" value="${dac.full_scale_max_exclusive_V}"></div>
-    ${["q1", "q2", "c"].map((target) => `<div class="field"><label for="flux-${target}">${target.toUpperCase()} 空闲磁通（Phi/Phi0）</label><input id="flux-${target}" type="number" step="0.0001" value="${control.idle_flux_phi0[target]}"></div>`).join("")}
-    <div class="field full"><label for="lane-order">通道顺序</label><input id="lane-order" value="${esc(control.lane_order.join(", "))}"></div>
+  const editable = editorEditable(item);
+  const control = editable.control_values || {};
+  const calibration = editable.calibration_values || {};
+  return `<div class="config-group"><h3>草稿信息</h3><div class="editor-grid">
+    ${textField("草稿名称", "draft-name", item.name)}${textField("备注", "draft-note", item.note || "")}
   </div></div>
-  <div class="config-group"><h3>电子学通道</h3>${editableLaneTable(control)}</div>
-  <div class="config-group"><h3>静态混合矩阵</h3><div class="field"><label for="mixing-json">XY、Z 与读出矩阵 JSON</label><textarea id="mixing-json" class="large-json" spellcheck="false">${esc(JSON.stringify(control.static_mixing, null, 2))}</textarea></div></div>
-  <div class="config-group"><h3>准入阈值</h3><div class="field"><label for="acceptance-json">Acceptance JSON</label><textarea id="acceptance-json" spellcheck="false">${esc(JSON.stringify(control.acceptance, null, 2))}</textarea></div></div>
-  <div class="config-group"><h3>校准参数</h3><div class="editor-grid">
-    ${frequencies.map((row) => `<div class="field"><label for="freq-${row.target}">${row.target} 参考频率（GHz）</label><input id="freq-${row.target}" data-frequency-target="${row.target}" type="number" step="0.000001" value="${row.reference_frequency_GHz}"></div>`).join("")}
-    <div class="field full"><label for="calibration-json">完整校准参数 JSON</label><textarea id="calibration-json" class="large-json" spellcheck="false">${esc(JSON.stringify(item.editable.calibration_values, null, 2))}</textarea></div>
-  </div></div>`;
+  ${controlEditor(control)}
+  ${calibrationEditor(calibration)}
+  ${readonlyEditor(item)}`;
 }
 
-function editableLaneTable(control) {
-  return `<div class="table-wrap"><table class="editable-table"><thead><tr><th>通道</th><th>延迟（samples）</th><th>FIR</th></tr></thead><tbody>${control.lane_order.map((lane) => {
-    const row = control.lanes[lane];
-    return `<tr><td class="mono">${esc(lane)}</td><td><input data-lane-latency="${esc(lane)}" type="number" step="1" min="0" value="${row.latency_samples}"></td><td><input data-lane-fir="${esc(lane)}" value="${esc(row.fir.join(", "))}"></td></tr>`;
+function controlEditor(control) {
+  const clock = control.clock || {}, dac = control.dac || {}, flux = control.idle_flux_phi0 || {};
+  const acceptance = control.acceptance || {};
+  return `<div class="config-group"><h3>时钟、DAC 与空闲磁通</h3><div class="editor-grid">
+    ${numberField("采样率（Hz）", "control_values.clock.sample_rate_Hz", clock.sample_rate_Hz)}${numberField("采样间隔（ns）", "control_values.clock.dt_ns", clock.dt_ns, "0.000001")}
+    ${numberField("DAC 位数", "control_values.dac.bits", dac.bits, "1")} ${selectField("DAC 舍入模式", "control_values.dac.rounding", dac.rounding, ["half_even"])}
+    ${numberField("DAC 满量程下限（V）", "control_values.dac.full_scale_min_V", dac.full_scale_min_V)}${numberField("DAC 满量程上限（V，开区间）", "control_values.dac.full_scale_max_exclusive_V", dac.full_scale_max_exclusive_V)}
+    ${["q1", "q2", "c"].map((name) => numberField(`${name.toUpperCase()} 空闲磁通（Phi/Phi0）`, `control_values.idle_flux_phi0.${name}`, flux[name], "0.000001")).join("")}
+  </div></div>
+  <div class="config-group"><h3>电子学通道</h3>${laneEditor(control)}</div>
+  <div class="config-group"><h3>静态混合矩阵</h3>${Object.entries(control.static_mixing || {}).map(([name, value]) => matrixEditor(name, value)).join("") || uncalibrated("未提供混合矩阵")}</div>
+  <div class="config-group"><h3>准入阈值</h3><div class="editor-grid">${Object.keys(acceptance).map((key) => numberField(parameterLabel(key), `control_values.acceptance.${key}`, acceptance[key], key === "max_formal_samples_per_scenario" ? "1" : "any")).join("") || uncalibrated("未提供准入阈值")}</div></div>`;
+}
+
+function laneEditor(control) {
+  const lanes = control.lanes || {}, order = control.lane_order || Object.keys(lanes);
+  return `<div class="table-wrap matrix-scroll"><table class="editable-table"><thead><tr><th>通道</th><th>延迟（samples）</th><th>FIR 系数（逗号分隔）</th></tr></thead><tbody>${order.map((lane) => {
+    const row = lanes[lane] || {};
+    return `<tr><td class="mono">${esc(lane)}</td><td>${numberField("", `control_values.lanes.${lane}.latency_samples`, row.latency_samples, "1", "inline")}</td><td>${arrayField(`control_values.lanes.${lane}.fir`, row.fir)}</td></tr>`;
   }).join("")}</tbody></table></div>`;
 }
 
-function bindDraftFormSync() {
-  if (state.editorMode !== "form") return;
-  const calibration = document.querySelector("#calibration-json");
-  document.querySelectorAll("[data-frequency-target]").forEach((input) => input.addEventListener("input", () => {
-    try {
-      const value = JSON.parse(calibration.value);
-      value.qagents[input.dataset.frequencyTarget].reference_frequency_authority.reference_frequency_GHz = Number(input.value);
-      calibration.value = JSON.stringify(value, null, 2);
-    } catch (_) { return; }
-  }));
-  calibration.addEventListener("input", () => {
-    try {
-      const value = JSON.parse(calibration.value);
-      document.querySelectorAll("[data-frequency-target]").forEach((input) => {
-        const frequency = value.qagents?.[input.dataset.frequencyTarget]?.reference_frequency_authority?.reference_frequency_GHz;
-        if (Number.isFinite(Number(frequency))) input.value = frequency;
-      });
-    } catch (_) { return; }
-  });
+function matrixEditor(name, value) {
+  const inputs = value.input_lanes || [], outputs = value.output_coordinates || [], matrix = value.matrix || [];
+  return `<div class="matrix-block"><h4>${esc(name.toUpperCase())}</h4><div class="table-wrap matrix-scroll"><table class="matrix-table editable-table"><thead><tr><th>输出 / 输入</th>${inputs.map((lane) => `<th class="mono">${esc(lane)}</th>`).join("")}</tr></thead><tbody>${outputs.map((output, row) => `<tr><td class="mono">${esc(output)}</td>${inputs.map((_, column) => `<td>${numberField("", `control_values.static_mixing.${name}.matrix.${row}.${column}`, matrix[row]?.[column], "any", "inline")}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
 }
+
+function calibrationEditor(calibration) {
+  const registry = calibration.waveform_registry || {};
+  const settings = registry.settings || {}, mappers = registry.mappers || {};
+  const qagents = calibration.qagents || {};
+  const gates = calibration.gate_configuration || {};
+  const qagentContent = ["Q1", "Q2"].map((target) => referenceEditor(target, qagents[target])).join("");
+  return `<div class="config-group"><h3>Q1 / Q2 参考频率</h3><div class="editor-grid">${qagentContent || uncalibrated("未校准：尚无参考频率权威记录")}</div></div>
+  <div class="config-group"><h3>Gate Configuration</h3>${gateConfigurationEditor(gates, settings, mappers)}</div>
+  <div class="config-group"><h3>单比特 Setting（XY / XY2 / X12 / DTN）</h3>${settingGroups(settings, ["Q1", "Q2"], false)}</div>
+  <div class="config-group"><h3>F012ZBIAS Mapper</h3>${mapperGroups(mappers, "F012ZBIAS_MAPPER")}</div>
+  <div class="config-group"><h3>CZ / FSIM Setting</h3>${settingGroups(settings, ["C"], true)}</div>
+  <div class="config-group"><h3>G2ZBIAS Mapper</h3>${mapperGroups(mappers, "G2ZBIAS_MAPPER")}</div>
+  <div class="config-group"><h3>FSIM Characterization（只读实验产物）</h3>${characterizationView(calibration.fsim_characterizations)}</div>`;
+}
+
+function referenceEditor(target, value) {
+  const reference = value?.reference_frequency_authority;
+  if (!reference) return `<div class="readonly-block"><strong>${target}</strong>${status("uninitialized")}<span class="muted">未校准：尚无参考频率权威记录</span></div>`;
+  const path = `calibration_values.qagents.${target}.reference_frequency_authority`;
+  return `<div class="form-cluster"><h4>${target}</h4>${numberField("参考频率（GHz）", `${path}.reference_frequency_GHz`, reference.reference_frequency_GHz, "0.000001")}
+    ${recordFacts(reference, ["frequency_source", "status", "base_revision", "base_setting_hash", "revision", "setting_hash", "calibration_run_id"])}</div>`;
+}
+
+function gateConfigurationEditor(gates, settings, mappers) {
+  const availableSettings = Object.entries(settings), availableMappers = Object.entries(mappers);
+  return `<div class="setting-grid">${["Q1", "Q2"].map((target) => {
+    const gate = gates[target];
+    if (!gate) return `<div class="readonly-block"><strong>${target}</strong>${status("uninitialized")}<span class="muted">未校准：尚无 Gate Configuration</span></div>`;
+    const path = `calibration_values.gate_configuration.${target}`;
+    const choices = (key, type) => availableSettings.filter(([, row]) => row.target === target && row.gate_type === type).map(([id]) => id);
+    const mapperChoices = availableMappers.filter(([, row]) => row.target === target && row.mapper_type === "F012ZBIAS_MAPPER").map(([id]) => id);
+    return `<div class="form-cluster"><h4>${target}</h4>${selectField("XY Setting", `${path}.active_xy_setting`, gate.active_xy_setting, choices("xy", "XY"))}${selectField("XY2 Setting", `${path}.active_xy2_setting`, gate.active_xy2_setting, choices("xy2", "XY2"))}${selectField("X12 Setting", `${path}.active_xy12_setting`, gate.active_xy12_setting, choices("x12", "X12"))}${selectField("DTN Setting", `${path}.active_detune_setting`, gate.active_detune_setting, choices("dtn", "DTN"))}${selectField("F012 Mapper", `${path}.active_f012zbias_mapper`, gate.active_f012zbias_mapper, mapperChoices)}${checkboxField("XY 使用 pi Setting", `${path}.xy_pi_impl`, gate.xy_pi_impl)}<div class="readonly-line">Z gate：${esc(gate.z_gate_impl || "VIRTUAL")}</div></div>`;
+  }).join("")}${(() => { const gate = gates.C; if (!gate) return `<div class="readonly-block"><strong>C</strong>${status("uninitialized")}<span class="muted">未校准：尚无耦合器 Gate Configuration</span></div>`; const path = "calibration_values.gate_configuration.C"; const choices = (type) => availableSettings.filter(([, row]) => row.target === "C" && row.gate_type === type).map(([id]) => id); const mapperChoices = availableMappers.filter(([, row]) => row.target === "C" && row.mapper_type === "G2ZBIAS_MAPPER").map(([id]) => id); return `<div class="form-cluster"><h4>C</h4>${selectField("CZ Setting", `${path}.active_cz_setting`, gate.active_cz_setting, choices("CZ"))}${selectField("FSIM Setting", `${path}.active_fsim_setting`, gate.active_fsim_setting, choices("FSIM"))}${selectField("G2 Mapper", `${path}.active_g2zbias_mapper`, gate.active_g2zbias_mapper, mapperChoices)}</div>`; })()}</div>`;
+}
+
+function settingGroups(settings, targets, composite) {
+  const rows = Object.entries(settings).filter(([, row]) => targets.includes(row.target) && (composite ? ["CZ", "FSIM"].includes(row.gate_type) : ["XY", "XY2", "X12", "DTN"].includes(row.gate_type)));
+  if (!rows.length) return uncalibrated("未校准：尚无匹配的 Setting 记录");
+  return `<div class="setting-grid">${rows.map(([id, record]) => composite ? compositeSettingEditor(id, record) : qubitSettingEditor(id, record)).join("")}</div>`;
+}
+
+function qubitSettingEditor(id, record) {
+  const path = `calibration_values.waveform_registry.settings.${id}`;
+  if (record.gate_type === "DTN") return `<div class="form-cluster"><h4>${esc(id)} <span class="muted">DTN</span></h4>${recordFacts(record)}<div class="readonly-line">control_role=z; envelope_class=rect; input_unit=Phi/Phi0</div></div>`;
+  return `<div class="form-cluster"><h4>${esc(id)} <span class="muted">${esc(record.gate_type)}</span></h4>${recordFacts(record)}<div class="editor-grid compact">${selectField("波形类别", `${path}.waveform_class`, record.waveform_class, ["rectangle", "gaussian", "flattop"])}${numberField("长度（samples）", `${path}.length_samples`, record.length_samples, "1")}${numberField("幅度（GHz）", `${path}.amplitude_GHz`, record.amplitude_GHz)}${numberField("相位偏移（rad）", `${path}.phase_offset_rad`, record.phase_offset_rad)}${numberField("DRAG alpha（samples）", `${path}.dragAlpha_samples`, record.dragAlpha_samples)}${shapeFields(path, record)}</div></div>`;
+}
+
+function compositeSettingEditor(id, record) {
+  const path = `calibration_values.waveform_registry.settings.${id}`;
+  return `<div class="form-cluster full"><h4>${esc(id)} <span class="muted">${esc(record.gate_type)}</span></h4>${recordFacts(record)}<div class="editor-grid compact">${numberField("公共时长（samples）", `${path}.duration_samples`, record.duration_samples, "1")}${checkboxField("使用 F012 Mapper", `${path}.use_f012zbias_mapper`, record.use_f012zbias_mapper)}${checkboxField("使用 G2 Mapper", `${path}.use_g2zbias_mapper`, record.use_g2zbias_mapper)}${numberField("Q0 动态相位（rad）", `${path}.q0_calibrated_dynamic_phase_rad`, record.q0_calibrated_dynamic_phase_rad)}${numberField("Q1 动态相位（rad）", `${path}.q1_calibrated_dynamic_phase_rad`, record.q1_calibrated_dynamic_phase_rad)}</div><div class="waveform-grid">${["q0", "q1", "coupler"].map((name) => compositeWaveformEditor(path, name, record.waveforms?.[name] || {}, record)).join("")}</div></div>`;
+}
+
+function compositeWaveformEditor(path, name, waveform, record) {
+  const isCoupler = name === "coupler";
+  const useMapper = isCoupler ? record.use_g2zbias_mapper : record.use_f012zbias_mapper;
+  const operand = isCoupler ? "coupling_detune_GHz" : "frequency_detune_GHz";
+  const label = useMapper ? `${operand.replace("_", " ")}（GHz）` : "直接 Z 偏置（flux_offset_phi0，Phi/Phi0）";
+  return `<div class="waveform-editor"><h5>${name === "q0" ? "Q0" : name === "q1" ? "Q1" : "Coupler"}</h5>${selectField("波形类别", `${path}.waveforms.${name}.waveform_class`, waveform.waveform_class, ["rectangle", "gaussian", "flattop", "acz"])}${numberField(label, `${path}.waveforms.${name}.${useMapper ? operand : "flux_offset_phi0"}`, waveform[useMapper ? operand : "flux_offset_phi0"])}${shapeFields(`${path}.waveforms.${name}`, waveform)}</div>`;
+}
+
+function shapeFields(path, value) {
+  if (value.waveform_class === "rectangle") return numberField("宽度（samples）", `${path}.width_samples`, value.width_samples, "1");
+  if (value.waveform_class === "gaussian") return numberField("r sigma（samples）", `${path}.r_sigma_samples`, value.r_sigma_samples);
+  if (value.waveform_class === "flattop") return numberField("边缘（samples）", `${path}.edge_samples`, value.edge_samples, "1");
+  if (value.waveform_class === "acz") return ["thf", "thi", "lam2", "lam3"].map((key) => numberField(`ACZ ${key}`, `${path}.parameters.${key}`, value.parameters?.[key])).join("");
+  return "";
+}
+
+function mapperGroups(mappers, type) {
+  const rows = Object.entries(mappers).filter(([, row]) => row.mapper_type === type);
+  if (!rows.length) return uncalibrated(`未校准：尚无 ${type} 记录`);
+  return `<div class="setting-grid">${rows.map(([id, mapper]) => mapperEditor(id, mapper)).join("")}</div>`;
+}
+
+function mapperEditor(id, mapper) {
+  const path = `calibration_values.waveform_registry.mappers.${id}`;
+  if (mapper.mapper_type === "F012ZBIAS_MAPPER") return `<div class="form-cluster"><h4>${esc(id)} <span class="muted">${esc(mapper.target)}</span></h4>${recordFacts(mapper)}<div class="editor-grid compact">${numberField("f01 max（GHz）", `${path}.f01max_GHz`, mapper.f01max_GHz)}${numberField("k（rad/Phi0）", `${path}.k_rad_per_phi0`, mapper.k_rad_per_phi0)}${numberField("空闲磁通偏置（Phi/Phi0）", `${path}.idle_flux_offset_phi0`, mapper.idle_flux_offset_phi0)}</div></div>`;
+  const xs = mapper.coupling_detune_GHz || [], ys = mapper.zbias_offset_phi0 || [];
+  return `<div class="form-cluster"><h4>${esc(id)} <span class="muted">C</span></h4>${recordFacts(mapper)}<div class="readonly-line">分段线性 / 越界拒绝</div><div class="table-wrap matrix-scroll"><table class="editable-table"><thead><tr><th>耦合失谐（GHz）</th><th>Z 偏置（Phi/Phi0）</th><th></th></tr></thead><tbody>${xs.map((x, index) => `<tr><td>${numberField("", `${path}.coupling_detune_GHz.${index}`, x, "any", "inline")}</td><td>${numberField("", `${path}.zbias_offset_phi0.${index}`, ys[index], "any", "inline")}</td><td><button type="button" class="icon-button" data-array-remove="${esc(path)}" data-array-index="${index}" title="删除点" aria-label="删除点">x</button></td></tr>`).join("")}</tbody></table></div><button type="button" class="button secondary array-add" data-array-add="${esc(path)}">新增配对点</button></div>`;
+}
+
+function characterizationView(rows) {
+  const values = Object.values(rows || {});
+  if (!values.length) return uncalibrated("暂无 FSIM characterization 实验产物");
+  return `<div class="table-wrap matrix-scroll"><table><thead><tr><th>运行</th><th>theta</th><th>zeta</th><th>chi</th><th>gamma</th><th>phi</th><th>leakage</th><th>状态</th></tr></thead><tbody>${values.map((row) => `<tr><td class="mono">${esc(row.characterization_run_id)}</td><td>${fmt(row.theta_rad)}</td><td>${fmt(row.zeta_rad)}</td><td>${fmt(row.chi_rad)}</td><td>${fmt(row.gamma_rad)}</td><td>${fmt(row.phi_rad)}</td><td>${fmt(row.leakage)}</td><td>${status(row.status)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function readonlyEditor(item) {
+  const readonly = item.readonly || item.editor_view?.readonly || {};
+  return `<div class="config-group"><h3>设备与权威依据（只读）</h3><div class="facts">${fact("设备引用", readonly.device_ref?.path || "-", true)}${fact("设备哈希", short(readonly.device_ref?.sha256 || readonly.authority_refs?.device_sha256), true)}${fact("指令配置哈希", short(readonly.authority_refs?.instruction_profile_sha256), true)}${fact("编译器快照哈希", short(readonly.authority_refs?.compiler_snapshot_sha256), true)}</div><p class="muted">物理器件参数、authority references 与生成字段由后端管理，不可编辑。</p></div>`;
+}
+
+function recordFacts(record, keys = ["setting_id", "mapper_id", "target", "gate_type", "mapper_type", "transition", "status", "base_revision", "base_setting_hash", "revision", "setting_hash", "calibration_run_id"]) {
+  const values = keys.filter((key) => record[key] !== undefined).map((key) => `<span>${esc(key)}: <strong>${esc(record[key] ?? "-")}</strong></span>`).join("");
+  return values ? `<div class="record-facts">${values}</div>` : "";
+}
+
+function textField(label, id, value) { return `<div class="field"><label for="${esc(id)}">${esc(label)}</label><input id="${esc(id)}" value="${esc(value ?? "")}"></div>`; }
+function numberField(label, path, value, step = "any", mode = "") { const input = `<input data-path="${esc(path)}" data-value-type="number" type="number" step="${esc(step)}" value="${esc(value ?? "")}">`; return mode === "inline" ? input : `<div class="field"><label>${esc(label)}</label>${input}</div>`; }
+function selectField(label, path, value, choices) { const unique = [...new Set([value, ...(choices || [])].filter(Boolean))]; return `<div class="field"><label>${esc(label)}</label><select data-path="${esc(path)}" data-value-type="string">${unique.map((entry) => `<option value="${esc(entry)}" ${entry === value ? "selected" : ""}>${esc(entry)}</option>`).join("") || '<option value="">未校准</option>'}</select></div>`; }
+function checkboxField(label, path, value) { return `<label class="check-row"><input data-path="${esc(path)}" data-value-type="boolean" type="checkbox" ${value ? "checked" : ""}> ${esc(label)}</label>`; }
+function arrayField(path, value) { return `<input data-path="${esc(path)}" data-value-type="number-array" value="${esc((value || []).join(", "))}" aria-label="FIR 系数">`; }
+function uncalibrated(text) { return `<div class="uncalibrated">${status("uninitialized")}<span>${esc(text)}</span></div>`; }
 
 function controlConfigurationView(control) {
   if (!control?.clock || !control?.dac) return `<section class="section"><div class="section-head"><div><h2>控制参数</h2></div></div>${empty("当前配置未包含控制参数")}</section>`;
@@ -374,8 +466,21 @@ function calibrationConfigurationView(calibration) {
   return `<section class="section">
     <div class="section-head"><div><h2>校准参数</h2><p>实验可更新的控制模型参数</p></div></div>
     <div class="config-block"><h3>参考频率</h3>${frequencyTable(frequencies)}</div>
+    ${calibrationReadonlyGroups(calibration || {})}
     <details open><summary>完整校准参数 JSON</summary><pre>${esc(JSON.stringify(calibration || {}, null, 2))}</pre></details>
   </section>`;
+}
+
+function calibrationReadonlyGroups(calibration) {
+  const settings = calibration.waveform_registry?.settings || {};
+  const mappers = calibration.waveform_registry?.mappers || {};
+  const gates = calibration.gate_configuration || {};
+  const settingRows = Object.entries(settings).map(([id, row]) => `<tr><td class="mono">${esc(id)}</td><td>${esc(row.target || "-")}</td><td>${esc(row.gate_type || "-")}</td><td>${status(row.status)}</td><td>${row.revision ?? "-"}</td></tr>`).join("");
+  const mapperRows = Object.entries(mappers).map(([id, row]) => `<tr><td class="mono">${esc(id)}</td><td>${esc(row.target || "-")}</td><td>${esc(row.mapper_type || "-")}</td><td>${status(row.status)}</td><td>${row.revision ?? "-"}</td></tr>`).join("");
+  return `<div class="config-block"><h3>Gate Configuration</h3>${Object.keys(gates).length ? `<div class="facts">${Object.entries(gates).map(([target, value]) => fact(target, Object.entries(value).filter(([, item]) => typeof item !== "boolean").map(([key, item]) => `${key}: ${item}`).join("; "), true)).join("")}</div>` : uncalibrated("未校准：无 Gate Configuration")}</div>
+  <div class="config-block"><h3>Setting</h3>${settingRows ? `<div class="table-wrap"><table><thead><tr><th>ID</th><th>目标</th><th>类型</th><th>状态</th><th>修订</th></tr></thead><tbody>${settingRows}</tbody></table></div>` : uncalibrated("未校准：无 Setting")}</div>
+  <div class="config-block"><h3>Mapper</h3>${mapperRows ? `<div class="table-wrap"><table><thead><tr><th>ID</th><th>目标</th><th>类型</th><th>状态</th><th>修订</th></tr></thead><tbody>${mapperRows}</tbody></table></div>` : uncalibrated("未校准：无 Mapper")}</div>
+  <div class="config-block"><h3>FSIM Characterization</h3>${characterizationView(calibration.fsim_characterizations)}</div>`;
 }
 
 function markDraftDirty() {
@@ -390,34 +495,99 @@ function markDraftDirty() {
 }
 
 function collectDraft(item) {
-  let editable;
-  let name = item.name;
-  let note = item.note;
-  if (state.editorMode === "advanced") {
-    editable = JSON.parse(document.querySelector("#advanced-json").value);
-  } else {
-    editable = structuredClone(item.editable);
-    name = document.querySelector("#draft-name").value.trim();
-    note = document.querySelector("#draft-note").value.trim();
-    editable.control_values.clock.sample_rate_Hz = Number(document.querySelector("#sample-rate").value);
-    editable.control_values.clock.dt_ns = Number(document.querySelector("#dt-ns").value);
-    editable.control_values.dac.bits = Number(document.querySelector("#dac-bits").value);
-    editable.control_values.dac.rounding = document.querySelector("#dac-rounding").value;
-    editable.control_values.dac.full_scale_min_V = Number(document.querySelector("#dac-min").value);
-    editable.control_values.dac.full_scale_max_exclusive_V = Number(document.querySelector("#dac-max").value);
-    for (const target of ["q1", "q2", "c"]) editable.control_values.idle_flux_phi0[target] = Number(document.querySelector(`#flux-${target}`).value);
-    editable.control_values.lane_order = document.querySelector("#lane-order").value.split(",").map((value) => value.trim()).filter(Boolean);
-    document.querySelectorAll("[data-lane-latency]").forEach((input) => {
-      editable.control_values.lanes[input.dataset.laneLatency].latency_samples = Number(input.value);
-    });
-    document.querySelectorAll("[data-lane-fir]").forEach((input) => {
-      editable.control_values.lanes[input.dataset.laneFir].fir = input.value.split(",").map((value) => Number(value.trim()));
-    });
-    editable.control_values.static_mixing = JSON.parse(document.querySelector("#mixing-json").value);
-    editable.control_values.acceptance = JSON.parse(document.querySelector("#acceptance-json").value);
-    editable.calibration_values = JSON.parse(document.querySelector("#calibration-json").value);
-  }
+  const editable = structuredClone(editorEditable(item));
+  const name = document.querySelector("#draft-name").value.trim();
+  const note = document.querySelector("#draft-note").value.trim();
+  document.querySelectorAll("[data-path]").forEach((input) => {
+    const type = input.dataset.valueType;
+    const value = type === "boolean" ? input.checked : type === "number" ? Number(input.value) : type === "number-array" ? input.value.split(",").map((entry) => Number(entry.trim())).filter((entry) => Number.isFinite(entry)) : input.value;
+    setPath(editable, input.dataset.path, value);
+  });
   return { editable, name, note };
+}
+
+function editorEditable(item) {
+  return item.editor_view?.editable || item.editable || { control_values: {}, calibration_values: {} };
+}
+
+function editorCapabilities(item) {
+  const supplied = item.editor_view?.capabilities || item.capabilities || {};
+  return {
+    canSave: supplied.can_save !== false,
+    canValidate: supplied.can_validate !== false,
+    canPublish: supplied.can_publish !== false,
+    canActivate: supplied.can_activate !== false,
+  };
+}
+
+function setPath(value, path, next) {
+  const segments = path.split(".");
+  let cursor = value;
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const key = segments[index];
+    if (cursor[key] === undefined || cursor[key] === null) cursor[key] = /^\d+$/.test(segments[index + 1]) ? [] : {};
+    cursor = cursor[key];
+  }
+  cursor[segments.at(-1)] = next;
+}
+
+function bindStructuredEditor() {
+  document.querySelectorAll("[data-array-add]").forEach((button) => button.addEventListener("click", () => {
+    const record = pathValue(editorEditable(state.detail), button.dataset.arrayAdd);
+    if (!record) return;
+    record.coupling_detune_GHz.push(0);
+    record.zbias_offset_phi0.push(0);
+    markDraftDirty();
+    persistDraft().then((saved) => { if (saved) renderDraft(state.detail.draft_id); });
+  }));
+  document.querySelectorAll("[data-array-remove]").forEach((button) => button.addEventListener("click", () => {
+    const record = pathValue(editorEditable(state.detail), button.dataset.arrayRemove);
+    if (!record || record.coupling_detune_GHz.length <= 2) return toast("G2ZBIAS 至少需要两个配对点", true);
+    const index = Number(button.dataset.arrayIndex);
+    record.coupling_detune_GHz.splice(index, 1);
+    record.zbias_offset_phi0.splice(index, 1);
+    markDraftDirty();
+    persistDraft().then((saved) => { if (saved) renderDraft(state.detail.draft_id); });
+  }));
+  document.querySelectorAll("[data-path]").forEach((input) => input.addEventListener("change", () => {
+    if (input.dataset.path.endsWith("waveform_class")) {
+      const draft = editorEditable(state.detail);
+      const record = pathValue(draft, input.dataset.path.replace(/\.waveform_class$/, ""));
+      ["width_samples", "r_sigma_samples", "edge_samples", "parameters"].forEach((key) => delete record[key]);
+      if (input.value === "rectangle") record.width_samples = 1;
+      if (input.value === "gaussian") record.r_sigma_samples = 1;
+      if (input.value === "flattop") record.edge_samples = 0;
+      if (input.value === "acz") record.parameters = { thf: 1, thi: 1, lam2: 0, lam3: 0 };
+      markDraftDirty();
+      persistDraft().then((saved) => { if (saved) renderDraft(state.detail.draft_id); });
+    }
+  }));
+}
+
+function pathValue(value, path) {
+  return path.split(".").reduce((cursor, key) => cursor?.[key], value);
+}
+
+function showFieldErrors(rows) {
+  const target = document.querySelector("#field-errors");
+  if (!target) return;
+  target.hidden = !rows?.length;
+  target.innerHTML = (rows || []).map((row) => `<div><strong>${esc(row.path || row.field || "配置")}</strong> ${esc(row.message || row.code || "校验失败")}</div>`).join("");
+  document.querySelectorAll("[data-path]").forEach((input) => input.removeAttribute("aria-invalid"));
+  (rows || []).forEach((row) => document.querySelector(`[data-path="${CSS.escape(row.path || row.field || "")}"]`)?.setAttribute("aria-invalid", "true"));
+}
+
+function showMutationError(error) {
+  if (error.status === 409) {
+    toast("草稿已被更新，请刷新后处理冲突", true);
+    const target = document.querySelector("#field-errors");
+    if (target) {
+      target.hidden = false;
+      target.innerHTML = "<div><strong>保存冲突</strong> 草稿已被服务器更新。请刷新页面后根据最新内容重新编辑。</div>";
+    }
+  }
+  else toast(error.message, true);
+  if (error.fieldErrors?.length) showFieldErrors(error.fieldErrors);
 }
 
 function persistDraft(options = {}) {
@@ -454,7 +624,7 @@ async function persistDraftNow({ automatic = false, notify = false } = {}) {
   } catch (error) {
     const saveState = document.querySelector(".toolbar .mono.muted");
     if (saveState) saveState.textContent = "保存失败";
-    if (!automatic || state.editorMode === "advanced") toast(error.message, true);
+    if (!automatic) showMutationError(error);
     return false;
   }
 }
