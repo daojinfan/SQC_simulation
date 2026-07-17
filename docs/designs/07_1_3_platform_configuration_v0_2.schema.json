@@ -1,0 +1,886 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sqvm.local/schemas/platform_configuration_v0_2.schema.json",
+  "title": "PlatformConfiguration v0.2",
+  "description": "Canonical Draft, immutable Snapshot, and uninitialized legacy-migration records for QCIS v0.3.",
+  "oneOf": [
+    {"$ref": "#/$defs/snapshot"},
+    {"$ref": "#/$defs/draft"},
+    {"$ref": "#/$defs/legacyMigration"}
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,95}$"
+    },
+    "recordId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+    },
+    "actorId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{2,63}$"
+    },
+    "utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "finiteNumber": {
+      "type": "number"
+    },
+    "deviceRef": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^(?![A-Za-z]:|/|\\\\).+"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "authorityRefs": {
+      "type": "object",
+      "required": ["device_sha256", "instruction_profile_sha256", "compiler_snapshot_sha256"],
+      "properties": {
+        "device_sha256": {"$ref": "#/$defs/sha256"},
+        "instruction_profile_sha256": {"$ref": "#/$defs/sha256"},
+        "compiler_snapshot_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "readonly": {
+      "type": "object",
+      "required": ["device_ref", "authority_refs"],
+      "properties": {
+        "device_ref": {"$ref": "#/$defs/deviceRef"},
+        "authority_refs": {"$ref": "#/$defs/authorityRefs"}
+      },
+      "additionalProperties": false
+    },
+    "parent": {
+      "type": "object",
+      "required": ["configuration_id", "content_sha256", "control_values_sha256", "calibration_values_sha256"],
+      "properties": {
+        "configuration_id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "control_values_sha256": {"$ref": "#/$defs/sha256"},
+        "calibration_values_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "clock": {
+      "type": "object",
+      "required": ["sample_rate_Hz", "dt_ns"],
+      "properties": {
+        "sample_rate_Hz": {"type": "number", "exclusiveMinimum": 0},
+        "dt_ns": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "dac": {
+      "type": "object",
+      "required": ["bits", "full_scale_min_V", "full_scale_max_exclusive_V", "rounding"],
+      "properties": {
+        "bits": {"type": "integer", "minimum": 1, "maximum": 32},
+        "full_scale_min_V": {"type": "number"},
+        "full_scale_max_exclusive_V": {"type": "number"},
+        "rounding": {"const": "half_even"}
+      },
+      "additionalProperties": false
+    },
+    "lane": {
+      "type": "object",
+      "required": ["latency_samples", "fir"],
+      "properties": {
+        "latency_samples": {"type": "integer", "minimum": 0},
+        "fir": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "number"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "lanes": {
+      "type": "object",
+      "required": ["q1_xy_i", "q1_xy_q", "q2_xy_i", "q2_xy_q", "q1_z", "q2_z", "c_z", "r1_ro_i", "r1_ro_q", "r2_ro_i", "r2_ro_q"],
+      "properties": {
+        "q1_xy_i": {"$ref": "#/$defs/lane"},
+        "q1_xy_q": {"$ref": "#/$defs/lane"},
+        "q2_xy_i": {"$ref": "#/$defs/lane"},
+        "q2_xy_q": {"$ref": "#/$defs/lane"},
+        "q1_z": {"$ref": "#/$defs/lane"},
+        "q2_z": {"$ref": "#/$defs/lane"},
+        "c_z": {"$ref": "#/$defs/lane"},
+        "r1_ro_i": {"$ref": "#/$defs/lane"},
+        "r1_ro_q": {"$ref": "#/$defs/lane"},
+        "r2_ro_i": {"$ref": "#/$defs/lane"},
+        "r2_ro_q": {"$ref": "#/$defs/lane"}
+      },
+      "additionalProperties": false
+    },
+    "mixing": {
+      "type": "object",
+      "required": ["input_lanes", "output_coordinates", "matrix"],
+      "properties": {
+        "input_lanes": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "output_coordinates": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "matrix": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "number"}
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "staticMixing": {
+      "type": "object",
+      "required": ["xy", "z", "readout"],
+      "properties": {
+        "xy": {"$ref": "#/$defs/mixing"},
+        "z": {"$ref": "#/$defs/mixing"},
+        "readout": {"$ref": "#/$defs/mixing"}
+      },
+      "additionalProperties": false
+    },
+    "acceptance": {
+      "type": "object",
+      "required": ["max_condition_number", "max_xy_area_relative_error", "max_readout_area_relative_error", "max_z_flat_top_error_phi0", "max_phase_proxy_rad", "phase_proxy_window_ns", "max_formal_samples_per_scenario", "analysis_runtime_budget_seconds", "total_runtime_budget_seconds"],
+      "properties": {
+        "max_condition_number": {"type": "number", "exclusiveMinimum": 0},
+        "max_xy_area_relative_error": {"type": "number", "exclusiveMinimum": 0},
+        "max_readout_area_relative_error": {"type": "number", "exclusiveMinimum": 0},
+        "max_z_flat_top_error_phi0": {"type": "number", "exclusiveMinimum": 0},
+        "max_phase_proxy_rad": {"type": "number", "exclusiveMinimum": 0},
+        "phase_proxy_window_ns": {"type": "number", "exclusiveMinimum": 0},
+        "max_formal_samples_per_scenario": {"type": "integer", "minimum": 1},
+        "analysis_runtime_budget_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "total_runtime_budget_seconds": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "controlValues": {
+      "type": "object",
+      "required": ["clock", "dac", "lane_order", "lanes", "static_mixing", "idle_flux_phi0", "acceptance"],
+      "properties": {
+        "clock": {"$ref": "#/$defs/clock"},
+        "dac": {"$ref": "#/$defs/dac"},
+        "lane_order": {
+          "type": "array",
+          "minItems": 11,
+          "maxItems": 11,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "lanes": {"$ref": "#/$defs/lanes"},
+        "static_mixing": {"$ref": "#/$defs/staticMixing"},
+        "idle_flux_phi0": {
+          "type": "object",
+          "required": ["q1", "q2", "c"],
+          "properties": {
+            "q1": {"type": "number"},
+            "q2": {"type": "number"},
+            "c": {"type": "number"}
+          },
+          "additionalProperties": false
+        },
+        "acceptance": {"$ref": "#/$defs/acceptance"}
+      },
+      "additionalProperties": false
+    },
+    "acceptedReference": {
+      "type": "object",
+      "required": ["reference_frequency_GHz", "frequency_source", "calibration_run_id", "revision", "setting_hash"],
+      "properties": {
+        "reference_frequency_GHz": {"type": "number", "exclusiveMinimum": 0},
+        "frequency_source": {"enum": ["bootstrap_seed", "accepted_simulation"]},
+        "calibration_run_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "revision": {"$ref": "#/$defs/positiveInteger"},
+        "setting_hash": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "draftReference": {
+      "type": "object",
+      "required": ["reference_frequency_GHz", "frequency_source", "status", "base_revision", "base_setting_hash", "calibration_run_id", "revision", "setting_hash"],
+      "properties": {
+        "reference_frequency_GHz": {"type": "number", "exclusiveMinimum": 0},
+        "frequency_source": {"enum": ["bootstrap_seed", "accepted_simulation"]},
+        "status": {"const": "draft"},
+        "base_revision": {"type": "integer", "minimum": 0},
+        "base_setting_hash": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "calibration_run_id": {"type": "null"},
+        "revision": {"type": "null"},
+        "setting_hash": {"type": "null"}
+      },
+      "additionalProperties": false
+    },
+    "qagentCalibrationAccepted": {
+      "type": "object",
+      "required": ["reference_frequency_authority"],
+      "properties": {
+        "reference_frequency_authority": {"$ref": "#/$defs/acceptedReference"}
+      },
+      "additionalProperties": false
+    },
+    "qagentCalibrationDraft": {
+      "type": "object",
+      "required": ["reference_frequency_authority"],
+      "properties": {
+        "reference_frequency_authority": {"$ref": "#/$defs/draftReference"}
+      },
+      "additionalProperties": false
+    },
+    "qagentsAccepted": {
+      "type": "object",
+      "required": ["Q1", "Q2"],
+      "properties": {
+        "Q1": {"$ref": "#/$defs/qagentCalibrationAccepted"},
+        "Q2": {"$ref": "#/$defs/qagentCalibrationAccepted"}
+      },
+      "additionalProperties": false
+    },
+    "qagentsDraft": {
+      "type": "object",
+      "required": ["Q1", "Q2"],
+      "properties": {
+        "Q1": {"$ref": "#/$defs/qagentCalibrationDraft"},
+        "Q2": {"$ref": "#/$defs/qagentCalibrationDraft"}
+      },
+      "additionalProperties": false
+    },
+    "gateConfiguration": {
+      "type": "object",
+      "required": ["Q1", "Q2", "C"],
+      "properties": {
+        "Q1": {"$ref": "#/$defs/qubitGateConfiguration"},
+        "Q2": {"$ref": "#/$defs/qubitGateConfiguration"},
+        "C": {"$ref": "#/$defs/couplerGateConfiguration"}
+      },
+      "additionalProperties": false
+    },
+    "qubitGateConfiguration": {
+      "type": "object",
+      "required": ["active_xy_setting", "active_xy2_setting", "active_xy12_setting", "active_detune_setting", "active_f012zbias_mapper", "xy_pi_impl", "z_gate_impl"],
+      "properties": {
+        "active_xy_setting": {"$ref": "#/$defs/recordId"},
+        "active_xy2_setting": {"$ref": "#/$defs/recordId"},
+        "active_xy12_setting": {"$ref": "#/$defs/recordId"},
+        "active_detune_setting": {"$ref": "#/$defs/recordId"},
+        "active_f012zbias_mapper": {"$ref": "#/$defs/recordId"},
+        "xy_pi_impl": {"type": "boolean"},
+        "z_gate_impl": {"const": "VIRTUAL"}
+      },
+      "additionalProperties": false
+    },
+    "couplerGateConfiguration": {
+      "type": "object",
+      "required": ["active_cz_setting", "active_fsim_setting", "active_g2zbias_mapper"],
+      "properties": {
+        "active_cz_setting": {"$ref": "#/$defs/recordId"},
+        "active_fsim_setting": {"$ref": "#/$defs/recordId"},
+        "active_g2zbias_mapper": {"$ref": "#/$defs/recordId"}
+      },
+      "additionalProperties": false
+    },
+    "acceptedRecordIdentity": {
+      "type": "object",
+      "required": ["setting_id", "target", "gate_type", "status", "revision", "setting_hash", "calibration_run_id"],
+      "properties": {
+        "setting_id": {"$ref": "#/$defs/recordId"},
+        "target": {"enum": ["Q1", "Q2", "C"]},
+        "gate_type": {"enum": ["XY", "XY2", "X12", "DTN", "CZ", "FSIM"]},
+        "status": {"const": "accepted"},
+        "revision": {"$ref": "#/$defs/positiveInteger"},
+        "setting_hash": {"$ref": "#/$defs/sha256"},
+        "calibration_run_id": {"type": "string", "minLength": 1, "maxLength": 160}
+      }
+    },
+    "draftRecordIdentity": {
+      "type": "object",
+      "required": ["setting_id", "target", "gate_type", "status", "base_revision", "base_setting_hash", "revision", "setting_hash", "calibration_run_id"],
+      "properties": {
+        "setting_id": {"$ref": "#/$defs/recordId"},
+        "target": {"enum": ["Q1", "Q2", "C"]},
+        "gate_type": {"enum": ["XY", "XY2", "X12", "DTN", "CZ", "FSIM"]},
+        "status": {"const": "draft"},
+        "base_revision": {"type": "integer", "minimum": 0},
+        "base_setting_hash": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "revision": {"type": "null"},
+        "setting_hash": {"type": "null"},
+        "calibration_run_id": {"type": "null"}
+      }
+    },
+    "shape": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["waveform_class", "width_samples"],
+          "properties": {
+            "waveform_class": {"const": "rectangle"},
+            "width_samples": {"$ref": "#/$defs/positiveInteger"}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["waveform_class", "r_sigma_samples"],
+          "properties": {
+            "waveform_class": {"const": "gaussian"},
+            "r_sigma_samples": {"type": "number", "exclusiveMinimum": 0}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["waveform_class", "edge_samples"],
+          "properties": {
+            "waveform_class": {"const": "flattop"},
+            "edge_samples": {"type": "integer", "minimum": 0}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["waveform_class", "parameters"],
+          "properties": {
+            "waveform_class": {"const": "acz"},
+            "parameters": {
+              "type": "object",
+              "required": ["thf", "thi", "lam2", "lam3"],
+              "properties": {
+                "thf": {"type": "number", "exclusiveMinimum": 0},
+                "thi": {"type": "number", "exclusiveMinimum": 0},
+                "lam2": {"type": "number"},
+                "lam3": {"type": "number"}
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "xyPayload": {
+      "type": "object",
+      "required": ["transition", "waveform_class", "length_samples", "amplitude_GHz", "phase_offset_rad", "dragAlpha_samples"],
+      "properties": {
+        "transition": {"enum": ["01", "12"]},
+        "waveform_class": {"enum": ["rectangle", "gaussian", "flattop"]},
+        "length_samples": {"$ref": "#/$defs/positiveInteger"},
+        "amplitude_GHz": {"type": "number"},
+        "phase_offset_rad": {"type": "number"},
+        "dragAlpha_samples": {"type": "number"},
+        "width_samples": {"$ref": "#/$defs/positiveInteger"},
+        "r_sigma_samples": {"type": "number", "exclusiveMinimum": 0},
+        "edge_samples": {"type": "integer", "minimum": 0}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"waveform_class": {"const": "rectangle"}}},
+          "then": {"required": ["width_samples"], "not": {"anyOf": [{"required": ["r_sigma_samples"]}, {"required": ["edge_samples"]}]}}
+        },
+        {
+          "if": {"properties": {"waveform_class": {"const": "gaussian"}}},
+          "then": {"required": ["r_sigma_samples"], "not": {"anyOf": [{"required": ["width_samples"]}, {"required": ["edge_samples"]}]}}
+        },
+        {
+          "if": {"properties": {"waveform_class": {"const": "flattop"}}},
+          "then": {"required": ["edge_samples"], "not": {"anyOf": [{"required": ["width_samples"]}, {"required": ["r_sigma_samples"]}]}}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "acceptedXYSetting": {
+      "allOf": [
+        {"$ref": "#/$defs/acceptedRecordIdentity"},
+        {"$ref": "#/$defs/xyPayload"},
+        {
+          "if": {"properties": {"gate_type": {"const": "X12"}}},
+          "then": {"properties": {"target": {"enum": ["Q1", "Q2"]}, "transition": {"const": "12"}}},
+          "else": {"properties": {"gate_type": {"enum": ["XY", "XY2"]}, "target": {"enum": ["Q1", "Q2"]}, "transition": {"const": "01"}}}
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "draftXYSetting": {
+      "allOf": [
+        {"$ref": "#/$defs/draftRecordIdentity"},
+        {"$ref": "#/$defs/xyPayload"},
+        {
+          "if": {"properties": {"gate_type": {"const": "X12"}}},
+          "then": {"properties": {"target": {"enum": ["Q1", "Q2"]}, "transition": {"const": "12"}}},
+          "else": {"properties": {"gate_type": {"enum": ["XY", "XY2"]}, "target": {"enum": ["Q1", "Q2"]}, "transition": {"const": "01"}}}
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "acceptedDTNSetting": {
+      "allOf": [
+        {"$ref": "#/$defs/acceptedRecordIdentity"},
+        {
+          "type": "object",
+          "required": ["control_role", "envelope_class", "input_unit"],
+          "properties": {
+            "control_role": {"const": "z"},
+            "envelope_class": {"const": "rect"},
+            "input_unit": {"const": "phi_over_phi0"}
+          }
+        },
+        {"properties": {"gate_type": {"const": "DTN"}, "target": {"enum": ["Q1", "Q2"]}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "draftDTNSetting": {
+      "allOf": [
+        {"$ref": "#/$defs/draftRecordIdentity"},
+        {
+          "type": "object",
+          "required": ["control_role", "envelope_class", "input_unit"],
+          "properties": {
+            "control_role": {"const": "z"},
+            "envelope_class": {"const": "rect"},
+            "input_unit": {"const": "phi_over_phi0"}
+          }
+        },
+        {"properties": {"gate_type": {"const": "DTN"}, "target": {"enum": ["Q1", "Q2"]}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "directQubitWaveform": {
+      "allOf": [
+        {"$ref": "#/$defs/shape"},
+        {
+          "type": "object",
+          "required": ["flux_offset_phi0"],
+          "properties": {"flux_offset_phi0": {"type": "number"}}
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "frequencyQubitWaveform": {
+      "allOf": [
+        {"$ref": "#/$defs/shape"},
+        {
+          "type": "object",
+          "required": ["frequency_detune_GHz"],
+          "properties": {"frequency_detune_GHz": {"type": "number"}}
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "directCouplerWaveform": {
+      "allOf": [
+        {"$ref": "#/$defs/shape"},
+        {
+          "type": "object",
+          "required": ["flux_offset_phi0"],
+          "properties": {"flux_offset_phi0": {"type": "number"}}
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "couplingCouplerWaveform": {
+      "allOf": [
+        {"$ref": "#/$defs/shape"},
+        {
+          "type": "object",
+          "required": ["coupling_detune_GHz"],
+          "properties": {"coupling_detune_GHz": {"type": "number"}}
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "compositePayload": {
+      "type": "object",
+      "required": ["duration_samples", "use_f012zbias_mapper", "use_g2zbias_mapper", "waveforms", "q0_calibrated_dynamic_phase_rad", "q1_calibrated_dynamic_phase_rad"],
+      "properties": {
+        "duration_samples": {"$ref": "#/$defs/positiveInteger"},
+        "use_f012zbias_mapper": {"type": "boolean"},
+        "use_g2zbias_mapper": {"type": "boolean"},
+        "waveforms": {
+          "type": "object",
+          "required": ["q0", "q1", "coupler"],
+          "properties": {
+            "q0": {},
+            "q1": {},
+            "coupler": {}
+          },
+          "additionalProperties": false
+        },
+        "q0_calibrated_dynamic_phase_rad": {"type": "number"},
+        "q1_calibrated_dynamic_phase_rad": {"type": "number"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"use_f012zbias_mapper": {"const": true}}},
+          "then": {"properties": {"waveforms": {"properties": {"q0": {"$ref": "#/$defs/frequencyQubitWaveform"}, "q1": {"$ref": "#/$defs/frequencyQubitWaveform"}}}}},
+          "else": {"properties": {"waveforms": {"properties": {"q0": {"$ref": "#/$defs/directQubitWaveform"}, "q1": {"$ref": "#/$defs/directQubitWaveform"}}}}}
+        },
+        {
+          "if": {"properties": {"use_g2zbias_mapper": {"const": true}}},
+          "then": {"properties": {"waveforms": {"properties": {"coupler": {"$ref": "#/$defs/couplingCouplerWaveform"}}}}},
+          "else": {"properties": {"waveforms": {"properties": {"coupler": {"$ref": "#/$defs/directCouplerWaveform"}}}}}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "acceptedCompositeSetting": {
+      "allOf": [
+        {"$ref": "#/$defs/acceptedRecordIdentity"},
+        {"$ref": "#/$defs/compositePayload"},
+        {"properties": {"target": {"const": "C"}, "gate_type": {"enum": ["CZ", "FSIM"]}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "draftCompositeSetting": {
+      "allOf": [
+        {"$ref": "#/$defs/draftRecordIdentity"},
+        {"$ref": "#/$defs/compositePayload"},
+        {"properties": {"target": {"const": "C"}, "gate_type": {"enum": ["CZ", "FSIM"]}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "acceptedSetting": {
+      "oneOf": [
+        {"$ref": "#/$defs/acceptedXYSetting"},
+        {"$ref": "#/$defs/acceptedDTNSetting"},
+        {"$ref": "#/$defs/acceptedCompositeSetting"}
+      ]
+    },
+    "draftSetting": {
+      "oneOf": [
+        {"$ref": "#/$defs/draftXYSetting"},
+        {"$ref": "#/$defs/draftDTNSetting"},
+        {"$ref": "#/$defs/draftCompositeSetting"}
+      ]
+    },
+    "acceptedMapperIdentity": {
+      "type": "object",
+      "required": ["mapper_id", "mapper_type", "target", "status", "revision", "setting_hash", "calibration_run_id"],
+      "properties": {
+        "mapper_id": {"$ref": "#/$defs/recordId"},
+        "mapper_type": {"enum": ["F012ZBIAS_MAPPER", "G2ZBIAS_MAPPER"]},
+        "target": {"enum": ["Q1", "Q2", "C"]},
+        "status": {"const": "accepted"},
+        "revision": {"$ref": "#/$defs/positiveInteger"},
+        "setting_hash": {"$ref": "#/$defs/sha256"},
+        "calibration_run_id": {"type": "string", "minLength": 1, "maxLength": 160}
+      }
+    },
+    "draftMapperIdentity": {
+      "type": "object",
+      "required": ["mapper_id", "mapper_type", "target", "status", "base_revision", "base_setting_hash", "revision", "setting_hash", "calibration_run_id"],
+      "properties": {
+        "mapper_id": {"$ref": "#/$defs/recordId"},
+        "mapper_type": {"enum": ["F012ZBIAS_MAPPER", "G2ZBIAS_MAPPER"]},
+        "target": {"enum": ["Q1", "Q2", "C"]},
+        "status": {"const": "draft"},
+        "base_revision": {"type": "integer", "minimum": 0},
+        "base_setting_hash": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "revision": {"type": "null"},
+        "setting_hash": {"type": "null"},
+        "calibration_run_id": {"type": "null"}
+      }
+    },
+    "f012Payload": {
+      "type": "object",
+      "required": ["f01max_GHz", "k_rad_per_phi0", "idle_flux_offset_phi0"],
+      "properties": {
+        "f01max_GHz": {"type": "number", "exclusiveMinimum": 0},
+        "k_rad_per_phi0": {"type": "number", "not": {"const": 0}},
+        "idle_flux_offset_phi0": {"type": "number"}
+      }
+    },
+    "g2Payload": {
+      "type": "object",
+      "required": ["coupling_detune_GHz", "zbias_offset_phi0", "interpolation", "extrapolation"],
+      "properties": {
+        "coupling_detune_GHz": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"type": "number"}
+        },
+        "zbias_offset_phi0": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"type": "number"}
+        },
+        "interpolation": {"const": "piecewise_linear"},
+        "extrapolation": {"const": "reject"}
+      }
+    },
+    "acceptedF012Mapper": {
+      "allOf": [
+        {"$ref": "#/$defs/acceptedMapperIdentity"},
+        {"$ref": "#/$defs/f012Payload"},
+        {"properties": {"mapper_type": {"const": "F012ZBIAS_MAPPER"}, "target": {"enum": ["Q1", "Q2"]}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "draftF012Mapper": {
+      "allOf": [
+        {"$ref": "#/$defs/draftMapperIdentity"},
+        {"$ref": "#/$defs/f012Payload"},
+        {"properties": {"mapper_type": {"const": "F012ZBIAS_MAPPER"}, "target": {"enum": ["Q1", "Q2"]}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "acceptedG2Mapper": {
+      "allOf": [
+        {"$ref": "#/$defs/acceptedMapperIdentity"},
+        {"$ref": "#/$defs/g2Payload"},
+        {"properties": {"mapper_type": {"const": "G2ZBIAS_MAPPER"}, "target": {"const": "C"}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "draftG2Mapper": {
+      "allOf": [
+        {"$ref": "#/$defs/draftMapperIdentity"},
+        {"$ref": "#/$defs/g2Payload"},
+        {"properties": {"mapper_type": {"const": "G2ZBIAS_MAPPER"}, "target": {"const": "C"}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "acceptedMapper": {
+      "oneOf": [
+        {"$ref": "#/$defs/acceptedF012Mapper"},
+        {"$ref": "#/$defs/acceptedG2Mapper"}
+      ]
+    },
+    "draftMapper": {
+      "oneOf": [
+        {"$ref": "#/$defs/draftF012Mapper"},
+        {"$ref": "#/$defs/draftG2Mapper"}
+      ]
+    },
+    "acceptedRegistry": {
+      "type": "object",
+      "required": ["settings", "mappers"],
+      "properties": {
+        "settings": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{1,95}$": {"$ref": "#/$defs/acceptedSetting"}
+          },
+          "additionalProperties": false
+        },
+        "mappers": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{1,95}$": {"$ref": "#/$defs/acceptedMapper"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "draftRegistry": {
+      "type": "object",
+      "required": ["settings", "mappers"],
+      "properties": {
+        "settings": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{1,95}$": {"$ref": "#/$defs/draftSetting"}
+          },
+          "additionalProperties": false
+        },
+        "mappers": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]{1,95}$": {"$ref": "#/$defs/draftMapper"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "characterization": {
+      "type": "object",
+      "required": ["characterization_run_id", "source", "theta_rad", "zeta_rad", "chi_rad", "gamma_rad", "phi_rad", "metrics", "leakage", "method", "status"],
+      "properties": {
+        "characterization_run_id": {"$ref": "#/$defs/recordId"},
+        "source": {"type": "string", "minLength": 1},
+        "theta_rad": {"type": "number"},
+        "zeta_rad": {"type": "number"},
+        "chi_rad": {"type": "number"},
+        "gamma_rad": {"type": "number"},
+        "phi_rad": {"type": "number"},
+        "metrics": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["metric_type", "value"],
+            "properties": {
+              "metric_type": {"enum": ["qpt_process_fidelity", "xeb_cycle_fidelity"]},
+              "value": {"type": "number", "minimum": 0, "maximum": 1},
+              "uncertainty": {"type": "number", "minimum": 0}
+            },
+            "additionalProperties": false
+          }
+        },
+        "leakage": {"type": "number", "minimum": 0, "maximum": 1},
+        "method": {"type": "string", "minLength": 1},
+        "status": {"const": "accepted"}
+      },
+      "additionalProperties": false
+    },
+    "characterizations": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]{1,95}$": {"$ref": "#/$defs/characterization"}
+      },
+      "additionalProperties": false
+    },
+    "calibrationAccepted": {
+      "type": "object",
+      "required": ["qagents", "gate_configuration", "waveform_registry", "fsim_characterizations"],
+      "properties": {
+        "qagents": {"$ref": "#/$defs/qagentsAccepted"},
+        "gate_configuration": {"$ref": "#/$defs/gateConfiguration"},
+        "waveform_registry": {"$ref": "#/$defs/acceptedRegistry"},
+        "fsim_characterizations": {"$ref": "#/$defs/characterizations"}
+      },
+      "additionalProperties": false
+    },
+    "calibrationDraft": {
+      "type": "object",
+      "required": ["qagents", "gate_configuration", "waveform_registry", "fsim_characterizations"],
+      "properties": {
+        "qagents": {"$ref": "#/$defs/qagentsDraft"},
+        "gate_configuration": {"$ref": "#/$defs/gateConfiguration"},
+        "waveform_registry": {"$ref": "#/$defs/draftRegistry"},
+        "fsim_characterizations": {"$ref": "#/$defs/characterizations"}
+      },
+      "additionalProperties": false
+    },
+    "emptyCalibration": {
+      "type": "object",
+      "maxProperties": 0,
+      "additionalProperties": false
+    },
+    "snapshotEditable": {
+      "type": "object",
+      "required": ["control_values", "calibration_values"],
+      "properties": {
+        "control_values": {"$ref": "#/$defs/controlValues"},
+        "calibration_values": {
+          "oneOf": [
+            {"$ref": "#/$defs/calibrationAccepted"},
+            {"$ref": "#/$defs/emptyCalibration"}
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "draftEditable": {
+      "type": "object",
+      "required": ["control_values", "calibration_values"],
+      "properties": {
+        "control_values": {"$ref": "#/$defs/controlValues"},
+        "calibration_values": {
+          "oneOf": [
+            {"$ref": "#/$defs/calibrationDraft"},
+            {"$ref": "#/$defs/emptyCalibration"}
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "required": ["schema_version", "artifact_type", "artifact_version", "snapshot_id", "state_id", "device_id", "name", "reason", "actor_id", "published_utc", "status", "keep", "parent", "readonly", "editable", "content_sha256", "requires_requalification", "experiment_eligible"],
+      "properties": {
+        "schema_version": {"const": "0.2"},
+        "artifact_type": {"const": "platform_configuration_snapshot"},
+        "artifact_version": {"const": "0.2"},
+        "snapshot_id": {"$ref": "#/$defs/uuid"},
+        "state_id": {"$ref": "#/$defs/uuid"},
+        "device_id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 96},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "actor_id": {"$ref": "#/$defs/actorId"},
+        "published_utc": {"$ref": "#/$defs/utc"},
+        "status": {"enum": ["published", "active"]},
+        "keep": {"type": "boolean"},
+        "parent": {"$ref": "#/$defs/parent"},
+        "readonly": {"$ref": "#/$defs/readonly"},
+        "editable": {"$ref": "#/$defs/snapshotEditable"},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "requires_requalification": {"type": "boolean"},
+        "experiment_eligible": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "validation": {
+      "type": "object",
+      "required": ["status", "validated_content_sha256", "requires_requalification"],
+      "properties": {
+        "status": {"enum": ["not_validated", "valid", "invalid"]},
+        "validated_content_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "requires_requalification": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "draft": {
+      "type": "object",
+      "required": ["schema_version", "artifact_type", "artifact_version", "draft_id", "device_id", "name", "note", "actor_id", "created_utc", "updated_utc", "checkpoint", "parent", "readonly", "editable", "content_sha256", "validation"],
+      "properties": {
+        "schema_version": {"const": "0.2"},
+        "artifact_type": {"const": "platform_configuration_draft"},
+        "artifact_version": {"const": "0.2"},
+        "draft_id": {"$ref": "#/$defs/uuid"},
+        "device_id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 96},
+        "note": {"type": "string", "maxLength": 1024},
+        "actor_id": {"$ref": "#/$defs/actorId"},
+        "created_utc": {"$ref": "#/$defs/utc"},
+        "updated_utc": {"$ref": "#/$defs/utc"},
+        "checkpoint": {"type": "integer", "minimum": 0},
+        "parent": {"$ref": "#/$defs/parent"},
+        "readonly": {"$ref": "#/$defs/readonly"},
+        "editable": {"$ref": "#/$defs/draftEditable"},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "validation": {"$ref": "#/$defs/validation"}
+      },
+      "additionalProperties": false
+    },
+    "legacyMigration": {
+      "type": "object",
+      "required": ["schema_version", "artifact_type", "artifact_version", "state_id", "device_id", "status", "readonly", "editable", "legacy_source_sha256"],
+      "properties": {
+        "schema_version": {"const": "0.2"},
+        "artifact_type": {"const": "platform_configuration_legacy_migration"},
+        "artifact_version": {"const": "0.2"},
+        "state_id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "device_id": {"$ref": "#/$defs/id"},
+        "status": {"const": "uninitialized"},
+        "readonly": {"$ref": "#/$defs/readonly"},
+        "editable": {
+          "type": "object",
+          "required": ["control_values", "calibration_values"],
+          "properties": {
+            "control_values": {"$ref": "#/$defs/controlValues"},
+            "calibration_values": {"$ref": "#/$defs/emptyCalibration"}
+          },
+          "additionalProperties": false
+        },
+        "legacy_source_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
