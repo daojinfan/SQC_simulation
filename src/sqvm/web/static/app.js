@@ -270,6 +270,19 @@ async function renderDraft(id) {
       } catch (error) { showMutationError(error); }
     });
     document.querySelector("#publish-draft").addEventListener("click", () => openPublish(item));
+    document.querySelector("#initialize-calibration")?.addEventListener("click", async () => {
+      if (state.draftDirty && !(await persistDraft())) return;
+      const current = state.detail;
+      try {
+        await mutate(`/api/v1/drafts/${current.draft_id}/initialize-calibration`, {
+          actor_id: actor(),
+          expected_content_sha256: current.content_sha256,
+        });
+        state.draftDirty = false;
+        await renderDraft(current.draft_id);
+        toast("已初始化校准参数，请填写结构化记录");
+      } catch (error) { showMutationError(error); }
+    });
     document.querySelector("#delete-draft").addEventListener("click", async () => {
       if (!confirm(`确定删除草稿“${item.name}”吗？`)) return;
       await api(`/api/v1/drafts/${id}`, { method: "DELETE", headers: { "X-SQVM-Actor": actor() } });
@@ -318,6 +331,9 @@ function matrixEditor(name, value) {
 }
 
 function calibrationEditor(calibration) {
+  if (isEmptyCalibration(calibration)) {
+    return `<div class="config-group calibration-bootstrap"><h3>校准参数</h3><p class="muted">当前草稿尚未初始化校准记录。初始化后将提供 Q1/Q2、Setting、Mapper、CZ/FSIM 的结构化表单。</p><button id="initialize-calibration" type="button" class="button primary">初始化校准参数</button></div>`;
+  }
   const registry = calibration.waveform_registry || {};
   const settings = registry.settings || {}, mappers = registry.mappers || {};
   const qagents = calibration.qagents || {};
@@ -330,6 +346,10 @@ function calibrationEditor(calibration) {
   <div class="config-group"><h3>CZ / FSIM Setting</h3>${settingGroups(settings, ["C"], true)}</div>
   <div class="config-group"><h3>G2ZBIAS Mapper</h3>${mapperGroups(mappers, "G2ZBIAS_MAPPER")}</div>
   <div class="config-group"><h3>FSIM Characterization（只读实验产物）</h3>${characterizationView(calibration.fsim_characterizations)}</div>`;
+}
+
+function isEmptyCalibration(calibration) {
+  return !calibration || (typeof calibration === "object" && Object.keys(calibration).length === 0);
 }
 
 function referenceEditor(target, value) {
@@ -572,9 +592,16 @@ function showFieldErrors(rows) {
   const target = document.querySelector("#field-errors");
   if (!target) return;
   target.hidden = !rows?.length;
-  target.innerHTML = (rows || []).map((row) => `<div><strong>${esc(row.path || row.field || "配置")}</strong> ${esc(row.message || row.code || "校验失败")}</div>`).join("");
+  target.innerHTML = (rows || []).map((row) => `<div><strong>${esc(normalizeFieldPath(row.path || row.field || "配置"))}</strong> ${esc(row.message || row.code || "校验失败")}</div>`).join("");
   document.querySelectorAll("[data-path]").forEach((input) => input.removeAttribute("aria-invalid"));
-  (rows || []).forEach((row) => document.querySelector(`[data-path="${CSS.escape(row.path || row.field || "")}"]`)?.setAttribute("aria-invalid", "true"));
+  (rows || []).forEach((row) => {
+    const path = normalizeFieldPath(row.path || row.field || "");
+    document.querySelector(`[data-path="${CSS.escape(path)}"]`)?.setAttribute("aria-invalid", "true");
+  });
+}
+
+function normalizeFieldPath(path) {
+  return String(path || "").replace(/^\$\.?/, "");
 }
 
 function showMutationError(error) {
