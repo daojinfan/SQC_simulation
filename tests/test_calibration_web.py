@@ -384,3 +384,9 @@ def _http_json(url: str, *, method: str = "GET", payload=None):
     )
     with urlopen(request, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def test_workbench_diff_uses_backend_requalification_field():
+    source = (ROOT / "src" / "sqvm" / "web" / "static" / "app.js").read_text("utf-8")
+    assert "result.requires_requalification" in source
+    assert "result.requalification ?" not in source

@@ -425,7 +425,7 @@ function renderServerDiff(result) {
     (all[group] ||= []).push(change);
     return all;
   }, {});
-  const summary = `<div class="diff-summary">${fact("变更字段", result.changed_count ?? changes.length)}${fact("控制链变更", result.control_changed ? "是" : "否")}${fact("重新准入", result.requalification ? "需要" : "不需要")}</div>`;
+  const summary = `<div class="diff-summary">${fact("变更字段", result.changed_count ?? changes.length)}${fact("控制链变更", result.control_changed ? "是" : "否")}${fact("重新准入", result.requires_requalification ? "需要" : "不需要")}</div>`;
   return `${summary}<div class="diff-list">${Object.entries(grouped).map(([group, rows]) => `<div class="diff-group"><strong>${esc(group)}（${rows.length}）</strong>${rows.map((row) => `<span class="mono">${esc(normalizeFieldPath(row.path || ""))}<br><small>${esc(String(row.before ?? "-"))} -> ${esc(String(row.after ?? "-"))}</small></span>`).join("")}</div>`).join("")}</div>`;
 }
 
