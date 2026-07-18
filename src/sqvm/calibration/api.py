@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from pathlib import Path
 import uuid
+from typing import Any
 
+from sqvm.circuits import CircuitExecutionProfile
 from sqvm.calibration.spectroscopy_workflow import (
     SpectroscopyCalibrationRequest,
     SpectroscopyCalibrationRun,
@@ -24,14 +27,16 @@ def run_active_qubit_spectroscopy_calibration(
     output_root: str | Path | None = None,
     configuration_storage_root: str | Path | None = None,
     repository_root: str | Path | None = None,
-    timeout_s: float = 180.0,
+    timeout_s: float = 600.0,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> SpectroscopyCalibrationRun:
     """Run spectroscopy from one immutable Active platform configuration.
 
     ``output_root`` is the experiment collection directory. One unique run
     directory is created below it, so callers do not need to allocate run IDs.
     The default is ``output/experiments`` and is discovered automatically by
-    the calibration Web console.
+    the calibration Web console. ``timeout_s`` is the watchdog for each
+    isolated QuTiP worker, not a deadline for the complete scan.
     """
 
     root = _repository_root(repository_root)
@@ -70,6 +75,8 @@ def run_active_qubit_spectroscopy_calibration(
         target,
         root,
         timeout_s=timeout_s,
+        execution_profile=CircuitExecutionProfile.CALIBRATION_SCAN,
+        progress_callback=progress_callback,
     )
 
 

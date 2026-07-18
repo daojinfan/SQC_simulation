@@ -69,7 +69,11 @@ def _install_synthetic_runner(monkeypatch, calls, *, cross_excitation=0.005):
     centers = {"Q1": 5.0, "Q2": 5.2}
 
     def fake_run(circuits, _context_value, _output_root, _repository_root, **kwargs):
-        calls.append({"circuits": circuits, "readout_qubit": kwargs["readout_qubit"]})
+        calls.append({
+            "circuits": circuits,
+            "readout_qubit": kwargs["readout_qubit"],
+            "execution_profile": kwargs["execution_profile"].value,
+        })
         results = []
         for circuit in circuits:
             frequencies = {}

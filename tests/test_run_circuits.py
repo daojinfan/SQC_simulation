@@ -15,6 +15,7 @@ import sqvm.circuits as circuits_module
 from sqvm.circuits import (
     CircuitExecutionContext,
     CircuitExecutionError,
+    CircuitExecutionProfile,
     CircuitReasonCode,
     QCISCircuit,
     compile_circuit,
@@ -424,6 +425,84 @@ def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, tmp_path: 
         "P10": 0.08,
         "P11": 0.05,
     }
+
+
+def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
+    monkeypatch,
+    tmp_path: Path,
+):
+    handles = {}
+    progress = []
+
+    def fake_scan(_compilation, point_id, output_root, _repository_root, *, timeout_s):
+        assert timeout_s == 600.0
+        root = Path(output_root) / point_id
+        root.mkdir()
+        manifest = canonical_json_bytes({"kind": "scan"})
+        receipt = canonical_json_bytes({"kind": "scan"})
+        (root / "manifest.json").write_bytes(manifest)
+        (root / "receipt.json").write_bytes(receipt)
+        handle = SimpleNamespace(
+            artifact_root=root,
+            manifest_sha256=hashlib.sha256(manifest).hexdigest().upper(),
+            receipt_sha256=hashlib.sha256(receipt).hexdigest().upper(),
+            qualification_scope="local_calibration_scan_v1",
+        )
+        handles[point_id] = handle
+        return handle
+
+    monkeypatch.setattr(circuits_module, "run_calibration_scan_point", fake_scan)
+    monkeypatch.setattr(
+        circuits_module,
+        "run_bounded_model_point",
+        lambda *_args, **_kwargs: pytest.fail("bounded executor must not run"),
+    )
+    arrays = {
+        "population_000": np.array([0.8]),
+        "population_100": np.array([0.1]),
+        "population_001": np.array([0.05]),
+        "population_101": np.array([0.04]),
+        "leakage": np.array([0.01]),
+        "norm_error": np.array([1.0e-12]),
+    }
+    monkeypatch.setattr(
+        circuits_module,
+        "_load_verified_final_observables",
+        lambda _root: (arrays, {
+            "evolution_manifest_sha256": "C" * 64,
+            "evolution_receipt_sha256": "D" * 64,
+            "array_inventory_sha256": "E" * 64,
+            "arrays": {},
+        }),
+    )
+    result = run_circuits(
+        (QCISCircuit("scan_case", "X2P Q1\n"),),
+        _context(),
+        tmp_path,
+        ROOT,
+        timeout_s=600.0,
+        execution_profile=CircuitExecutionProfile.CALIBRATION_SCAN,
+        progress_callback=lambda event: progress.append(dict(event)),
+    )[0]
+    assert result.qualification_scope == "local_calibration_scan_v1"
+    assert [event["event"] for event in progress] == [
+        "circuit_started",
+        "circuit_completed",
+    ]
+    assert progress[-1]["completed"] == progress[-1]["total"] == 1
+
+    monkeypatch.setattr(
+        circuits_module,
+        "verify_calibration_scan_point",
+        lambda artifact_root, _compilation, _repository_root: handles[Path(artifact_root).name],
+    )
+    monkeypatch.setattr(
+        circuits_module,
+        "verify_bounded_model_point",
+        lambda *_args, **_kwargs: pytest.fail("bounded verifier must not run"),
+    )
+    verified = circuits_module.verify_circuit_result(result.evidence_root, _context(), ROOT)
+    assert verified.to_dict() == result.to_dict()
 
 
 def test_run_circuits_returns_final_q1_q2_probabilities_from_verified_evolution():

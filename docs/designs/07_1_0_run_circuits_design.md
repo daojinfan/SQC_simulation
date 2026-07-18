@@ -1,6 +1,6 @@
 # Stage 7.1.0 `run_circuits` 统一线路执行接口设计
 
-状态：初版已实现；当前仅具备 bounded smoke 资格，不是生产物理后端 authority
+状态：初版已实现；支持 bounded smoke 与本地校准扫描，均不是生产物理后端 authority
 
 ## 1. 架构定位
 
@@ -33,10 +33,17 @@ run_circuits(
     readout_qubit: Sequence[Sequence[str]] = ((),),
     timeout_s: float = 180.0,
     max_circuits: int = 64,
+    execution_profile: CircuitExecutionProfile = CircuitExecutionProfile.BOUNDED_SMOKE,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> tuple[CircuitResult, ...]
 ```
 
 每条 `QCISCircuit` 包含稳定的 `circuit_id` 和完整 QCIS source。返回顺序与输入顺序一致。
+
+默认 `BOUNDED_SMOKE` 保持原有同步独立重放语义。用户级校准入口可以显式选择
+`CALIBRATION_SCAN`，使用单次严格 worker 和延迟批后复验。两个档位的边界、实测耗时和
+证据声明见 `07_1_6_local_calibration_scan_execution.md`。`timeout_s` 始终是单个 worker
+watchdog，不是批次总 deadline。
 
 `CircuitExecutionContext` 还显式绑定 `initial_state_id` 和 `observable_set_id`。当前 smoke 后端只接受：
 

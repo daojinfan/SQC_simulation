@@ -483,7 +483,9 @@ canonical experiment request
 
 ## 19. 当前限制与实施顺序
 
-当前 `run_circuits` 仍使用 `bounded_smoke_only` Stage 7.1 entrance、`lab_ground` 初态和最多 64 个逻辑样本。它可以验证 circuit builder、并行时序、observable 和证据链，但不能直接授予生产校准资格。
+`run_circuits` 默认仍使用 `bounded_smoke_only` Stage 7.1 entrance；用户级频谱 API 使用
+`local_calibration_scan_v1`，避免对每个扫描点同步执行多次数值重放。两者都固定
+`lab_ground` 初态和最多 64 个逻辑样本，且不能授予硬件或生产校准资格。
 
 建议实施顺序：
 
@@ -646,4 +648,8 @@ decision = decide_qubit_spectroscopy_calibration(
 
 `context_with_spectroscopy_calibration(context, decision.calibration_path)` 会验证 decision/calibration/receipt 三方哈希绑定，并返回新的不可变执行 context；不会修改原 context。
 
-当前仍属于 bounded pilot：没有硬件 measurement/shot/IQ claim，没有生产 Runtime catalog、并发 lineage-head 锁、崩溃恢复和完整 source/environment snapshot。`verify_qubit_spectroscopy_calibration` 当前验证 canonical dataset、analysis/candidate/gate 派生绑定和 receipt 哈希，不替代未来生产 authority 的独立 QuTiP 全量重放。
+当前仍属于本地模型校准 pilot：没有硬件 measurement/shot/IQ claim，没有生产 Runtime
+catalog、并发 lineage-head 锁和崩溃恢复。每点结果绑定 Stage 4.1/5.1 authority、worker
+数组和 receipt，但独立数值重放按 `deferred_batch_review` 延迟执行。
+`verify_qubit_spectroscopy_calibration` 验证 canonical dataset、analysis/candidate/gate 派生
+绑定和 receipt 哈希，不替代未来生产 authority 的批后抽样 QuTiP 重放。

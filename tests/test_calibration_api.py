@@ -69,6 +69,10 @@ def test_active_spectroscopy_api_publishes_web_visible_data(monkeypatch):
 
         assert run.root.parent == base / "experiments"
         assert len(calls) == 4
+        assert all(
+            call["execution_profile"] == "calibration_scan"
+            for call in calls
+        )
         workflow = json.loads((run.root / "workflow.json").read_text("utf-8"))
         assert workflow["created_utc"].endswith("Z")
         assert workflow["parent_calibration"]["path"].startswith(

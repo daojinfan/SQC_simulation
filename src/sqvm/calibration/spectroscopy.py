@@ -8,11 +8,12 @@ from enum import StrEnum
 import math
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
 from sqvm.circuits import (
+    CircuitExecutionProfile,
     CircuitExecutionContext,
     CircuitResult,
     QCISCircuit,
@@ -320,6 +321,8 @@ def run_qubit_spectroscopy(
     repository_root: str | Path | None = None,
     *,
     timeout_s: float = 180.0,
+    execution_profile: CircuitExecutionProfile = CircuitExecutionProfile.BOUNDED_SMOKE,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> SpectroscopyDataset:
     """Plan and execute a spectroscopy batch through the public circuit facade."""
 
@@ -329,6 +332,13 @@ def run_qubit_spectroscopy(
         readout = [[request.targets[0]]]
     else:
         readout = [[target] for target in request.targets] + [list(request.targets)]
+
+    def report_progress(event: Mapping[str, Any]) -> None:
+        if progress_callback is not None:
+            progress_callback(
+                MappingProxyType({"run_phase": request.run_phase, **dict(event)})
+            )
+
     circuit_results = run_circuits(
         tuple(point.circuit for point in points),
         context,
@@ -337,6 +347,8 @@ def run_qubit_spectroscopy(
         readout_qubit=readout,
         timeout_s=timeout_s,
         max_circuits=request.max_points,
+        execution_profile=execution_profile,
+        progress_callback=report_progress if progress_callback is not None else None,
     )
     if len(circuit_results) != len(points):
         _fail(SpectroscopyReasonCode.RESULT_INVALID, "runner result count mismatch")

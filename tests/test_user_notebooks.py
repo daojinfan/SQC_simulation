@@ -4,7 +4,7 @@ from pathlib import Path
 
 import nbformat
 
-from sqvm.runtime.stage71 import bounded_envelope
+from sqvm.runtime.calibration_scan import calibration_scan_policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,4 +28,4 @@ def test_qubit_spectroscopy_notebook_uses_calibration_api_and_is_safe_by_default
             continue
         exec(compile(cell.source, f"{path}:cell-{index}", "exec"), namespace)
 
-    assert namespace["TIMEOUT_S"] <= bounded_envelope()["max_worker_wall_seconds"]
+    assert namespace["TIMEOUT_S"] <= calibration_scan_policy()["max_worker_wall_seconds"]

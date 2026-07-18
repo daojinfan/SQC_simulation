@@ -33,6 +33,7 @@ __all__ = [
     "verify_q1_q2_coupling",
     "verify_static_spectrum",
     "CircuitExecutionContext",
+    "CircuitExecutionProfile",
     "CircuitExecutionError",
     "CircuitReasonCode",
     "CircuitResult",
@@ -136,13 +137,13 @@ def __getattr__(name: str):
         globals().update(exports)
         return exports[name]
     if name in {
-        "CircuitExecutionContext", "CircuitExecutionError", "CircuitReasonCode", "CircuitResult",
+        "CircuitExecutionContext", "CircuitExecutionError", "CircuitExecutionProfile", "CircuitReasonCode", "CircuitResult",
         "CompiledCircuit", "DressedPopulations", "QCISCircuit", "QubitProbabilities", "ReadoutProbabilities",
         "compile_circuit", "run_circuits",
         "verify_circuit_result",
     }:
         from sqvm.circuits import (
-            CircuitExecutionContext, CircuitExecutionError, CircuitReasonCode, CircuitResult,
+            CircuitExecutionContext, CircuitExecutionError, CircuitExecutionProfile, CircuitReasonCode, CircuitResult,
             CompiledCircuit, DressedPopulations, QCISCircuit, QubitProbabilities, ReadoutProbabilities,
             compile_circuit, run_circuits,
             verify_circuit_result,
@@ -151,6 +152,7 @@ def __getattr__(name: str):
         exports = {
             "CircuitExecutionContext": CircuitExecutionContext,
             "CircuitExecutionError": CircuitExecutionError,
+            "CircuitExecutionProfile": CircuitExecutionProfile,
             "CircuitReasonCode": CircuitReasonCode,
             "CircuitResult": CircuitResult,
             "CompiledCircuit": CompiledCircuit,

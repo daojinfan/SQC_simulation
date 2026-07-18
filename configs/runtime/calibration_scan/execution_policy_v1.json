@@ -1,0 +1,13 @@
+{
+  "artifact_type": "stage_07_calibration_scan_execution_policy",
+  "artifact_version": "0.1",
+  "formal_scale_qualified": false,
+  "hardware_measurement": false,
+  "max_logical_duration_ns": 32.0,
+  "max_logical_sample_count": 64,
+  "max_worker_wall_seconds": 600.0,
+  "numerical_replay_policy": "deferred_batch_review",
+  "profile_id": "local_calibration_scan_v1",
+  "schema_version": "0.1",
+  "status": "local_simulation_enabled"
+}

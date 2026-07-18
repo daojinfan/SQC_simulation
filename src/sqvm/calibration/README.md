@@ -13,5 +13,9 @@ calibration/
 `coupler.py` 和 `cz.py`。校准模块只能通过公共 `run_circuits` 接口执行线路，
 不能直接调用 QuTiP worker。
 
+面向用户的校准 API 使用 `CircuitExecutionProfile.CALIBRATION_SCAN`。该档位每点运行一次
+严格 Stage 5.1 worker，并把独立数值重放标记为延迟批后复验；底层 `run_circuits` 默认
+仍保持 `BOUNDED_SMOKE`。
+
 `sqvm.experiments` 和 `sqvm.calibration_api` 仅作为旧调用路径的兼容层，
 新代码统一从 `sqvm.calibration` 导入。

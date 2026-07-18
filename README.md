@@ -158,7 +158,8 @@ request = SpectroscopyCalibrationRequest(
 result = run_active_qubit_spectroscopy_calibration(
     request,
     device_id="demo_2q1c2r",
-    timeout_s=180.0,
+    timeout_s=600.0,  # 每个 QuTiP worker 的 watchdog
+    progress_callback=lambda event: print(dict(event)),
 )
 
 print(result.run_id)
@@ -169,6 +170,11 @@ print(dict(result.candidates))
 
 单比特扫描使用 `SpectroscopyMode.SINGLE`，并只提供一个 target、axis 和 pulse policy。
 粗扫、细扫和确认扫描仍由同一个 API 编排。
+
+本地校准扫描使用已批准的 Stage 4.1 控制链和 Stage 5.1 solver，但每个扫描点只运行一次
+隔离 worker，不在同步实验路径中重复执行资格审核所需的数值重放。每点证据都会明确记录
+`numerical_replay=deferred`；这类结果只用于本模拟器配置，不代表硬件测量或正式规模物理
+authority。当前严格 solver 的实测单点耗时约为两分钟，完整双比特频谱可能需要半小时以上。
 
 频率、幅度等直接波形参数由实验请求写入 QCIS；需要扫描配置表字段时使用 QCIS
 `SET` overlay。`SET` 只作用于当前 circuit，不会直接修改当前配置或 Active 快照。
@@ -298,7 +304,8 @@ Smoke 完成不等于生产物理后端通过正式规模验收。
 ## 当前限制
 
 - 目前只支持固定的 2Q1C2R 模型拓扑。
-- 当前 `run_circuits` 和频谱工作流仍属于 bounded pilot，不是硬件或生产物理 authority。
+- `bounded_smoke` 仍用于入口资格复验；用户频谱默认使用单次 worker 的
+  `local_calibration_scan_v1`，两者都不是硬件或生产物理 authority。
 - 当前初态固定为 `lab_ground`，observable 主要是 dressed computational population。
 - 尚未实现真实 shot、IQ、assignment matrix 和读出噪声模型。
 - Rabi、Ramsey、DRAG、Coupler 和 CZ 等校准实验尚未接入完整工作流。
@@ -316,4 +323,5 @@ Smoke 完成不等于生产物理后端通过正式规模验收。
 5. [`docs/designs/07_1_0_run_circuits_design.md`](docs/designs/07_1_0_run_circuits_design.md)
 6. [`docs/designs/07_1_1_qubit_spectroscopy_design.md`](docs/designs/07_1_1_qubit_spectroscopy_design.md)
 7. [`docs/designs/07_1_5_current_configuration_workbench_v2.md`](docs/designs/07_1_5_current_configuration_workbench_v2.md)
-8. [`docs/logs/DEVELOPMENT_LOG.md`](docs/logs/DEVELOPMENT_LOG.md)
+8. [`docs/designs/07_1_6_local_calibration_scan_execution.md`](docs/designs/07_1_6_local_calibration_scan_execution.md)
+9. [`docs/logs/DEVELOPMENT_LOG.md`](docs/logs/DEVELOPMENT_LOG.md)

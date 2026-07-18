@@ -11,12 +11,12 @@ from pathlib import Path
 import re
 import shutil
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 import uuid
 
 import numpy as np
 
-from sqvm.circuits import CircuitExecutionContext
+from sqvm.circuits import CircuitExecutionContext, CircuitExecutionProfile
 from sqvm.calibration.spectroscopy import (
     SpectroscopyAnalysis,
     SpectroscopyAxis,
@@ -111,7 +111,9 @@ def run_qubit_spectroscopy_calibration(
     output_root: str | Path,
     repository_root: str | Path | None = None,
     *,
-    timeout_s: float = 180.0,
+    timeout_s: float = 600.0,
+    execution_profile: CircuitExecutionProfile = CircuitExecutionProfile.CALIBRATION_SCAN,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> SpectroscopyCalibrationRun:
     """Run coarse/refined spectroscopy and required parallel confirmations."""
 
@@ -140,6 +142,8 @@ def run_qubit_spectroscopy_calibration(
             staging / "c",
             root,
             timeout_s=timeout_s,
+            execution_profile=execution_profile,
+            progress_callback=progress_callback,
         )
         coarse_analysis = _analyze(coarse_dataset, request.policy)
         _require_peaks(coarse_analysis, "coarse")
@@ -151,6 +155,8 @@ def run_qubit_spectroscopy_calibration(
             staging / "f",
             root,
             timeout_s=timeout_s,
+            execution_profile=execution_profile,
+            progress_callback=progress_callback,
         )
         refined_analysis = _analyze(refined_dataset, request.policy)
 
@@ -169,6 +175,8 @@ def run_qubit_spectroscopy_calibration(
                     staging / f"s{index}",
                     root,
                     timeout_s=timeout_s,
+                    execution_profile=execution_profile,
+                    progress_callback=progress_callback,
                 )
                 confirmation_datasets[target_name] = dataset
                 confirmation_analyses[target_name] = _analyze(dataset, request.policy)
@@ -224,7 +232,14 @@ def run_qubit_spectroscopy_calibration(
                 "evidence_class": "model_calibration_simulation",
                 "physics_claim": "model_derived_only",
                 "hardware_measurement": False,
-                "bounded_smoke_only": True,
+                "bounded_smoke_only": execution_profile is CircuitExecutionProfile.BOUNDED_SMOKE,
+                "execution_profile": execution_profile.value,
+                "numerical_replay_policy": (
+                    "deferred_batch_review"
+                    if execution_profile is CircuitExecutionProfile.CALIBRATION_SCAN
+                    else "synchronous_full_replay"
+                ),
+                "calibration_update_scope": "simulator_configuration_only",
             },
             "parent_calibration": {
                 "path": parent_path.relative_to(root).as_posix(),

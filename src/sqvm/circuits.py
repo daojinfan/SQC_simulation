@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 import shutil
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Callable
 import uuid
 
 import numpy as np
@@ -29,6 +29,11 @@ from sqvm.qcis.canonical import (
     validate_canonical_source,
 )
 from sqvm.runtime.stage71 import run_bounded_model_point, verify_bounded_model_point
+from sqvm.runtime.calibration_scan import (
+    QUALIFICATION_SCOPE as CALIBRATION_SCAN_SCOPE,
+    run_calibration_scan_point,
+    verify_calibration_scan_point,
+)
 from sqvm.runtime.storage import atomic_publish, write_canonical_new
 
 
@@ -86,6 +91,11 @@ class CircuitReasonCode(StrEnum):
     CONFIG_AUTHORITY_INVALID = "CIRCUIT_CONFIG_AUTHORITY_INVALID"
     READOUT_QUBIT_INVALID = "CIRCUIT_READOUT_QUBIT_INVALID"
     RESULT_EVIDENCE_INVALID = "CIRCUIT_RESULT_EVIDENCE_INVALID"
+
+
+class CircuitExecutionProfile(StrEnum):
+    BOUNDED_SMOKE = "bounded_smoke"
+    CALIBRATION_SCAN = "calibration_scan"
 
 
 class CircuitExecutionError(ValueError):
@@ -323,8 +333,10 @@ def run_circuits(
     readout_qubit: Sequence[Sequence[str]] = ((),),
     timeout_s: float = 180.0,
     max_circuits: int = _MAX_CIRCUITS_PER_CALL,
+    execution_profile: CircuitExecutionProfile = CircuitExecutionProfile.BOUNDED_SMOKE,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> tuple[CircuitResult, ...]:
-    """Run ordered QCIS circuits through the bounded Stage 4.1/5.1 QuTiP path."""
+    """Run ordered QCIS circuits through an explicit model-execution profile."""
 
     if isinstance(circuits, (str, bytes)) or not isinstance(circuits, Sequence) or not circuits:
         _fail(CircuitReasonCode.EMPTY_BATCH, "circuits must be a nonempty sequence")
@@ -344,12 +356,32 @@ def run_circuits(
             f"batch size exceeds the admitted limit ({_MAX_CIRCUITS_PER_CALL})",
         )
     _validate_context(context)
+    if not isinstance(execution_profile, CircuitExecutionProfile):
+        _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "execution profile is invalid")
+    if progress_callback is not None and not callable(progress_callback):
+        _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "progress callback is invalid")
     readout_selection = _normalize_readout_qubit(readout_qubit, context)
     compiled_circuits = tuple(compile_circuit(circuit, context) for circuit in circuits)
     results: list[CircuitResult] = []
-    for compiled in compiled_circuits:
+    for index, compiled in enumerate(compiled_circuits):
         circuit = compiled.circuit
-        handle = run_bounded_model_point(
+        if progress_callback is not None:
+            progress_callback(
+                MappingProxyType(
+                    {
+                        "event": "circuit_started",
+                        "completed": index,
+                        "total": len(compiled_circuits),
+                        "circuit_id": circuit.circuit_id,
+                    }
+                )
+            )
+        runner = (
+            run_calibration_scan_point
+            if execution_profile is CircuitExecutionProfile.CALIBRATION_SCAN
+            else run_bounded_model_point
+        )
+        handle = runner(
             compiled.compilation,
             circuit.circuit_id,
             output_root,
@@ -385,6 +417,17 @@ def run_circuits(
                 handle.qualification_scope,
             )
         )
+        if progress_callback is not None:
+            progress_callback(
+                MappingProxyType(
+                    {
+                        "event": "circuit_completed",
+                        "completed": index + 1,
+                        "total": len(compiled_circuits),
+                        "circuit_id": circuit.circuit_id,
+                    }
+                )
+            )
     return tuple(results)
 
 
@@ -414,7 +457,14 @@ def verify_circuit_result(
         _fail(CircuitReasonCode.RESULT_EVIDENCE_INVALID, "model evidence binding")
     model_root = (root / model_binding["relative_path"]).resolve()
     try:
-        handle = verify_bounded_model_point(model_root, compiled.compilation, repository_root)
+        qualification_scope = model_binding.get("qualification_scope")
+        if qualification_scope == CALIBRATION_SCAN_SCOPE:
+            verifier = verify_calibration_scan_point
+        elif qualification_scope == "bounded_smoke_only":
+            verifier = verify_bounded_model_point
+        else:
+            _fail(CircuitReasonCode.RESULT_EVIDENCE_INVALID, "unknown qualification scope")
+        handle = verifier(model_root, compiled.compilation, repository_root)
     except Exception as exc:
         raise CircuitExecutionError(CircuitReasonCode.RESULT_EVIDENCE_INVALID, str(exc)) from exc
     _verify_circuit_execution_evidence(root, compiled, handle, readout_selection)
