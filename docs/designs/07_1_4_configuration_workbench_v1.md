@@ -186,4 +186,3 @@ Below 900 px, the rail becomes a section picker and object summary precedes deta
 8. Existing lifecycle endpoints and persistence shapes remain compatible; this is a view and view-model redesign.
 9. Desktop 1440 by 900 and mobile 390 by 844 have no overlap or page-level horizontal overflow.
 10. The browser receives neither mutable compiler authority nor a route that bypasses PlatformAuthorityResolver.
-
