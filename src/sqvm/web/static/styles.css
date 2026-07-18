@@ -241,6 +241,9 @@ tbody tr.clickable:hover { background: #f4faf8; }
 [aria-invalid="true"] { border-color: var(--red) !important; box-shadow: 0 0 0 1px var(--red); }
 .check-row { display: flex; align-items: center; gap: 7px; padding: 5px 0; }
 fieldset { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; }
+.readonly-control-surface { min-width: 0; margin: 0; padding: 0; border: 0; }
+.readonly-control-surface input:disabled, .readonly-control-surface select:disabled { opacity: 1; color: var(--text); background: #f7f9f8; -webkit-text-fill-color: var(--text); cursor: default; }
+.readonly-control-surface .array-add, .readonly-control-surface .icon-button { display: none; }
 legend { color: var(--muted); font-size: 12px; font-weight: 650; padding: 0 5px; }
 .validation-list { display: grid; gap: 7px; }
 .validation-row { display: flex; gap: 10px; align-items: start; border-bottom: 1px solid var(--line); padding: 9px 0; }

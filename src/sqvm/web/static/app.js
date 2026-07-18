@@ -470,29 +470,34 @@ function referenceEvidence(reference) {
 function readonlyWorkbench(item, section) {
   const editable = item.editable || {}, calibration = editable.calibration_values || {};
   if (section === "overview") return `<section class="workbench-section"><div class="section-head"><div><h3>设备概览</h3><p>已发布快照。所有值均只读。</p></div></div>${topologyView(calibration)}<div class="facts">${fact("设备", item.device_id)}${fact("发布者", item.actor_id)}${fact("发布时间", dateText(item.published_utc))}${fact("内容哈希", short(item.content_sha256), true)}</div>${readonlyEditor(item)}</section>`;
-  if (section === "control") return controlConfigurationView(editable.control_values || {});
+  if (section === "control") return readonlyControlWorkbench(editable.control_values || {});
   if (section === "q1" || section === "q2") return readonlyQubit(section.toUpperCase(), calibration);
   if (section === "c") return readonlyCoupler(calibration);
   return `<section class="workbench-section"><div class="section-head"><div><h3>变更与发布</h3><p>快照血缘、准入与权威依据。</p></div></div><div class="facts">${fact("父配置", short(item.parent?.configuration_id), true)}${fact("重新准入", item.requires_requalification ? "需要" : "不需要")}${fact("实验准入", item.experiment_eligible ? "可用" : "不可用")}${fact("长期保存", item.keep ? "是" : "否")}</div>${readonlyEditor(item)}</section>`;
 }
 
 function readonlyQubit(target, calibration) {
-  const ref = calibration.qagents?.[target]?.reference_frequency_authority;
-  const settings = Object.entries(calibration.waveform_registry?.settings || {}).filter(([, row]) => row.target === target);
-  const mappers = Object.entries(calibration.waveform_registry?.mappers || {}).filter(([, row]) => row.target === target);
-  return `<section class="workbench-section object-page ${target.toLowerCase()}"><div class="object-heading"><span class="object-dot ${target.toLowerCase()}"></span><div><h3>${target}</h3><p>只读校准记录</p></div></div>${referenceEvidence(ref)}<div class="object-subsection"><h4>Setting</h4>${readonlyRecordTable(settings, "gate_type")}</div><div class="object-subsection"><h4>Mapper</h4>${readonlyRecordTable(mappers, "mapper_type")}</div></section>`;
+  const registry = calibration.waveform_registry || {}, settings = registry.settings || {}, mappers = registry.mappers || {};
+  const value = calibration.qagents?.[target], gate = calibration.gate_configuration?.[target];
+  const key = target.toLowerCase(), tab = state.objectTabs[key] || "base";
+  const content = tab === "base" ? readonlySurface(`<div class="setting-grid">${referenceEditor(target, value)}${gate ? qubitGateEditor(target, gate, settings, mappers) : uncalibrated("未校准：无 Gate Configuration")}</div>`) : tab === "pulses" ? readonlySurface(settingGroups(settings, [target], false)) : tab === "mapper" ? readonlySurface(mapperObjectGroups(mappers, "F012ZBIAS_MAPPER", target)) : referenceEvidence(value?.reference_frequency_authority);
+  return `<section class="workbench-section object-page ${key}"><div class="object-heading"><span class="object-dot ${key}"></span><div><h3>${target}</h3><p>只读频率、脉冲 Setting、F012ZBIAS Mapper 与校准证据</p></div></div>${objectTabs(key, tab, [["base", "基础"], ["pulses", "脉冲"], ["mapper", "Mapper"], ["evidence", "证据"]])}<div class="object-subsection">${content}</div></section>`;
 }
 
 function readonlyCoupler(calibration) {
-  const settings = Object.entries(calibration.waveform_registry?.settings || {}).filter(([, row]) => row.target === "C");
-  const mappers = Object.entries(calibration.waveform_registry?.mappers || {}).filter(([, row]) => row.target === "C");
-  return `<section class="workbench-section object-page c"><div class="object-heading"><span class="object-dot c"></span><div><h3>C</h3><p>只读耦合器门与标定结果</p></div></div><div class="object-subsection"><h4>CZ / FSIM</h4>${readonlyRecordTable(settings, "gate_type")}</div><div class="object-subsection"><h4>G2 Mapper</h4>${readonlyRecordTable(mappers, "mapper_type")}</div><div class="object-subsection"><h4>FSIM 标定结果</h4>${characterizationView(calibration.fsim_characterizations)}</div></section>`;
+  const registry = calibration.waveform_registry || {}, settings = registry.settings || {}, mappers = registry.mappers || {};
+  const gate = calibration.gate_configuration?.C, tab = state.objectTabs.c || "gates";
+  const content = tab === "gates" ? readonlySurface(`${gate ? couplerGateEditor(gate, settings, mappers) : uncalibrated("未校准：无耦合器 Gate Configuration")}${settingGroups(settings, ["C"], true)}`) : tab === "mapper" ? readonlySurface(mapperObjectGroups(mappers, "G2ZBIAS_MAPPER", "C")) : characterizationView(calibration.fsim_characterizations);
+  return `<section class="workbench-section object-page c"><div class="object-heading"><span class="object-dot c"></span><div><h3>C</h3><p>只读 CZ / FSIM 波形、G2ZBIAS Mapper 与标定结果</p></div></div>${objectTabs("c", tab, [["gates", "CZ / FSIM"], ["mapper", "G2 Mapper"], ["results", "标定结果"]])}<div class="object-subsection">${content}</div></section>`;
 }
 
-function readonlyRecordTable(rows, kind) {
-  if (!rows.length) return uncalibrated("未校准：无记录");
-  return `<div class="table-wrap matrix-scroll"><table><thead><tr><th>ID</th><th>类型</th><th>状态</th><th>修订</th><th>哈希</th></tr></thead><tbody>${rows.map(([id, row]) => `<tr><td class="mono">${esc(id)}</td><td>${esc(row[kind] || "-")}</td><td>${status(row.status)}</td><td>${row.revision ?? "-"}</td><td class="mono">${esc(short(row.setting_hash))}</td></tr>`).join("")}</tbody></table></div>`;
+function readonlyControlWorkbench(control) {
+  const tab = state.objectTabs.control || "clock";
+  const content = tab === "clock" ? controlClockEditor(control) : tab === "lanes" ? laneEditor(control) : tab === "mixing" ? Object.entries(control.static_mixing || {}).map(([name, value]) => matrixEditor(name, value)).join("") : tab === "flux" ? controlFluxEditor(control) : acceptanceEditor(control);
+  return `<section class="workbench-section"><div class="object-heading"><span class="object-dot control"></span><div><h3>控制链</h3><p>只读时钟、DAC、11 条通道、混合矩阵、空闲磁通与准入阈值</p></div></div>${objectTabs("control", tab, [["clock", "时钟与 DAC"], ["lanes", "通道"], ["mixing", "混合"], ["flux", "空闲磁通"], ["acceptance", "阈值"]])}<div class="object-subsection">${readonlySurface(content || uncalibrated("未提供控制链数据"))}</div></section>`;
 }
+
+function readonlySurface(content) { return `<fieldset class="readonly-control-surface" disabled>${content}</fieldset>`; }
 
 function controlEditor(control) {
   const clock = control.clock || {}, dac = control.dac || {}, flux = control.idle_flux_phi0 || {};

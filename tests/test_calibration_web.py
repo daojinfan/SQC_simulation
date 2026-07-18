@@ -400,3 +400,14 @@ def test_workbench_diff_uses_backend_requalification_field():
     styles = (ROOT / "src" / "sqvm" / "web" / "static" / "styles.css").read_text("utf-8")
     assert ".field-errors[hidden] { display: none; }" in styles
     assert ".mapper-grid { grid-template-columns: minmax(0, 1fr); }" in styles
+
+
+def test_snapshot_workbench_exposes_detailed_values_as_read_only_controls():
+    source = (ROOT / "src" / "sqvm" / "web" / "static" / "app.js").read_text("utf-8")
+    assert "readonlyControlWorkbench(editable.control_values || {})" in source
+    assert "readonlySurface(settingGroups(settings, [target], false))" in source
+    assert 'readonlySurface(mapperObjectGroups(mappers, "G2ZBIAS_MAPPER", "C"))' in source
+    assert '<fieldset class="readonly-control-surface" disabled>' in source
+
+    styles = (ROOT / "src" / "sqvm" / "web" / "static" / "styles.css").read_text("utf-8")
+    assert ".readonly-control-surface input:disabled" in styles
