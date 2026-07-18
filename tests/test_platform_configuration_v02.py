@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 from pathlib import Path
 import shutil
@@ -192,6 +193,47 @@ def test_draft_update_rejects_stale_content_hash(platform_root: Path):
             editable=draft["editable"],
         )
     assert captured.value.status == 409
+
+
+def test_draft_diff_uses_initial_checkpoint_and_groups_editable_changes(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    draft = store.create_draft(snapshot, actor_id="project.manager", name="Workbench diff")
+    baseline_hash = draft["content_sha256"]
+    editable = copy.deepcopy(draft["editable"])
+    editable["control_values"]["lanes"]["q1_xy_i"]["latency_samples"] += 1
+    editable["calibration_values"]["waveform_registry"]["settings"]["q1_xy"]["amplitude_GHz"] = 0.12
+    editable["calibration_values"]["waveform_registry"]["settings"]["c_cz"]["q0_calibrated_dynamic_phase_rad"] = 0.1
+    updated = store.update_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        expected_content_sha256=baseline_hash,
+        name=draft["name"],
+        note="changed by workbench",
+        editable=editable,
+    )
+
+    diff = store.draft_diff(draft["draft_id"])
+
+    assert diff["against"] == "parent"
+    assert diff["baseline_checkpoint"] == 0
+    assert diff["baseline_content_sha256"] == baseline_hash
+    assert diff["current_content_sha256"] == updated["content_sha256"]
+    assert diff["changed_count"] == 3
+    assert diff["control_changed"] is True
+    assert diff["requires_requalification"] is True
+    changes = {row["path"]: row for row in diff["changes"]}
+    assert changes["$.control_values.lanes.q1_xy_i.latency_samples"]["group"] == "control"
+    assert changes["$.calibration_values.waveform_registry.settings.q1_xy.amplitude_GHz"]["group"] == "Q1"
+    assert changes["$.calibration_values.waveform_registry.settings.c_cz.q0_calibrated_dynamic_phase_rad"]["group"] == "C"
+    assert all("wave_index" not in row["path"] for row in diff["changes"])
+    assert all(row["kind"] == "changed" for row in diff["changes"])
+
+    with pytest.raises(ConfigurationManagementError) as captured:
+        store.draft_diff(draft["draft_id"], against="checkpoint")
+    assert captured.value.status == 422
+    with pytest.raises(ConfigurationManagementError) as captured:
+        store.draft_diff(str(uuid.uuid4()))
+    assert captured.value.status == 404
 
 
 @pytest.mark.parametrize("field", ["device_sha256", "compiler_snapshot_sha256"])

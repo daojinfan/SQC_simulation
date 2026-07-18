@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from sqvm.web.index import CalibrationWebIndex, WebArtifactError
 from sqvm.web.configuration import (
@@ -75,7 +75,8 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
         return
 
     def _get(self) -> None:
-        path = unquote(urlsplit(self.path).path)
+        request = urlsplit(self.path)
+        path = unquote(request.path)
         if path in _STATIC_FILES:
             file_name, content_type = _STATIC_FILES[path]
             self._bytes(200, (_STATIC_ROOT / file_name).read_bytes(), content_type)
@@ -93,9 +94,23 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
             self._json(200, self.server.store.summary())
             return
         if path.startswith("/api/v1/drafts/"):
-            draft_id = path.removeprefix("/api/v1/drafts/")
-            self._json(200, self.server.store.draft(draft_id))
-            return
+            tail = path.removeprefix("/api/v1/drafts/").split("/")
+            draft_id = tail[0]
+            if tail[1:] == ["diff"]:
+                query = parse_qs(request.query, keep_blank_values=True)
+                if set(query) - {"against"} or len(query.get("against", ["parent"])) != 1:
+                    raise ConfigurationManagementError("diff query is invalid")
+                self._json(
+                    200,
+                    self.server.store.draft_diff(
+                        draft_id,
+                        against=query.get("against", ["parent"])[0],
+                    ),
+                )
+                return
+            if len(tail) == 1:
+                self._json(200, self.server.store.draft(draft_id))
+                return
         if path.startswith("/api/v1/platform-snapshots/"):
             snapshot_id = path.removeprefix("/api/v1/platform-snapshots/")
             self._json(200, self.server.store.snapshot(snapshot_id))

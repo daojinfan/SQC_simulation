@@ -43,6 +43,16 @@ _SYSTEM_FIELDS = {
     "recommendation_sha256",
     "decision_sha256",
 }
+_DIFF_EXCLUDED_FIELDS = _SYSTEM_FIELDS | {
+    "base_revision",
+    "base_setting_hash",
+    "setting_id",
+    "mapper_id",
+    "target",
+    "gate_type",
+    "mapper_type",
+    "wave_index",
+}
 _MAX_CHECKPOINTS = 20
 _MAX_AUTOMATIC_SNAPSHOTS = 10
 _PHYSICAL_FIELD_NAMES = {
@@ -146,6 +156,43 @@ class PlatformConfigurationStore:
         source_path = path.parent / "source_candidate.json"
         source_candidate = self._load_json(source_path, "source candidate") if source_path.is_file() else None
         return {**payload, "checkpoints": checkpoints, "editor_view": editor_view(), "field_errors": [], "source_candidate": source_candidate}
+
+    def draft_diff(self, draft_id: str, *, against: str = "parent") -> dict[str, Any]:
+        """Return the current editable changes against the draft's initial checkpoint.
+
+        Drafts are created from a parent configuration, but their editable state is
+        normalized into Draft form at checkpoint zero.  That checkpoint is therefore
+        the only stable, comparable parent baseline for the workbench.
+        """
+
+        if against != "parent":
+            raise ConfigurationManagementError("diff baseline is invalid")
+        path = self._draft_path(draft_id)
+        draft = self._load_json(path, "draft")
+        baseline = self._load_json(
+            path.parent / "checkpoints" / "00000000.json",
+            "initial draft checkpoint",
+        )
+        raw_before = baseline.get("editable")
+        raw_after = draft.get("editable")
+        before = _without_diff_excluded_fields(raw_before)
+        after = _without_diff_excluded_fields(raw_after)
+        changes: list[dict[str, Any]] = []
+        _collect_editable_changes(before, after, "$", changes)
+        for change in changes:
+            change["group"] = _change_group(change["path"], raw_before, raw_after)
+        control_changed = any(change["group"] == "control" for change in changes)
+        return {
+            "draft_id": draft_id,
+            "against": "parent",
+            "baseline_checkpoint": baseline["checkpoint"],
+            "baseline_content_sha256": baseline["content_sha256"],
+            "current_content_sha256": draft["content_sha256"],
+            "changes": changes,
+            "changed_count": len(changes),
+            "control_changed": control_changed,
+            "requires_requalification": self._requires_requalification(draft),
+        }
 
     def create_draft(
         self,
@@ -1010,6 +1057,127 @@ def _without_system(value: Any) -> Any:
     if isinstance(value, list):
         return [_without_system(item) for item in value]
     return value
+
+
+_DIFF_MISSING = object()
+
+
+def _without_diff_excluded_fields(value: Any) -> Any:
+    """Keep the workbench diff focused on editable calibration values."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _without_diff_excluded_fields(item)
+            for key, item in value.items()
+            if key not in _DIFF_EXCLUDED_FIELDS
+        }
+    if isinstance(value, list):
+        return [_without_diff_excluded_fields(item) for item in value]
+    return copy.deepcopy(value)
+
+
+def _collect_editable_changes(
+    before: Any,
+    after: Any,
+    path: str,
+    changes: list[dict[str, Any]],
+) -> None:
+    if before is _DIFF_MISSING and isinstance(after, Mapping):
+        if not after:
+            changes.append({"path": path, "before": None, "after": {}, "kind": "added"})
+        for key in sorted(after):
+            _collect_editable_changes(
+                _DIFF_MISSING, after[key], f"{path}.{key}", changes
+            )
+        return
+    if after is _DIFF_MISSING and isinstance(before, Mapping):
+        if not before:
+            changes.append({"path": path, "before": {}, "after": None, "kind": "removed"})
+        for key in sorted(before):
+            _collect_editable_changes(
+                before[key], _DIFF_MISSING, f"{path}.{key}", changes
+            )
+        return
+    if before is _DIFF_MISSING and isinstance(after, list):
+        if not after:
+            changes.append({"path": path, "before": None, "after": [], "kind": "added"})
+        for index, item in enumerate(after):
+            _collect_editable_changes(_DIFF_MISSING, item, f"{path}[{index}]", changes)
+        return
+    if after is _DIFF_MISSING and isinstance(before, list):
+        if not before:
+            changes.append({"path": path, "before": [], "after": None, "kind": "removed"})
+        for index, item in enumerate(before):
+            _collect_editable_changes(item, _DIFF_MISSING, f"{path}[{index}]", changes)
+        return
+    if isinstance(before, Mapping) and isinstance(after, Mapping):
+        for key in sorted(set(before) | set(after)):
+            _collect_editable_changes(
+                before.get(key, _DIFF_MISSING),
+                after.get(key, _DIFF_MISSING),
+                f"{path}.{key}",
+                changes,
+            )
+        return
+    if isinstance(before, list) and isinstance(after, list):
+        for index in range(max(len(before), len(after))):
+            _collect_editable_changes(
+                before[index] if index < len(before) else _DIFF_MISSING,
+                after[index] if index < len(after) else _DIFF_MISSING,
+                f"{path}[{index}]",
+                changes,
+            )
+        return
+    if before is _DIFF_MISSING:
+        changes.append(
+            {"path": path, "before": None, "after": copy.deepcopy(after), "kind": "added"}
+        )
+    elif after is _DIFF_MISSING:
+        changes.append(
+            {"path": path, "before": copy.deepcopy(before), "after": None, "kind": "removed"}
+        )
+    elif before != after:
+        changes.append(
+            {
+                "path": path,
+                "before": copy.deepcopy(before),
+                "after": copy.deepcopy(after),
+                "kind": "changed",
+            }
+        )
+
+
+def _change_group(path: str, before: Any, after: Any) -> str:
+    if path == "$.control_values" or path.startswith("$.control_values."):
+        return "control"
+    for target in ("Q1", "Q2", "C"):
+        for root in (
+            f"$.calibration_values.qagents.{target}",
+            f"$.calibration_values.gate_configuration.{target}",
+        ):
+            if path == root or path.startswith(f"{root}."):
+                return target
+    prefix = "$.calibration_values.waveform_registry."
+    if path.startswith(prefix):
+        remainder = path[len(prefix) :].split(".", 2)
+        if len(remainder) >= 2 and remainder[0] in {"settings", "mappers"}:
+            target = _registry_record_target(before, remainder[0], remainder[1])
+            if target is None:
+                target = _registry_record_target(after, remainder[0], remainder[1])
+            if target in {"Q1", "Q2", "C"}:
+                return target
+    return "other"
+
+
+def _registry_record_target(editable: Any, collection: str, record_id: str) -> str | None:
+    if not isinstance(editable, Mapping):
+        return None
+    calibration = editable.get("calibration_values")
+    registry = calibration.get("waveform_registry") if isinstance(calibration, Mapping) else None
+    records = registry.get(collection) if isinstance(registry, Mapping) else None
+    record = records.get(record_id) if isinstance(records, Mapping) else None
+    target = record.get("target") if isinstance(record, Mapping) else None
+    return target if isinstance(target, str) else None
 
 
 def _calibration_values_valid(value: Any) -> bool:

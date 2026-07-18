@@ -302,6 +302,25 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
             },
         )
         assert created["source_candidate"]["targets"] == ["Q1", "Q2"]
+        diff = _http_json(
+            f"{base_url}/api/v1/drafts/{created['draft_id']}/diff?against=parent"
+        )
+        assert diff["draft_id"] == created["draft_id"]
+        assert diff["baseline_checkpoint"] == 0
+        assert diff["changed_count"] > 0
+        assert diff["control_changed"] is False
+        assert {row["group"] for row in diff["changes"]} >= {"Q1", "Q2"}
+        assert all("wave_index" not in row["path"] for row in diff["changes"])
+        with pytest.raises(HTTPError) as captured:
+            _http_json(
+                f"{base_url}/api/v1/drafts/{created['draft_id']}/diff?against=checkpoint"
+            )
+        assert captured.value.code == 422
+        with pytest.raises(HTTPError) as captured:
+            _http_json(
+                f"{base_url}/api/v1/drafts/{uuid.uuid4()}/diff?against=parent"
+            )
+        assert captured.value.code == 404
         management = _http_json(f"{base_url}/api/v1/configuration-management")
         assert len(management["drafts"]) == 1
 
