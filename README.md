@@ -158,7 +158,7 @@ request = SpectroscopyCalibrationRequest(
 result = run_active_qubit_spectroscopy_calibration(
     request,
     device_id="demo_2q1c2r",
-    timeout_s=1800.0,
+    timeout_s=180.0,
 )
 
 print(result.run_id)
