@@ -25,6 +25,10 @@ _STATIC_FILES = {
 }
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON value is not allowed: {value}")
+
+
 class CalibrationWebServer(ThreadingHTTPServer):
     index: CalibrationWebIndex
     store: PlatformConfigurationStore
@@ -277,8 +281,11 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
         if not 0 < length <= 2_000_000:
             raise ConfigurationManagementError("request body size is invalid", status=413)
         try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            payload = json.loads(
+                self.rfile.read(length).decode("utf-8"),
+                parse_constant=_reject_json_constant,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise ConfigurationManagementError("request JSON is invalid", status=400) from exc
         if not isinstance(payload, dict):
             raise ConfigurationManagementError("request JSON must be an object", status=400)

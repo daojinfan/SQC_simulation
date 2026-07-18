@@ -168,6 +168,32 @@ def test_resolver_detects_record_and_pointer_tampering(platform_root: Path):
         store.resolve_active_context()
 
 
+def test_resolver_detects_active_pointer_tampering(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
+    pointer = store.active_root / "demo_2q1c2r.json"
+    raw = __import__("json").loads(pointer.read_text("utf-8"))
+    raw["snapshot_content_sha256"] = "0" * 64
+    pointer.write_text(__import__("json").dumps(raw), "utf-8")
+    with pytest.raises(PlatformAuthorityResolutionError):
+        store.resolve_active_context()
+
+
+def test_draft_update_rejects_stale_content_hash(platform_root: Path):
+    store = PlatformConfigurationStore(ROOT, platform_root / "configs")
+    draft = store.create_draft(store.bootstrap_configuration(_legacy()), actor_id="project.manager", name="Concurrency")
+    with pytest.raises(ConfigurationManagementError) as captured:
+        store.update_draft(
+            draft["draft_id"],
+            actor_id="project.manager",
+            expected_content_sha256="0" * 64,
+            name=draft["name"],
+            note="stale write",
+            editable=draft["editable"],
+        )
+    assert captured.value.status == 409
+
+
 @pytest.mark.parametrize("field", ["device_sha256", "compiler_snapshot_sha256"])
 def test_resolver_detects_readonly_authority_tampering(platform_root: Path, field: str):
     store, snapshot = _published_store(platform_root)

@@ -304,6 +304,16 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
         management = _http_json(f"{base_url}/api/v1/configuration-management")
         assert len(management["drafts"]) == 1
 
+        request = Request(
+            f"{base_url}/api/v1/drafts/{created['draft_id']}/validate",
+            method="POST",
+            data=b'{"actor_id":"project.manager","keep":NaN}',
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as captured:
+            urlopen(request, timeout=5)
+        assert captured.value.code == 400
+
         with pytest.raises(HTTPError) as captured:
             _http_json(f"{base_url}/api/v1/run", method="POST", payload={})
         assert captured.value.code == 405
