@@ -1012,6 +1012,12 @@ function platformFrequencyRows(item) {
 }
 
 function validationList(validation) {
+  if (!validation.checks?.length && validation.status === "valid") {
+    return `<div class="validation-list"><div class="validation-row">${status("passed")}<div><strong>配置校验通过</strong><br><span class="muted">结构与业务规则均未发现阻断问题。</span></div></div></div>`;
+  }
+  if (!validation.checks?.length && validation.status === "invalid") {
+    return empty("校验未通过，请根据字段错误修正后重新校验");
+  }
   if (!validation.checks?.length) return empty("草稿尚未校验");
   return `<div class="validation-list">${validation.checks.map((row) => `<div class="validation-row">${status(row.passed ? "passed" : "failed")}<div><strong>${esc(validationName(row.name))}</strong><br><span class="muted">${esc(validationMessage(row.message))}</span></div></div>`).join("")}</div>`;
 }
