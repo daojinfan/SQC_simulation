@@ -11,8 +11,8 @@ import uuid
 
 import pytest
 
-import sqvm.experiments.spectroscopy as spectroscopy_module
-from sqvm.experiments import run_qubit_spectroscopy_calibration
+import sqvm.calibration.spectroscopy as spectroscopy_module
+from sqvm.calibration import run_qubit_spectroscopy_calibration
 from sqvm.web import (
     CalibrationWebIndex,
     ConfigurationManagementError,
@@ -434,3 +434,13 @@ def test_snapshot_workbench_exposes_detailed_values_as_read_only_controls():
 
     styles = (ROOT / "src" / "sqvm" / "web" / "static" / "styles.css").read_text("utf-8")
     assert ".readonly-control-surface input:disabled" in styles
+
+
+def test_spectroscopy_view_exports_json_and_primitive_population_csv():
+    source = (ROOT / "src" / "sqvm" / "web" / "static" / "app.js").read_text("utf-8")
+    assert 'id="export-experiment-json"' in source
+    assert 'id="export-experiment-csv"' in source
+    assert '"population_000"' in source
+    assert '"circuit_receipt_sha256"' in source
+    assert "function spectroscopyCsv(detail)" in source
+    assert '"synthetic-demo": "合成演示数据"' in source

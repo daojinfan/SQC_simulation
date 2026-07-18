@@ -506,7 +506,7 @@ canonical experiment request
 
 ## 21. 已实现接口
 
-当前实现位于 `sqvm.experiments.spectroscopy`，公共入口为：
+当前实现位于 `sqvm.calibration.spectroscopy`，公共入口为：
 
 ```python
 from sqvm import (
@@ -558,7 +558,7 @@ Windows 未开启长路径支持时，`output_root` 应使用仓库内的短运�
 
 ## 22. 已实现完整校准流程
 
-完整流程位于 `sqvm.experiments.spectroscopy_calibration`。粗扫、细扫和 single confirmation 没有各自的执行器，全部通过 `run_qubit_spectroscopy` 调用同一个 `run_circuits`：
+完整流程位于 `sqvm.calibration.spectroscopy_workflow`。粗扫、细扫和 single confirmation 没有各自的执行器，全部通过 `run_qubit_spectroscopy` 调用同一个 `run_circuits`：
 
 ```python
 from sqvm import (

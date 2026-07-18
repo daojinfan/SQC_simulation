@@ -5,9 +5,9 @@ from types import MappingProxyType
 
 import pytest
 
-import sqvm.experiments.spectroscopy as spectroscopy_module
+import sqvm.calibration.spectroscopy as spectroscopy_module
 from sqvm.circuits import CircuitExecutionContext, CircuitResult, DressedPopulations
-from sqvm.experiments.spectroscopy import (
+from sqvm.calibration.spectroscopy import (
     SpectroscopyAxis,
     SpectroscopyError,
     SpectroscopyMode,

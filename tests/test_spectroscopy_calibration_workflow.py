@@ -8,8 +8,8 @@ import uuid
 
 import pytest
 
-import sqvm.experiments.spectroscopy as spectroscopy_module
-from sqvm.experiments import (
+import sqvm.calibration.spectroscopy as spectroscopy_module
+from sqvm.calibration import (
     SpectroscopyAxis,
     SpectroscopyCalibrationError,
     SpectroscopyCalibrationPolicy,

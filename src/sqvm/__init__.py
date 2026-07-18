@@ -61,6 +61,8 @@ __all__ = [
     "run_qubit_spectroscopy_calibration",
     "verify_qubit_spectroscopy_calibration",
     "verify_qubit_spectroscopy_calibration_decision",
+    "CalibrationExperimentError",
+    "run_active_qubit_spectroscopy_calibration",
 ]
 
 __version__ = "0.1.0"
@@ -68,13 +70,28 @@ __version__ = "0.1.0"
 
 def __getattr__(name: str):
     if name in {
+        "CalibrationExperimentError",
+        "run_active_qubit_spectroscopy_calibration",
+    }:
+        from sqvm.calibration.api import (
+            CalibrationExperimentError,
+            run_active_qubit_spectroscopy_calibration,
+        )
+
+        exports = {
+            "CalibrationExperimentError": CalibrationExperimentError,
+            "run_active_qubit_spectroscopy_calibration": run_active_qubit_spectroscopy_calibration,
+        }
+        globals().update(exports)
+        return exports[name]
+    if name in {
         "SpectroscopyCalibrationDecision", "SpectroscopyCalibrationPolicy",
         "SpectroscopyCalibrationRequest", "SpectroscopyCalibrationRun",
         "context_with_spectroscopy_calibration", "decide_qubit_spectroscopy_calibration",
         "run_qubit_spectroscopy_calibration", "verify_qubit_spectroscopy_calibration",
         "verify_qubit_spectroscopy_calibration_decision",
     }:
-        from sqvm.experiments import (
+        from sqvm.calibration import (
             SpectroscopyCalibrationDecision, SpectroscopyCalibrationPolicy,
             SpectroscopyCalibrationRequest, SpectroscopyCalibrationRun,
             context_with_spectroscopy_calibration, decide_qubit_spectroscopy_calibration,
@@ -100,7 +117,7 @@ def __getattr__(name: str):
         "SpectroscopyPulsePolicy", "SpectroscopyRequest", "analyze_qubit_spectroscopy",
         "expand_qubit_spectroscopy_points", "run_qubit_spectroscopy",
     }:
-        from sqvm.experiments import (
+        from sqvm.calibration import (
             SpectroscopyAxis, SpectroscopyDataset, SpectroscopyMode,
             SpectroscopyPulsePolicy, SpectroscopyRequest, analyze_qubit_spectroscopy,
             expand_qubit_spectroscopy_points, run_qubit_spectroscopy,

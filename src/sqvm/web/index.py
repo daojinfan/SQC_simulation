@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from sqvm.experiments import verify_qubit_spectroscopy_calibration
+from sqvm.calibration import verify_qubit_spectroscopy_calibration
 
 
 SPECTROSCOPY_WORKFLOW_ID = "qubit_spectroscopy_calibration_v1"
@@ -158,7 +158,14 @@ class CalibrationWebIndex:
             if counts[row["run_id"]] > 1:
                 row["verification_status"] = "invalid"
                 row["error"] = "duplicate run_id"
-        rows.sort(key=lambda row: (row["run_id"], row["relative_path"]), reverse=True)
+        rows.sort(
+            key=lambda row: (
+                row.get("created_utc") or "",
+                row["run_id"],
+                row["relative_path"],
+            ),
+            reverse=True,
+        )
         return rows
 
     def experiment(self, run_id: str) -> dict[str, Any]:
@@ -288,6 +295,7 @@ class CalibrationWebIndex:
                 verify_qubit_spectroscopy_calibration(directory)
                 verification_status = "verified"
             request = workflow.get("request")
+            claim = workflow.get("claim")
             coarse = request.get("coarse_request", {}) if isinstance(request, Mapping) else {}
             gates = workflow.get("gates", [])
             candidates = workflow.get("candidates", [])
@@ -302,6 +310,12 @@ class CalibrationWebIndex:
                     else workflow_id
                 ),
                 "status": workflow.get("status", "unknown"),
+                "created_utc": workflow.get("created_utc"),
+                "data_origin": (
+                    claim.get("evidence_class")
+                    if isinstance(claim, Mapping)
+                    else None
+                ),
                 "verification_status": verification_status,
                 "targets": coarse.get("targets", []),
                 "execution_mode": coarse.get("execution_mode"),
@@ -326,6 +340,8 @@ class CalibrationWebIndex:
                 "workflow_id": "invalid",
                 "experiment_kind": "Invalid artifact",
                 "status": "invalid",
+                "created_utc": None,
+                "data_origin": None,
                 "verification_status": "invalid",
                 "targets": [],
                 "execution_mode": None,

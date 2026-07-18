@@ -1,7 +1,4 @@
-"""Backward-compatible calibration imports.
-
-New code should import from :mod:`sqvm.calibration`.
-"""
+"""Calibration experiments and user-facing calibration workflows."""
 
 from sqvm.calibration.spectroscopy import (
     QubitCapability,
@@ -34,6 +31,10 @@ from sqvm.calibration.spectroscopy_workflow import (
     verify_qubit_spectroscopy_calibration,
     verify_qubit_spectroscopy_calibration_decision,
 )
+from sqvm.calibration.api import (
+    CalibrationExperimentError,
+    run_active_qubit_spectroscopy_calibration,
+)
 
 __all__ = [
     "QubitCapability",
@@ -63,4 +64,6 @@ __all__ = [
     "run_qubit_spectroscopy_calibration",
     "verify_qubit_spectroscopy_calibration",
     "verify_qubit_spectroscopy_calibration_decision",
+    "CalibrationExperimentError",
+    "run_active_qubit_spectroscopy_calibration",
 ]

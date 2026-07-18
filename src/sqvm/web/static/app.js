@@ -1023,17 +1023,25 @@ async function renderExperiment(id) {
 
 function renderSpectroscopy(detail) {
   const eligibleTargets = detail.candidates.filter((row) => row.recommendation_eligible).map((row) => row.target);
-  const actions = eligibleTargets.length ? `<button id="candidate-draft" class="button primary">基于候选值创建草稿</button>` : "";
+  const isSyntheticDemo = detail.claim?.evidence_class === "synthetic_demo";
+  const originStatus = isSyntheticDemo ? "synthetic-demo" : "model-derived";
+  const originNotice = isSyntheticDemo
+    ? `<section class="section"><div class="warning-band">该记录仅用于验证实验数据链路与界面，不包含 QuTiP 或硬件测量证据，不能用于更新校准配置。</div></section>`
+    : "";
+  const actions = `<button id="export-experiment-json" class="button">导出 JSON</button><button id="export-experiment-csv" class="button">导出 CSV</button>${eligibleTargets.length ? `<button id="candidate-draft" class="button primary">基于候选值创建草稿</button>` : ""}`;
   app.innerHTML = `
-    ${detailHeader("比特频谱", detail.run_id, [detail.verification_status, detail.recommendation_eligible ? "eligible" : "blocked", "model-derived"], actions)}
-    <section class="section"><div class="facts">${fact("执行模式", statusText(detail.execution_mode))}${fact("目标", detail.targets.join(", "))}${fact("通过门限", `${detail.gate_summary.passed}/${detail.gate_summary.total}`)}${fact("证据路径", detail.relative_path, true)}</div></section>
+    ${detailHeader("比特频谱", detail.run_id, [detail.verification_status, detail.recommendation_eligible ? "eligible" : "blocked", originStatus], actions)}
+    <section class="section"><div class="facts">${fact("运行时间", dateText(detail.created_utc))}${fact("执行模式", statusText(detail.execution_mode))}${fact("目标", detail.targets.join(", "))}${fact("通过门限", `${detail.gate_summary.passed}/${detail.gate_summary.total}`)}${fact("证据路径", detail.relative_path, true)}</div></section>
+    ${originNotice}
     <section class="section"><div class="section-head"><div><h2>频率候选值</h2></div></div><div class="candidate-band">${detail.candidates.map(candidateHtml).join("")}</div></section>
-    <section class="section"><div class="section-head"><div><h2>频谱曲线</h2><p>非条件化缀饰计算基态布居</p></div></div><div class="chart-grid">${detail.targets.map((target) => chartPanel(target)).join("")}</div></section>
+    <section class="section"><div class="section-head"><div><h2>频谱曲线</h2><p>目标比特非条件化激发布居</p></div></div><div class="chart-grid">${detail.targets.map((target) => chartPanel(target)).join("")}</div></section>
     <section class="section"><div class="section-head"><div><h2>硬门限检查</h2></div></div><div class="gate-list">${detail.gates.map(gateHtml).join("")}</div></section>
     <section class="section"><div class="section-head"><div><h2>数据点</h2></div></div>${pointTable(detail)}</section>
     <section class="section"><div class="section-head"><div><h2>已发布证据图</h2></div></div><img class="evidence-image" src="${esc(detail.plot_url)}" alt="已发布的频谱证据图"></section>
     <section class="section"><details><summary>证据路径</summary><pre>${esc(detail.evidence_paths.join("\n"))}</pre></details><details><summary>请求 JSON</summary><pre>${esc(JSON.stringify(detail.request, null, 2))}</pre></details></section>`;
   requestAnimationFrame(() => installSpectroscopyCharts(detail));
+  document.querySelector("#export-experiment-json").addEventListener("click", () => downloadText(`spectroscopy-${detail.run_id}.json`, JSON.stringify({ request: detail.request, datasets: detail.datasets, analyses: detail.analyses, gates: detail.gates, candidates: detail.candidates }, null, 2), "application/json"));
+  document.querySelector("#export-experiment-csv").addEventListener("click", () => downloadText(`spectroscopy-${detail.run_id}.csv`, spectroscopyCsv(detail), "text/csv"));
   if (eligibleTargets.length) document.querySelector("#candidate-draft").addEventListener("click", () => openCandidateDraft(detail, eligibleTargets));
 }
 
@@ -1052,6 +1060,35 @@ function pointTable(detail) {
 
 function pointRow(phase, target, point) {
   return `<tr><td>${esc(statusText(phase))}</td><td>${esc(target)}</td><td class="numeric">${fmt(point.point.coordinates_GHz[target], 6)}</td><td class="numeric">${fmt(point.target_excited_population[target], 7)}</td><td class="numeric">${fmt(point.leakage, 7)}</td><td class="numeric">${fmt(point.norm_error, 3)}</td></tr>`;
+}
+
+function spectroscopyCsv(detail) {
+  const columns = ["phase", "target", "frequency_GHz", "excited_population", "population_000", "population_100", "population_001", "population_101", "leakage", "norm_error", "circuit_id", "circuit_receipt_sha256"];
+  const rows = [columns];
+  const append = (phase, target, point) => {
+    const primitive = point.primitive_dressed_populations || {};
+    rows.push([phase, target, point.point.coordinates_GHz[target], point.target_excited_population[target], primitive.population_000, primitive.population_100, primitive.population_001, primitive.population_101, point.leakage, point.norm_error, point.point.circuit_id, point.circuit_receipt_sha256]);
+  };
+  for (const [phase, dataset] of [["coarse", detail.datasets.coarse], ["refined", detail.datasets.refined]]) dataset.points.forEach((point) => detail.targets.forEach((target) => append(phase, target, point)));
+  for (const [target, dataset] of Object.entries(detail.datasets.confirmations)) dataset.points.forEach((point) => append("confirmation", target, point));
+  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+}
+
+function csvCell(value) {
+  const text = value == null ? "" : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function downloadText(filename, content, contentType) {
+  const blob = new Blob([content], { type: `${contentType};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function drawSpectroscopyChart(canvas, target, datasets) {
@@ -1116,8 +1153,8 @@ function chartPanel(target) {
 
 function experimentTable(rows) {
   if (!rows.length) return empty("暂无实验运行结果");
-  return `<div class="table-wrap"><table><thead><tr><th>实验</th><th>目标</th><th>执行模式</th><th>验证状态</th><th>候选状态</th><th>门限</th></tr></thead><tbody>${rows.map((row) => `
-    <tr class="clickable" data-run-id="${esc(row.run_id)}"><td><strong>${esc(experimentKind(row.experiment_kind))}</strong><br><span class="mono muted">${short(row.run_id)}</span></td><td>${esc((row.targets || []).join(", ") || "-")}</td><td>${esc(statusText(row.execution_mode || "-"))}</td><td>${status(row.verification_status)}</td><td>${status(row.recommendation_eligible ? "eligible" : "blocked")}</td><td>${row.gate_summary.passed}/${row.gate_summary.total}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>实验</th><th>运行时间</th><th>目标</th><th>执行模式</th><th>验证状态</th><th>候选状态</th><th>门限</th></tr></thead><tbody>${rows.map((row) => `
+    <tr class="clickable" data-run-id="${esc(row.run_id)}"><td><strong>${esc(experimentKind(row.experiment_kind))}</strong><br><span class="mono muted">${short(row.run_id)}</span></td><td>${dateText(row.created_utc)}</td><td>${esc((row.targets || []).join(", ") || "-")}</td><td>${esc(statusText(row.execution_mode || "-"))}</td><td>${status(row.verification_status)}</td><td>${status(row.recommendation_eligible ? "eligible" : "blocked")}</td><td>${row.gate_summary.passed}/${row.gate_summary.total}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function candidateHtml(row) {
@@ -1274,7 +1311,7 @@ function status(value) {
   const key = String(value || "unknown");
   const good = ["ok", "verified", "eligible", "passed", "accepted_simulation", "active", "valid", "keep"];
   const bad = ["invalid", "failed", "rejected"];
-  const warn = ["blocked", "requires_requalification", "uninitialized", "not_validated"];
+  const warn = ["blocked", "requires_requalification", "uninitialized", "not_validated", "synthetic-demo"];
   const cls = good.includes(key) ? "status-good" : bad.includes(key) ? "status-bad" : warn.includes(key) ? "status-warn" : "status-neutral";
   return `<span class="status ${cls}">${esc(statusText(key))}</span>`;
 }
@@ -1301,6 +1338,7 @@ function statusText(value) {
     uninitialized: "未初始化",
     not_validated: "尚未校验",
     "model-derived": "模型生成",
+    "synthetic-demo": "合成演示数据",
     parallel_lockstep: "并行同步扫描",
     sequential: "顺序扫描",
     coarse: "粗扫",
@@ -1324,6 +1362,7 @@ function gateName(value) {
     parallel_peak_shift: "并行扫描峰值漂移",
     cross_excitation: "交叉激发",
     parallel_leakage_delta: "并行扫描泄漏变化",
+    demo_data_not_calibration_eligible: "演示数据禁止校准更新",
   };
   const text = String(value);
   const separator = text.indexOf(".");
