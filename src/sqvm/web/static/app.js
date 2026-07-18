@@ -1,10 +1,10 @@
 const state = {
   overview: null,
   configurations: [],
-  management: { drafts: [], snapshots: [], active: [] },
+  management: { current: [], drafts: [], snapshots: [], active: [] },
   experiments: [],
   detail: null,
-  configTab: "snapshots",
+  configTab: "current",
   workbenchSection: "overview",
   objectTabs: { q1: "base", q2: "base", c: "gates", control: "clock" },
   draftDirty: false,
@@ -93,6 +93,9 @@ async function route() {
   } else if (view === "configurations" && parts[1] === "drafts" && parts[2]) {
     title("配置", "编辑草稿");
     await renderDraft(parts[2]);
+  } else if (view === "configurations" && parts[1] === "current" && parts[2]) {
+    title("配置", "当前配置");
+    await renderCurrentConfiguration(parts[2]);
   } else if (view === "configurations" && parts[1] === "snapshots" && parts[2]) {
     title("配置", "已发布快照");
     await renderPlatformSnapshot(parts[2]);
@@ -142,11 +145,11 @@ function renderOverview() {
       ${experimentTable(o.latest_experiments)}
     </section>
     <section class="section">
-      <div class="section-head"><div><h2>配置状态</h2><p>草稿、已发布快照与当前生效配置</p></div></div>
+      <div class="section-head"><div><h2>配置状态</h2><p>当前配置与可恢复的历史快照</p></div></div>
       <div class="facts">
-        ${fact("草稿", state.management.drafts.length)}
-        ${fact("已发布快照", state.management.snapshots.length)}
-        ${fact("已激活设备", state.management.active.length)}
+        ${fact("当前配置", state.management.current.length)}
+        ${fact("历史快照", state.management.snapshots.length)}
+        ${fact("兼容草稿", state.management.drafts.length)}
         ${fact("无效产物", o.experiments.invalid)}
       </div>
     </section>`;
@@ -156,18 +159,17 @@ function renderOverview() {
 function renderConfigurations() {
   const tabs = `
     <div class="tabs">
-      <button data-config-tab="snapshots" class="${state.configTab === "snapshots" ? "active" : ""}">已发布快照</button>
-      <button data-config-tab="drafts" class="${state.configTab === "drafts" ? "active" : ""}">草稿</button>
-      <button data-config-tab="history" class="${state.configTab === "history" ? "active" : ""}">历史配置</button>
+      <button data-config-tab="current" class="${state.configTab === "current" ? "active" : ""}">当前配置</button>
+      <button data-config-tab="snapshots" class="${state.configTab === "snapshots" ? "active" : ""}">快照历史</button>
+      <button data-config-tab="history" class="${state.configTab === "history" ? "active" : ""}">旧版记录</button>
     </div>`;
   app.innerHTML = `
     <section class="configuration-dashboard">
       <div class="section-head">
-        <div><p class="kicker">设备配置工作台</p><h2>设备概览</h2><p>从对象拓扑进入草稿，版本记录收纳在下方。</p></div>
-        <div class="section-actions"><button id="new-draft" class="button primary">新建草稿</button></div>
+        <div><p class="kicker">设备配置工作台</p><h2>配置中心</h2><p>直接编辑并保存当前配置；需要留档或回退时使用快照。</p></div>
       </div>
       ${configurationTopology()}
-      <section class="version-zone"><div class="section-head"><div><h3>版本与草稿</h3><p>每个设备同时只允许一个 Active 快照。</p></div></div>
+      <section class="version-zone"><div class="section-head"><div><h3>配置与版本</h3><p>当前配置是工作副本，快照是只读历史版本。</p></div></div>
       ${tabs}
       <div id="config-content">${configurationTabContent()}</div></section>
     </section>`;
@@ -175,30 +177,30 @@ function renderConfigurations() {
     state.configTab = button.dataset.configTab;
     renderConfigurations();
   }));
-  document.querySelector("#new-draft").addEventListener("click", openNewDraft);
   bindConfigurationRows();
 }
 
 function configurationTopology() {
-  const active = state.management.active[0];
-  const snapshot = state.management.snapshots.find((row) => row.active) || state.management.snapshots[0];
-  const draft = state.management.drafts[0];
-  return `<div class="configuration-hero"><div>${topologyView({})}</div><div class="device-status-list"><div><span>当前 Active</span><strong>${active ? short(active.snapshot_id) : "无"}</strong></div><div><span>最新草稿</span><strong>${draft ? esc(draft.name) : "无"}</strong></div><div><span>最新版本</span><strong>${snapshot ? esc(snapshot.name) : "无"}</strong></div></div></div>`;
+  const current = state.management.current[0];
+  const snapshot = state.management.snapshots[0];
+  const frequencies = current?.reference_frequencies_GHz || {};
+  const calibration = { qagents: Object.fromEntries(Object.entries(frequencies).map(([target, value]) => [target, { reference_frequency_authority: { reference_frequency_GHz: value } }])) };
+  return `<div class="configuration-hero"><div>${topologyView(calibration)}</div><div class="device-status-list"><div><span>当前配置</span><strong>${current ? esc(current.name) : "无"}</strong></div><div><span>当前修订</span><strong>${current ? `r${current.revision}` : "-"}</strong></div><div><span>最近快照</span><strong>${snapshot ? esc(snapshot.name) : "无"}</strong></div></div></div>`;
 }
 
 function configurationTabContent() {
-  if (state.configTab === "drafts") {
-    if (!state.management.drafts.length) return empty("暂无草稿");
-    return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>设备</th><th>校验状态</th><th>检查点</th><th>更新时间</th></tr></thead><tbody>${state.management.drafts.map((row) => `
-      <tr class="clickable" data-draft-id="${esc(row.draft_id)}"><td><strong>${esc(row.name)}</strong><br><span class="muted">${esc(row.note || "无备注")}</span></td><td>${esc(row.device_id)}</td><td>${status(row.validation_status)}</td><td>${row.checkpoint + 1}</td><td>${dateText(row.updated_utc)}</td></tr>`).join("")}</tbody></table></div>`;
+  if (state.configTab === "current") {
+    if (!state.management.current.length) return empty("暂无当前配置，请先从已有配置迁移");
+    return `<div class="current-config-list">${state.management.current.map((row) => `
+      <button class="current-config-row" data-current-device="${esc(row.device_id)}"><span><strong>${esc(row.name)}</strong><small>${esc(row.device_id)} · 修订 r${row.revision}</small></span><span>${status(row.validation_status)}<small>${dateText(row.updated_utc)}</small></span><span class="current-config-action">编辑配置 →</span></button>`).join("")}</div>`;
   }
   if (state.configTab === "history") {
     return configurationTable(state.configurations);
   }
   const platform = state.management.snapshots;
-  if (!platform.length) return `<div class="empty">暂无已发布的平台快照</div>`;
+  if (!platform.length) return `<div class="empty">暂无配置快照</div>`;
   return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>设备</th><th>状态</th><th>准入状态</th><th>发布时间</th></tr></thead><tbody>${platform.map((row) => `
-    <tr class="clickable" data-platform-id="${esc(row.snapshot_id)}"><td><strong>${esc(row.name)}</strong><br><span class="mono muted">${short(row.snapshot_id)}</span></td><td>${esc(row.device_id)}</td><td>${row.active ? status("active") : row.keep ? status("keep") : status("published")}</td><td>${row.experiment_eligible ? status("eligible") : status("requires_requalification")}</td><td>${dateText(row.published_utc)}</td></tr>`).join("")}</tbody></table></div>`;
+    <tr class="clickable" data-platform-id="${esc(row.snapshot_id)}"><td><strong>${esc(row.name)}</strong><br><span class="mono muted">${short(row.snapshot_id)}</span></td><td>${esc(row.device_id)}</td><td>${row.keep ? status("keep") : status("published")}</td><td>${row.experiment_eligible ? status("eligible") : status("requires_requalification")}</td><td>${dateText(row.published_utc)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function configurationTable(rows) {
@@ -221,26 +223,51 @@ async function renderConfiguration(id) {
   } catch (error) { renderError(error); }
 }
 
+async function renderCurrentConfiguration(deviceId) {
+  setLoading();
+  try {
+    const item = await api(`/api/v1/current-configurations/${encodeURIComponent(deviceId)}`);
+    state.detail = item;
+    state.draftDirty = false;
+    app.innerHTML = workbenchShell(item, "current");
+    app.oninput = markDraftDirty;
+    bindStructuredEditor();
+    bindWorkbench(item, "current");
+    document.querySelector("#save-current").addEventListener("click", () => persistDraft({ notify: true }));
+    document.querySelector("#snapshot-current").addEventListener("click", () => openCurrentSnapshot(item));
+    document.querySelector("#initialize-calibration")?.addEventListener("click", async () => {
+      if (state.draftDirty && !(await persistDraft())) return;
+      const current = state.detail;
+      try {
+        await mutate(`/api/v1/current-configurations/${encodeURIComponent(current.device_id)}/initialize-calibration`, {
+          actor_id: actor(),
+          expected_content_sha256: current.content_sha256,
+        });
+        state.draftDirty = false;
+        await renderCurrentConfiguration(current.device_id);
+        toast("已初始化当前配置的校准参数");
+      } catch (error) { showMutationError(error); }
+    });
+  } catch (error) { renderError(error); }
+}
+
 async function renderPlatformSnapshot(id) {
   setLoading();
   try {
     const item = await api(`/api/v1/platform-snapshots/${id}`);
-    const capabilities = editorCapabilities(item);
     const actions = `
-      <button id="snapshot-draft" class="button secondary">创建草稿</button>
       <button id="snapshot-keep" class="button secondary">${item.keep ? "取消长期保存" : "长期保存"}</button>
-      <button id="snapshot-delete" class="button danger" ${item.active || item.keep ? "disabled" : ""} title="${item.active ? "当前生效快照不能删除" : item.keep ? "请先取消长期保存再删除" : "删除未被引用的快照"}">删除</button>
-      <button id="snapshot-active" class="button primary" ${item.active || !item.experiment_eligible || !capabilities.canActivate ? "disabled" : ""}>设为当前配置</button>`;
-    app.innerHTML = `${detailHeader(item.name, item.snapshot_id, [item.active ? "active" : "published", item.experiment_eligible ? "eligible" : "requires_requalification"], actions)}
+      <button id="snapshot-delete" class="button danger" ${item.keep || item.active ? "disabled" : ""} title="${item.keep ? "请先取消长期保存再删除" : item.active ? "该快照仍被兼容运行上下文引用" : "删除未被引用的快照"}">删除</button>
+      <button id="snapshot-apply" class="button primary">恢复到当前配置</button>`;
+    app.innerHTML = `${detailHeader(item.name, item.snapshot_id, ["published", item.experiment_eligible ? "eligible" : "requires_requalification"], actions)}
       ${workbenchShell(item, "snapshot")}`;
-    document.querySelector("#snapshot-draft").addEventListener("click", () => openNewDraft(item.snapshot_id));
     document.querySelector("#snapshot-keep").addEventListener("click", async () => {
       await mutate(`/api/v1/platform-snapshots/${id}/keep`, { actor_id: actor(), keep: !item.keep });
       await refresh();
     });
-    document.querySelector("#snapshot-active").addEventListener("click", () => openActivate(item));
+    document.querySelector("#snapshot-apply").addEventListener("click", () => openApplySnapshot(item));
     document.querySelector("#snapshot-delete").addEventListener("click", async () => {
-      if (!confirm(`确定删除快照“${item.name}”吗？仅未激活、未长期保存且未被引用的快照可以删除。`)) return;
+      if (!confirm(`确定删除快照“${item.name}”吗？仅未长期保存且未被当前配置引用的快照可以删除。`)) return;
       try {
         await api(`/api/v1/platform-snapshots/${id}`, { method: "DELETE", headers: { "X-SQVM-Actor": actor() } });
         await refresh(); location.hash = "#/configurations";
@@ -307,77 +334,86 @@ function draftEditor(item) {
 
 function workbenchShell(item, mode, capabilities = editorCapabilities(item)) {
   const section = state.workbenchSection;
-  const actions = mode === "draft" ? `<div class="workbench-actions"><span class="save-state mono muted">检查点 ${item.checkpoint}</span><button id="save-draft" class="button secondary" ${capabilities.canSave ? "" : "disabled"}>保存</button><button id="validate-draft" class="button secondary" ${capabilities.canValidate ? "" : "disabled"}>校验</button><button id="publish-draft" class="button primary" ${capabilities.canPublish && item.validation.status === "valid" ? "" : "disabled"}>发布快照</button></div>` : `<div class="workbench-actions"><span class="save-state mono muted">只读快照</span></div>`;
+  const actions = mode === "current"
+    ? `<div class="workbench-actions"><span class="save-state mono muted">已保存 / 修订 r${item.revision}</span><button id="save-current" class="button secondary">保存当前配置</button><button id="snapshot-current" class="button primary" ${item.validation.status === "valid" ? "" : "disabled"}>保存快照</button></div>`
+    : mode === "draft"
+      ? `<div class="workbench-actions"><span class="save-state mono muted">检查点 ${item.checkpoint}</span><button id="save-draft" class="button secondary" ${capabilities.canSave ? "" : "disabled"}>保存</button><button id="validate-draft" class="button secondary" ${capabilities.canValidate ? "" : "disabled"}>校验</button><button id="publish-draft" class="button primary" ${capabilities.canPublish && item.validation.status === "valid" ? "" : "disabled"}>发布快照</button></div>`
+      : `<div class="workbench-actions"><span class="save-state mono muted">只读快照</span></div>`;
   return `<section class="workbench">
-    <header class="workbench-bar"><div><p class="kicker">设备配置工作台</p><h2>${esc(item.device_id || "设备")}</h2><div class="detail-meta">${mode === "draft" ? status(item.validation?.status) : status(item.active ? "active" : "published")}${item.requires_requalification ? status("requires_requalification") : ""}</div></div>${actions}</header>
+    <header class="workbench-bar"><div><p class="kicker">${mode === "current" ? `${esc(item.device_id)} · 当前配置` : mode === "snapshot" ? "历史快照" : "兼容草稿"}</p><h2>${esc(mode === "current" ? item.name : item.device_id || "设备")}</h2><div class="detail-meta">${mode === "snapshot" ? status("published") : status(item.validation?.status)}${item.requires_requalification || item.validation?.requires_requalification ? status("requires_requalification") : ""}</div></div>${actions}</header>
     <div id="field-errors" class="field-errors" hidden></div>
     <div class="workbench-layout"><nav class="workbench-nav" aria-label="配置对象">${workbenchNav(section)}</nav><div class="workbench-main">${workbenchContent(item, mode, section)}</div></div>
   </section>`;
 }
 
 function workbenchNav(active) {
-  const items = [["overview", "概览", "device"], ["q1", "Q1", "q1"], ["q2", "Q2", "q2"], ["c", "C", "c"], ["control", "控制链", "control"], ["review", "变更与发布", "review"]];
+  const items = [["overview", "概览", "device"], ["q1", "Q1", "q1"], ["q2", "Q2", "q2"], ["c", "C", "c"], ["control", "控制链", "control"], ["review", "状态与版本", "review"]];
   return items.map(([id, label, tone]) => `<button type="button" data-workbench-section="${id}" class="${active === id ? "active" : ""}"><span class="object-dot ${tone}"></span>${label}</button>`).join("");
 }
 
 function workbenchContent(item, mode, section) {
   const editable = item.editable || {};
   const calibration = editable.calibration_values || {};
+  const control = editable.control_values || {};
   if (mode === "snapshot") return readonlyWorkbench(item, section);
-  if (section === "overview") return draftOverview(item);
-  if (section === "q1" || section === "q2") return qubitWorkbench(section.toUpperCase(), calibration);
-  if (section === "c") return couplerWorkbench(calibration);
-  if (section === "control") return controlWorkbench(editable.control_values || {});
+  if (section === "overview") return editableOverview(item, mode);
+  if (section === "q1" || section === "q2") return qubitWorkbench(section.toUpperCase(), calibration, control);
+  if (section === "c") return couplerWorkbench(calibration, control);
+  if (section === "control") return controlWorkbench(control);
   return reviewWorkbench(item);
 }
 
-function draftOverview(item) {
+function editableOverview(item, mode = "draft") {
   const editable = item.editable || {};
   const calibration = editable.calibration_values || {};
   return `<section class="workbench-section"><div class="section-head"><div><h3>设备概览</h3><p>Q1-C-Q2 与读出链路。物理器件参数由设备权威管理。</p></div></div>${topologyView(calibration)}
-    <div class="editor-grid workbench-metadata">${textField("草稿名称", "draft-name", item.name)}${textField("备注", "draft-note", item.note || "")}</div>
+    <div class="editor-grid workbench-metadata">${textField(mode === "current" ? "配置名称" : "草稿名称", "draft-name", item.name, "用于在配置中心和快照历史中识别该配置。")}${textField("备注", "draft-note", item.note || "", "记录本次配置调整的背景或用途。")}</div>
     <div class="section-head compact-head"><div><h3>只读权威</h3></div></div>${readonlyEditor(item)}</section>`;
 }
 
-function qubitWorkbench(target, calibration) {
+function qubitWorkbench(target, calibration, control) {
   if (isEmptyCalibration(calibration)) return calibrationBootstrap();
   const registry = calibration.waveform_registry || {}, settings = registry.settings || {}, mappers = registry.mappers || {};
   const value = calibration.qagents?.[target];
   const gate = calibration.gate_configuration?.[target];
   const key = target.toLowerCase(), tab = state.objectTabs[key] || "base";
-  const content = tab === "base" ? `<div class="setting-grid">${referenceEditor(target, value)}${gate ? qubitGateEditor(target, gate, settings, mappers) : uncalibrated("未校准：无 Gate Configuration")}</div>` : tab === "pulses" ? settingGroups(settings, [target], false) : tab === "mapper" ? mapperObjectGroups(mappers, "F012ZBIAS_MAPPER", target) : referenceEvidence(value?.reference_frequency_authority);
+  const content = tab === "base" ? `<div class="setting-grid">${objectIdleFluxEditor(target, control)}${referenceEditor(target, value)}${gate ? qubitGateEditor(target, gate, settings, mappers) : uncalibrated("未校准：无 Gate Configuration")}</div>` : tab === "pulses" ? settingGroups(settings, [target], false) : tab === "mapper" ? mapperObjectGroups(mappers, "F012ZBIAS_MAPPER", target) : referenceEvidence(value?.reference_frequency_authority);
   return `<section class="workbench-section object-page ${key}"><div class="object-heading"><span class="object-dot ${key}"></span><div><h3>${target}</h3><p>单比特频率、脉冲 Setting、F012ZBIAS Mapper 与校准证据</p></div></div>${objectTabs(key, tab, [["base", "基础"], ["pulses", "脉冲"], ["mapper", "Mapper"], ["evidence", "证据"]])}<div class="object-subsection">${content}</div></section>`;
 }
 
-function couplerWorkbench(calibration) {
+function couplerWorkbench(calibration, control) {
   if (isEmptyCalibration(calibration)) return calibrationBootstrap();
   const registry = calibration.waveform_registry || {}, settings = registry.settings || {}, mappers = registry.mappers || {};
   const gate = calibration.gate_configuration?.C;
   const tab = state.objectTabs.c || "gates";
-  const content = tab === "gates" ? `${gate ? couplerGateEditor(gate, settings, mappers) : uncalibrated("未校准：无耦合器 Gate Configuration")}${settingGroups(settings, ["C"], true)}` : tab === "mapper" ? mapperObjectGroups(mappers, "G2ZBIAS_MAPPER", "C") : characterizationView(calibration.fsim_characterizations);
+  const content = tab === "gates" ? `${objectIdleFluxEditor("C", control)}${gate ? couplerGateEditor(gate, settings, mappers) : uncalibrated("未校准：无耦合器 Gate Configuration")}${settingGroups(settings, ["C"], true)}` : tab === "mapper" ? mapperObjectGroups(mappers, "G2ZBIAS_MAPPER", "C") : characterizationView(calibration.fsim_characterizations);
   return `<section class="workbench-section object-page c"><div class="object-heading"><span class="object-dot c"></span><div><h3>C</h3><p>耦合器 CZ / FSIM 波形、G2ZBIAS Mapper 与标定结果</p></div></div>${objectTabs("c", tab, [["gates", "CZ / FSIM"], ["mapper", "G2 Mapper"], ["results", "标定结果"]])}<div class="object-subsection">${content}</div></section>`;
 }
 
 function controlWorkbench(control) {
   const tab = state.objectTabs.control || "clock";
-  const content = tab === "clock" ? controlClockEditor(control) : tab === "lanes" ? laneEditor(control) : tab === "mixing" ? Object.entries(control.static_mixing || {}).map(([name, value]) => matrixEditor(name, value)).join("") : tab === "flux" ? controlFluxEditor(control) : acceptanceEditor(control);
-  return `<section class="workbench-section"><div class="object-heading"><span class="object-dot control"></span><div><h3>控制链</h3><p>时钟、DAC、11 条通道、混合矩阵、空闲磁通与准入阈值</p></div></div>${objectTabs("control", tab, [["clock", "时钟与 DAC"], ["lanes", "通道"], ["mixing", "混合"], ["flux", "空闲磁通"], ["acceptance", "阈值"]])}<div class="object-subsection">${content || uncalibrated("未提供控制链数据")}</div></section>`;
+  const content = tab === "clock" ? controlClockEditor(control) : tab === "lanes" ? laneEditor(control) : tab === "mixing" ? Object.entries(control.static_mixing || {}).map(([name, value]) => matrixEditor(name, value)).join("") : acceptanceEditor(control);
+  return `<section class="workbench-section"><div class="object-heading"><span class="object-dot control"></span><div><h3>控制链</h3><p>时钟、DAC、11 条通道、混合矩阵与准入阈值</p></div></div>${objectTabs("control", tab, [["clock", "时钟与 DAC"], ["lanes", "通道"], ["mixing", "混合"], ["acceptance", "阈值"]])}<div class="object-subsection">${content || uncalibrated("未提供控制链数据")}</div></section>`;
 }
 
 function objectTabs(object, active, items) { return `<div class="object-tabs" role="tablist">${items.map(([id, label]) => `<button type="button" data-object="${object}" data-object-tab="${id}" role="tab" aria-selected="${active === id}" class="${active === id ? "active" : ""}">${label}</button>`).join("")}</div>`; }
 
 function controlClockEditor(control) { const clock = control.clock || {}, dac = control.dac || {}; return `<div class="editor-grid">${numberField("采样率（Hz）", "control_values.clock.sample_rate_Hz", clock.sample_rate_Hz)}${numberField("采样间隔（ns）", "control_values.clock.dt_ns", clock.dt_ns, "0.000001")}${numberField("DAC 位数", "control_values.dac.bits", dac.bits, "1")}${selectField("DAC 舍入模式", "control_values.dac.rounding", dac.rounding, ["half_even"])}${numberField("DAC 满量程下限（V）", "control_values.dac.full_scale_min_V", dac.full_scale_min_V)}${numberField("DAC 满量程上限（V，开区间）", "control_values.dac.full_scale_max_exclusive_V", dac.full_scale_max_exclusive_V)}</div>`; }
-function controlFluxEditor(control) { const flux = control.idle_flux_phi0 || {}; return `<div class="editor-grid">${["q1", "q2", "c"].map((name) => numberField(`${name.toUpperCase()} 空闲磁通（Phi/Phi0）`, `control_values.idle_flux_phi0.${name}`, flux[name], "0.000001")).join("")}</div>`; }
+function objectIdleFluxEditor(target, control) { const key = target.toLowerCase(); return numberField(`${target} 空闲磁通（Phi/Phi0）`, `control_values.idle_flux_phi0.${key}`, control.idle_flux_phi0?.[key], "0.000001"); }
 function acceptanceEditor(control) { const acceptance = control.acceptance || {}; return `<div class="editor-grid">${Object.keys(acceptance).map((key) => numberField(parameterLabel(key), `control_values.acceptance.${key}`, acceptance[key], key === "max_formal_samples_per_scenario" ? "1" : "any")).join("")}</div>`; }
 
 function reviewWorkbench(item) {
   const validation = item.validation || {};
   const controlChanged = validation.requires_requalification || item.requires_requalification;
-  return `<section class="workbench-section"><div class="section-head"><div><h3>变更与发布</h3><p>提交前检查配置影响、校验结果与发布条件。</p></div></div>
+  const isCurrent = item.artifact_type === "platform_configuration_current";
+  const changePanel = isCurrent
+    ? `<div class="diff-summary">${fact("当前修订", `r${item.revision}`)}${fact("内容哈希", short(item.content_sha256), true)}${fact("来源快照", short(item.source_snapshot_id), true)}</div>`
+    : `<div id="server-diff" class="diff-panel"><span class="muted">正在读取差异...</span></div>`;
+  return `<section class="workbench-section"><div class="section-head"><div><h3>${isCurrent ? "状态与版本" : "变更与发布"}</h3><p>${isCurrent ? "检查当前配置状态，并在需要时保存可恢复的历史快照。" : "提交前检查配置影响、校验结果与发布条件。"}</p></div></div>
     <div class="change-summary"><div><span class="object-dot q1"></span><strong>Q1 / Q2</strong><p>参考频率、脉冲 Setting 和 Mapper 的校准记录。</p></div><div><span class="object-dot c"></span><strong>C</strong><p>CZ、FSIM、耦合器 Mapper 与动态相位。</p></div><div><span class="object-dot control"></span><strong>控制链</strong><p>${controlChanged ? "控制参数已变更，发布后需要重新准入。" : "当前未检测到需要重新准入的控制参数变更。"}</p></div></div>
-    <div class="object-subsection"><h4>服务端差异</h4><div id="server-diff" class="diff-panel"><span class="muted">正在读取差异...</span></div></div>
+    <div class="object-subsection"><h4>${isCurrent ? "当前版本" : "服务端差异"}</h4>${changePanel}</div>
     <div class="object-subsection"><h4>校验结果</h4>${validationList(validation)}</div>
-    <div class="object-subsection"><h4>发布条件</h4><div class="facts">${fact("内容哈希", short(item.content_sha256), true)}${fact("父配置", short(item.parent?.configuration_id), true)}${fact("重新准入", controlChanged ? "需要" : "不需要")}${fact("实验准入", item.experiment_eligible ? "可用" : "待发布后判定")}</div></div>
+    <div class="object-subsection"><h4>${isCurrent ? "快照条件" : "发布条件"}</h4><div class="facts">${fact("保存状态", state.draftDirty ? "有未保存修改" : "已保存")}${fact("配置校验", validation.status === "valid" ? "通过" : "未通过")}${fact("重新准入", controlChanged ? "需要" : "不需要")}${fact(isCurrent ? "可保存快照" : "实验准入", isCurrent ? (validation.status === "valid" && !state.draftDirty ? "是" : "否") : (item.experiment_eligible ? "可用" : "待发布后判定"))}</div></div>
     <div class="object-subsection"><h4>只读权威</h4>${readonlyEditor(item)}</div></section>`;
 }
 
@@ -391,15 +427,17 @@ function topologyView(calibration) {
 
 function bindWorkbench(item, mode) {
   document.querySelectorAll("[data-workbench-section]").forEach((button) => button.addEventListener("click", async () => {
-    if (mode === "draft" && state.draftDirty && !(await persistDraft())) return;
+    if (mode !== "snapshot" && state.draftDirty && !(await persistDraft())) return;
     state.workbenchSection = button.dataset.workbenchSection;
-    if (mode === "draft") renderDraft(item.draft_id);
+    if (mode === "current") renderCurrentConfiguration(item.device_id);
+    else if (mode === "draft") renderDraft(item.draft_id);
     else renderPlatformSnapshot(item.snapshot_id);
   }));
   document.querySelectorAll("[data-object-tab]").forEach((button) => button.addEventListener("click", async () => {
-    if (mode === "draft" && state.draftDirty && !(await persistDraft())) return;
+    if (mode !== "snapshot" && state.draftDirty && !(await persistDraft())) return;
     state.objectTabs[button.dataset.object] = button.dataset.objectTab;
-    if (mode === "draft") renderDraft(item.draft_id);
+    if (mode === "current") renderCurrentConfiguration(item.device_id);
+    else if (mode === "draft") renderDraft(item.draft_id);
     else renderPlatformSnapshot(item.snapshot_id);
   }));
   if (mode === "draft" && state.workbenchSection === "review") loadDraftDiff(item);
@@ -459,7 +497,7 @@ function couplerGateEditor(gate, settings, mappers) {
 
 function mapperObjectGroups(mappers, type, target) {
   const rows = Object.entries(mappers).filter(([, row]) => row.mapper_type === type && row.target === target);
-  return rows.length ? `<div class="setting-grid mapper-grid">${rows.map(([id, row]) => mapperEditor(id, row)).join("")}</div>` : uncalibrated(`未校准：尚无 ${type} 记录`);
+  return rows.length ? `<div class="parameter-folders">${rows.map(([id, row], index) => mapperEditor(id, row, index === 0)).join("")}</div>` : uncalibrated(`未校准：尚无 ${type} 记录`);
 }
 
 function referenceEvidence(reference) {
@@ -471,30 +509,30 @@ function readonlyWorkbench(item, section) {
   const editable = item.editable || {}, calibration = editable.calibration_values || {};
   if (section === "overview") return `<section class="workbench-section"><div class="section-head"><div><h3>设备概览</h3><p>已发布快照。所有值均只读。</p></div></div>${topologyView(calibration)}<div class="facts">${fact("设备", item.device_id)}${fact("发布者", item.actor_id)}${fact("发布时间", dateText(item.published_utc))}${fact("内容哈希", short(item.content_sha256), true)}</div>${readonlyEditor(item)}</section>`;
   if (section === "control") return readonlyControlWorkbench(editable.control_values || {});
-  if (section === "q1" || section === "q2") return readonlyQubit(section.toUpperCase(), calibration);
-  if (section === "c") return readonlyCoupler(calibration);
+  if (section === "q1" || section === "q2") return readonlyQubit(section.toUpperCase(), calibration, editable.control_values || {});
+  if (section === "c") return readonlyCoupler(calibration, editable.control_values || {});
   return `<section class="workbench-section"><div class="section-head"><div><h3>变更与发布</h3><p>快照血缘、准入与权威依据。</p></div></div><div class="facts">${fact("父配置", short(item.parent?.configuration_id), true)}${fact("重新准入", item.requires_requalification ? "需要" : "不需要")}${fact("实验准入", item.experiment_eligible ? "可用" : "不可用")}${fact("长期保存", item.keep ? "是" : "否")}</div>${readonlyEditor(item)}</section>`;
 }
 
-function readonlyQubit(target, calibration) {
+function readonlyQubit(target, calibration, control) {
   const registry = calibration.waveform_registry || {}, settings = registry.settings || {}, mappers = registry.mappers || {};
   const value = calibration.qagents?.[target], gate = calibration.gate_configuration?.[target];
   const key = target.toLowerCase(), tab = state.objectTabs[key] || "base";
-  const content = tab === "base" ? readonlySurface(`<div class="setting-grid">${referenceEditor(target, value)}${gate ? qubitGateEditor(target, gate, settings, mappers) : uncalibrated("未校准：无 Gate Configuration")}</div>`) : tab === "pulses" ? readonlySurface(settingGroups(settings, [target], false)) : tab === "mapper" ? readonlySurface(mapperObjectGroups(mappers, "F012ZBIAS_MAPPER", target)) : referenceEvidence(value?.reference_frequency_authority);
+  const content = tab === "base" ? readonlySurface(`<div class="setting-grid">${objectIdleFluxEditor(target, control)}${referenceEditor(target, value)}${gate ? qubitGateEditor(target, gate, settings, mappers) : uncalibrated("未校准：无 Gate Configuration")}</div>`) : tab === "pulses" ? readonlySurface(settingGroups(settings, [target], false)) : tab === "mapper" ? readonlySurface(mapperObjectGroups(mappers, "F012ZBIAS_MAPPER", target)) : referenceEvidence(value?.reference_frequency_authority);
   return `<section class="workbench-section object-page ${key}"><div class="object-heading"><span class="object-dot ${key}"></span><div><h3>${target}</h3><p>只读频率、脉冲 Setting、F012ZBIAS Mapper 与校准证据</p></div></div>${objectTabs(key, tab, [["base", "基础"], ["pulses", "脉冲"], ["mapper", "Mapper"], ["evidence", "证据"]])}<div class="object-subsection">${content}</div></section>`;
 }
 
-function readonlyCoupler(calibration) {
+function readonlyCoupler(calibration, control) {
   const registry = calibration.waveform_registry || {}, settings = registry.settings || {}, mappers = registry.mappers || {};
   const gate = calibration.gate_configuration?.C, tab = state.objectTabs.c || "gates";
-  const content = tab === "gates" ? readonlySurface(`${gate ? couplerGateEditor(gate, settings, mappers) : uncalibrated("未校准：无耦合器 Gate Configuration")}${settingGroups(settings, ["C"], true)}`) : tab === "mapper" ? readonlySurface(mapperObjectGroups(mappers, "G2ZBIAS_MAPPER", "C")) : characterizationView(calibration.fsim_characterizations);
+  const content = tab === "gates" ? readonlySurface(`${objectIdleFluxEditor("C", control)}${gate ? couplerGateEditor(gate, settings, mappers) : uncalibrated("未校准：无耦合器 Gate Configuration")}${settingGroups(settings, ["C"], true)}`) : tab === "mapper" ? readonlySurface(mapperObjectGroups(mappers, "G2ZBIAS_MAPPER", "C")) : characterizationView(calibration.fsim_characterizations);
   return `<section class="workbench-section object-page c"><div class="object-heading"><span class="object-dot c"></span><div><h3>C</h3><p>只读 CZ / FSIM 波形、G2ZBIAS Mapper 与标定结果</p></div></div>${objectTabs("c", tab, [["gates", "CZ / FSIM"], ["mapper", "G2 Mapper"], ["results", "标定结果"]])}<div class="object-subsection">${content}</div></section>`;
 }
 
 function readonlyControlWorkbench(control) {
   const tab = state.objectTabs.control || "clock";
-  const content = tab === "clock" ? controlClockEditor(control) : tab === "lanes" ? laneEditor(control) : tab === "mixing" ? Object.entries(control.static_mixing || {}).map(([name, value]) => matrixEditor(name, value)).join("") : tab === "flux" ? controlFluxEditor(control) : acceptanceEditor(control);
-  return `<section class="workbench-section"><div class="object-heading"><span class="object-dot control"></span><div><h3>控制链</h3><p>只读时钟、DAC、11 条通道、混合矩阵、空闲磁通与准入阈值</p></div></div>${objectTabs("control", tab, [["clock", "时钟与 DAC"], ["lanes", "通道"], ["mixing", "混合"], ["flux", "空闲磁通"], ["acceptance", "阈值"]])}<div class="object-subsection">${readonlySurface(content || uncalibrated("未提供控制链数据"))}</div></section>`;
+  const content = tab === "clock" ? controlClockEditor(control) : tab === "lanes" ? laneEditor(control) : tab === "mixing" ? Object.entries(control.static_mixing || {}).map(([name, value]) => matrixEditor(name, value)).join("") : acceptanceEditor(control);
+  return `<section class="workbench-section"><div class="object-heading"><span class="object-dot control"></span><div><h3>控制链</h3><p>只读时钟、DAC、11 条通道、混合矩阵与准入阈值</p></div></div>${objectTabs("control", tab, [["clock", "时钟与 DAC"], ["lanes", "通道"], ["mixing", "混合"], ["acceptance", "阈值"]])}<div class="object-subsection">${readonlySurface(content || uncalibrated("未提供控制链数据"))}</div></section>`;
 }
 
 function readonlySurface(content) { return `<fieldset class="readonly-control-surface" disabled>${content}</fieldset>`; }
@@ -515,15 +553,16 @@ function controlEditor(control) {
 
 function laneEditor(control) {
   const lanes = control.lanes || {}, order = control.lane_order || Object.keys(lanes);
-  return `<div class="table-wrap matrix-scroll"><table class="editable-table"><thead><tr><th>通道</th><th>延迟（samples）</th><th>FIR 系数（逗号分隔）</th></tr></thead><tbody>${order.map((lane) => {
+  return `<div class="parameter-folders">${order.map((lane, index) => {
     const row = lanes[lane] || {};
-    return `<tr><td class="mono">${esc(lane)}</td><td>${numberField("", `control_values.lanes.${lane}.latency_samples`, row.latency_samples, "1", "inline")}</td><td>${arrayField(`control_values.lanes.${lane}.fir`, row.fir)}</td></tr>`;
-  }).join("")}</tbody></table></div>`;
+    return `<details class="parameter-folder" ${index === 0 ? "open" : ""}><summary><span><strong class="mono">${esc(lane)}</strong><small>电子学通道 · ${row.latency_samples ?? "-"} samples 延迟</small></span></summary><div class="folder-body">${numberField("通道延迟（samples）", `control_values.lanes.${lane}.latency_samples`, row.latency_samples, "1")}${arrayField(`control_values.lanes.${lane}.fir`, row.fir)}</div></details>`;
+  }).join("")}</div>`;
 }
 
 function matrixEditor(name, value) {
   const inputs = value.input_lanes || [], outputs = value.output_coordinates || [], matrix = value.matrix || [];
-  return `<div class="matrix-block"><h4>${esc(name.toUpperCase())}</h4><div class="table-wrap matrix-scroll"><table class="matrix-table editable-table"><thead><tr><th>输出 / 输入</th>${inputs.map((lane) => `<th class="mono">${esc(lane)}</th>`).join("")}</tr></thead><tbody>${outputs.map((output, row) => `<tr><td class="mono">${esc(output)}</td>${inputs.map((_, column) => `<td>${numberField("", `control_values.static_mixing.${name}.matrix.${row}.${column}`, matrix[row]?.[column], "any", "inline")}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
+  const fields = outputs.flatMap((output, row) => inputs.map((lane, column) => numberField(`${output} ← ${lane}`, `control_values.static_mixing.${name}.matrix.${row}.${column}`, matrix[row]?.[column]))).join("");
+  return `<details class="parameter-folder matrix-folder"><summary><span><strong>${esc(name.toUpperCase())} 混合矩阵</strong><small>${outputs.length} × ${inputs.length} · 浮点数</small></span></summary><div class="folder-body"><p class="folder-description">描述输入电子学通道到物理输出坐标的静态线性映射。</p>${fields}</div></details>`;
 }
 
 function calibrationEditor(calibration) {
@@ -569,20 +608,24 @@ function gateConfigurationEditor(gates, settings, mappers) {
 }
 
 function settingGroups(settings, targets, composite) {
-  const rows = Object.entries(settings).filter(([, row]) => targets.includes(row.target) && (composite ? ["CZ", "FSIM"].includes(row.gate_type) : ["XY", "XY2", "X12", "DTN"].includes(row.gate_type)));
+  const order = composite ? ["CZ", "FSIM"] : ["XY", "XY2", "X12", "DTN"];
+  const rows = Object.entries(settings)
+    .filter(([, row]) => targets.includes(row.target) && order.includes(row.gate_type))
+    .sort((left, right) => order.indexOf(left[1].gate_type) - order.indexOf(right[1].gate_type));
   if (!rows.length) return uncalibrated("未校准：尚无匹配的 Setting 记录");
-  return `<div class="setting-grid">${rows.map(([id, record]) => composite ? compositeSettingEditor(id, record) : qubitSettingEditor(id, record)).join("")}</div>`;
+  return `<div class="parameter-folders">${rows.map(([id, record], index) => composite ? compositeSettingEditor(id, record, index === 0) : qubitSettingEditor(id, record, index === 0)).join("")}</div>`;
 }
 
-function qubitSettingEditor(id, record) {
+function qubitSettingEditor(id, record, expanded = false) {
   const path = `calibration_values.waveform_registry.settings.${id}`;
-  if (record.gate_type === "DTN") return `<div class="form-cluster"><h4>${esc(id)} <span class="muted">DTN</span></h4>${recordFacts(record)}<div class="readonly-line">control_role=z; envelope_class=rect; input_unit=Phi/Phi0</div></div>`;
-  return `<div class="form-cluster"><h4>${esc(id)} <span class="muted">${esc(record.gate_type)}</span></h4>${recordFacts(record)}${waveformPreview(record.waveform_class)}<div class="editor-grid compact">${selectField("波形类别", `${path}.waveform_class`, record.waveform_class, ["rectangle", "gaussian", "flattop"])}${numberField("长度（samples）", `${path}.length_samples`, record.length_samples, "1")}${numberField("幅度（GHz）", `${path}.amplitude_GHz`, record.amplitude_GHz)}${numberField("相位偏移（rad）", `${path}.phase_offset_rad`, record.phase_offset_rad)}${numberField("DRAG alpha（samples）", `${path}.dragAlpha_samples`, record.dragAlpha_samples)}${shapeFields(path, record)}</div></div>`;
+  const heading = `<span><strong>${esc(id)}</strong><small>${esc(record.gate_type)} · ${esc(record.transition || record.control_role || "波形")}</small></span>${waveformPreview(record.waveform_class)}`;
+  if (record.gate_type === "DTN") return `<details class="parameter-folder" ${expanded ? "open" : ""}><summary>${heading}</summary><div class="folder-body">${recordFacts(record)}<div class="readonly-line">Z 控制通道；矩形包络；输入单位 Phi/Phi0。DTN 的实际幅度由调用指令提供。</div></div></details>`;
+  return `<details class="parameter-folder" ${expanded ? "open" : ""}><summary>${heading}</summary><div class="folder-body">${recordFacts(record)}<div class="editor-grid compact">${selectField("波形类别", `${path}.waveform_class`, record.waveform_class, ["rectangle", "gaussian", "flattop"])}${numberField("长度（samples）", `${path}.length_samples`, record.length_samples, "1")}${numberField("幅度（GHz）", `${path}.amplitude_GHz`, record.amplitude_GHz)}${numberField("相位偏移（rad）", `${path}.phase_offset_rad`, record.phase_offset_rad)}${numberField("DRAG alpha（samples）", `${path}.dragAlpha_samples`, record.dragAlpha_samples)}${shapeFields(path, record)}</div></div></details>`;
 }
 
-function compositeSettingEditor(id, record) {
+function compositeSettingEditor(id, record, expanded = false) {
   const path = `calibration_values.waveform_registry.settings.${id}`;
-  return `<div class="form-cluster full"><h4>${esc(id)} <span class="muted">${esc(record.gate_type)}</span></h4>${recordFacts(record)}<div class="editor-grid compact">${numberField("公共时长（samples）", `${path}.duration_samples`, record.duration_samples, "1")}${checkboxField("使用 F012 Mapper", `${path}.use_f012zbias_mapper`, record.use_f012zbias_mapper)}${checkboxField("使用 G2 Mapper", `${path}.use_g2zbias_mapper`, record.use_g2zbias_mapper)}${numberField("Q0 动态相位（rad）", `${path}.q0_calibrated_dynamic_phase_rad`, record.q0_calibrated_dynamic_phase_rad)}${numberField("Q1 动态相位（rad）", `${path}.q1_calibrated_dynamic_phase_rad`, record.q1_calibrated_dynamic_phase_rad)}</div><div class="waveform-grid">${["q0", "q1", "coupler"].map((name) => compositeWaveformEditor(path, name, record.waveforms?.[name] || {}, record)).join("")}</div></div>`;
+  return `<details class="parameter-folder composite-folder" ${expanded ? "open" : ""}><summary><span><strong>${esc(id)}</strong><small>${esc(record.gate_type)} · 组合波形</small></span><span class="folder-summary-meta">${record.duration_samples} samples</span></summary><div class="folder-body">${recordFacts(record)}<div class="editor-grid compact">${numberField("公共时长（samples）", `${path}.duration_samples`, record.duration_samples, "1")}${checkboxField("使用 F012 Mapper", `${path}.use_f012zbias_mapper`, record.use_f012zbias_mapper)}${checkboxField("使用 G2 Mapper", `${path}.use_g2zbias_mapper`, record.use_g2zbias_mapper)}${numberField("Q0 动态相位（rad）", `${path}.q0_calibrated_dynamic_phase_rad`, record.q0_calibrated_dynamic_phase_rad)}${numberField("Q1 动态相位（rad）", `${path}.q1_calibrated_dynamic_phase_rad`, record.q1_calibrated_dynamic_phase_rad)}</div><div class="waveform-stack">${["q0", "q1", "coupler"].map((name) => compositeWaveformEditor(path, name, record.waveforms?.[name] || {}, record)).join("")}</div></div></details>`;
 }
 
 function compositeWaveformEditor(path, name, waveform, record) {
@@ -590,7 +633,8 @@ function compositeWaveformEditor(path, name, waveform, record) {
   const useMapper = isCoupler ? record.use_g2zbias_mapper : record.use_f012zbias_mapper;
   const operand = isCoupler ? "coupling_detune_GHz" : "frequency_detune_GHz";
   const label = useMapper ? `${operand.replace("_", " ")}（GHz）` : "直接 Z 偏置（flux_offset_phi0，Phi/Phi0）";
-  return `<div class="waveform-editor"><h5>${name === "q0" ? "Q0" : name === "q1" ? "Q1" : "Coupler"}</h5>${waveformPreview(waveform.waveform_class)}${selectField("波形类别", `${path}.waveforms.${name}.waveform_class`, waveform.waveform_class, ["rectangle", "gaussian", "flattop", "acz"])}${numberField(label, `${path}.waveforms.${name}.${useMapper ? operand : "flux_offset_phi0"}`, waveform[useMapper ? operand : "flux_offset_phi0"])}${shapeFields(`${path}.waveforms.${name}`, waveform)}</div>`;
+  const title = name === "q0" ? "Q0 比特波形" : name === "q1" ? "Q1 比特波形" : "Coupler 耦合器波形";
+  return `<details class="waveform-folder"><summary><span><strong>${title}</strong><small>${esc(waveform.waveform_class || "未设置")}</small></span>${waveformPreview(waveform.waveform_class)}</summary><div class="folder-body">${selectField("波形类别", `${path}.waveforms.${name}.waveform_class`, waveform.waveform_class, ["rectangle", "gaussian", "flattop", "acz"])}${numberField(label, `${path}.waveforms.${name}.${useMapper ? operand : "flux_offset_phi0"}`, waveform[useMapper ? operand : "flux_offset_phi0"])}${shapeFields(`${path}.waveforms.${name}`, waveform)}</div></details>`;
 }
 
 function shapeFields(path, value) {
@@ -612,11 +656,11 @@ function mapperGroups(mappers, type) {
   return `<div class="setting-grid">${rows.map(([id, mapper]) => mapperEditor(id, mapper)).join("")}</div>`;
 }
 
-function mapperEditor(id, mapper) {
+function mapperEditor(id, mapper, expanded = false) {
   const path = `calibration_values.waveform_registry.mappers.${id}`;
-  if (mapper.mapper_type === "F012ZBIAS_MAPPER") return `<div class="form-cluster"><h4>${esc(id)} <span class="muted">${esc(mapper.target)}</span></h4>${recordFacts(mapper)}<div class="editor-grid compact">${numberField("f01 max（GHz）", `${path}.f01max_GHz`, mapper.f01max_GHz)}${numberField("k（rad/Phi0）", `${path}.k_rad_per_phi0`, mapper.k_rad_per_phi0)}${numberField("空闲磁通偏置（Phi/Phi0）", `${path}.idle_flux_offset_phi0`, mapper.idle_flux_offset_phi0)}</div></div>`;
+  if (mapper.mapper_type === "F012ZBIAS_MAPPER") return `<details class="parameter-folder" ${expanded ? "open" : ""}><summary><span><strong>${esc(id)}</strong><small>${esc(mapper.target)} · F012ZBIAS Mapper</small></span></summary><div class="folder-body">${recordFacts(mapper)}${numberField("f01 max（GHz）", `${path}.f01max_GHz`, mapper.f01max_GHz)}${numberField("k（rad/Phi0）", `${path}.k_rad_per_phi0`, mapper.k_rad_per_phi0)}${numberField("空闲磁通偏置（Phi/Phi0）", `${path}.idle_flux_offset_phi0`, mapper.idle_flux_offset_phi0)}</div></details>`;
   const xs = mapper.coupling_detune_GHz || [], ys = mapper.zbias_offset_phi0 || [];
-  return `<div class="form-cluster"><h4>${esc(id)} <span class="muted">C</span></h4>${recordFacts(mapper)}<div class="readonly-line">分段线性 / 越界拒绝</div>${mapperPreview(xs, ys)}<div class="table-wrap matrix-scroll"><table class="editable-table"><thead><tr><th>耦合失谐（GHz）</th><th>Z 偏置（Phi/Phi0）</th><th></th></tr></thead><tbody>${xs.map((x, index) => `<tr><td>${numberField("", `${path}.coupling_detune_GHz.${index}`, x, "any", "inline")}</td><td>${numberField("", `${path}.zbias_offset_phi0.${index}`, ys[index], "any", "inline")}</td><td><button type="button" class="icon-button" data-array-remove="${esc(path)}" data-array-index="${index}" title="删除点" aria-label="删除点">x</button></td></tr>`).join("")}</tbody></table></div><button type="button" class="button secondary array-add" data-array-add="${esc(path)}">新增配对点</button></div>`;
+  return `<details class="parameter-folder" ${expanded ? "open" : ""}><summary><span><strong>${esc(id)}</strong><small>C · G2ZBIAS Mapper · 两个等长 list</small></span>${mapperPreview(xs, ys)}</summary><div class="folder-body">${recordFacts(mapper)}<p class="folder-description">两个 list 按相同下标组成映射点，通过分段线性插值把耦合强度变化转换为相对当前偏置点的 Phi/Phi0；越界输入拒绝。</p>${numberListField("耦合失谐列表（GHz）", `${path}.coupling_detune_GHz`, xs)}${numberListField("Z 偏置列表（Phi/Phi0）", `${path}.zbias_offset_phi0`, ys)}</div></details>`;
 }
 
 function mapperPreview(xs, ys) {
@@ -643,11 +687,79 @@ function recordFacts(record, keys = ["setting_id", "mapper_id", "target", "gate_
   return values ? `<div class="record-facts">${values}</div>` : "";
 }
 
-function textField(label, id, value) { return `<div class="field"><label for="${esc(id)}">${esc(label)}</label><input id="${esc(id)}" value="${esc(value ?? "")}"></div>`; }
-function numberField(label, path, value, step = "any", mode = "") { const id = fieldId(path), accessibleLabel = label || normalizeFieldPath(path); const input = `<input id="${esc(id)}" aria-label="${esc(accessibleLabel)}" data-path="${esc(path)}" data-value-type="number" type="number" step="${esc(step)}" value="${esc(value ?? "")}">`; return mode === "inline" ? input : `<div class="field"><label for="${esc(id)}">${esc(label)}</label>${input}</div>`; }
-function selectField(label, path, value, choices) { const id = fieldId(path), unique = [...new Set([value, ...(choices || [])].filter(Boolean))]; return `<div class="field"><label for="${esc(id)}">${esc(label)}</label><select id="${esc(id)}" aria-label="${esc(label || normalizeFieldPath(path))}" data-path="${esc(path)}" data-value-type="string">${unique.map((entry) => `<option value="${esc(entry)}" ${entry === value ? "selected" : ""}>${esc(entry)}</option>`).join("") || '<option value="">未校准</option>'}</select></div>`; }
-function checkboxField(label, path, value) { return `<label class="check-row"><input data-path="${esc(path)}" data-value-type="boolean" type="checkbox" ${value ? "checked" : ""}> ${esc(label)}</label>`; }
-function arrayField(path, value) { return `<input data-path="${esc(path)}" data-value-type="number-array" value="${esc((value || []).join(", "))}" aria-label="FIR 系数">`; }
+function textField(label, id, value, description = "用于标识和说明当前配置。") {
+  return fieldShell(label, id, "文本", description, `<input id="${esc(id)}" value="${esc(value ?? "")}">`);
+}
+function numberField(label, path, value, step = "any", mode = "") {
+  const id = fieldId(path), accessibleLabel = label || normalizeFieldPath(path);
+  const input = `<input id="${esc(id)}" aria-label="${esc(accessibleLabel)}" data-path="${esc(path)}" data-value-type="number" type="number" step="${esc(step)}" value="${esc(value ?? "")}">`;
+  if (mode === "inline") return input;
+  return fieldShell(label, id, step === "1" ? "整数" : "浮点数", parameterDescription(path, label), input);
+}
+function selectField(label, path, value, choices) {
+  const id = fieldId(path), unique = [...new Set([value, ...(choices || [])].filter(Boolean))];
+  const control = `<select id="${esc(id)}" aria-label="${esc(label || normalizeFieldPath(path))}" data-path="${esc(path)}" data-value-type="string">${unique.map((entry) => `<option value="${esc(entry)}" ${entry === value ? "selected" : ""}>${esc(entry)}</option>`).join("") || '<option value="">未校准</option>'}</select>`;
+  return fieldShell(label, id, "枚举", parameterDescription(path, label), control);
+}
+function checkboxField(label, path, value) {
+  const id = fieldId(path);
+  const control = `<label class="switch-control" for="${esc(id)}"><input id="${esc(id)}" data-path="${esc(path)}" data-value-type="boolean" type="checkbox" ${value ? "checked" : ""}><span>${value ? "开启" : "关闭"}</span></label>`;
+  return fieldShell(label, id, "布尔值", parameterDescription(path, label), control);
+}
+function arrayField(path, value) {
+  return numberListField("FIR 系数", path, value);
+}
+function numberListField(label, path, value) {
+  const id = fieldId(path);
+  const control = `<input id="${esc(id)}" data-path="${esc(path)}" data-value-type="number-array" value="${esc((value || []).join(", "))}" aria-label="${esc(label)}" spellcheck="false">`;
+  return fieldShell(label, id, "list[float]", parameterDescription(path, label), control);
+}
+function fieldShell(label, id, type, description, control) {
+  return `<div class="field parameter-field"><div class="field-copy"><div class="field-title"><label for="${esc(id)}">${esc(label)}</label><span class="data-type">${esc(type)}</span></div><small>${esc(description)}</small></div><div class="field-control">${control}</div></div>`;
+}
+function parameterDescription(path, label) {
+  const text = String(path || "");
+  const rules = [
+    ["sample_rate_Hz", "控制波形的数字采样率；必须与采样间隔互为倒数。"],
+    ["dt_ns", "相邻数字样点之间的时间间隔，单位 ns。"],
+    ["dac.bits", "DAC 的有效量化位数，决定输出幅度分辨率。"],
+    ["dac.rounding", "浮点波形量化到 DAC 码值时采用的舍入规则。"],
+    ["full_scale_min_V", "DAC 可输出电压范围的闭区间下限。"],
+    ["full_scale_max_exclusive_V", "DAC 可输出电压范围的开区间上限。"],
+    ["idle_flux_phi0", "器件空闲工作点的磁通偏置，统一使用 Phi/Phi0。"],
+    ["reference_frequency_GHz", "当前配置用于相位计算和指令编译的比特参考频率。"],
+    ["active_", "选择当前门操作实际引用的 Setting 或 Mapper。"],
+    ["xy_pi_impl", "关闭时 X/Y 门由两个同向半角脉冲连续拼接实现。"],
+    ["waveform_class", "选择波形包络类型，并决定下方出现的形状参数。"],
+    ["length_samples", "单比特脉冲的总采样点数。"],
+    ["duration_samples", "组合门中 Q0、Q1 与 Coupler 三路波形共享的时长。"],
+    ["amplitude_GHz", "驱动包络幅度，以等效频率 GHz 表示。"],
+    ["phase_offset_rad", "叠加到驱动载波的固定相位偏移。"],
+    ["dragAlpha_samples", "DRAG 正交分量的导数权重，用于抑制泄漏。"],
+    ["width_samples", "矩形包络的有效宽度。"],
+    ["r_sigma_samples", "高斯包络截断半径，以标准差对应的采样点数表示。"],
+    ["edge_samples", "Flattop 波形单侧平滑边缘的采样点数。"],
+    ["use_f012zbias_mapper", "开启后以频率失谐输入，再由比特 F012 Mapper 转换为磁通偏置。"],
+    ["use_g2zbias_mapper", "开启后以耦合强度失谐输入，再由 Coupler G2 Mapper 转换为磁通偏置。"],
+    ["dynamic_phase_rad", "实验标定得到并在门后补偿的动力学相位。"],
+    ["frequency_detune_GHz", "相对当前参考频率的目标频率变化量。"],
+    ["coupling_detune_GHz", "相对当前耦合工作点的目标耦合强度变化量。"],
+    ["zbias_offset_phi0", "与耦合失谐列表按下标对应的相对 Z 偏置，单位 Phi/Phi0。"],
+    ["flux_offset_phi0", "相对当前空闲偏置叠加的磁通变化量。"],
+    ["parameters.thf", "ACZ 绝热轨迹的高频端形状参数 thf。"],
+    ["parameters.thi", "ACZ 绝热轨迹的初始端形状参数 thi。"],
+    ["parameters.lam2", "ACZ 轨迹二阶修正系数。"],
+    ["parameters.lam3", "ACZ 轨迹三阶修正系数。"],
+    ["f01max_GHz", "比特在零磁通附近的最大 f01 频率。"],
+    ["k_rad_per_phi0", "磁通到 SQUID 相位的比例系数。"],
+    ["idle_flux_offset_phi0", "F012 模型相对于当前偏置点的磁通零点。"],
+    ["latency_samples", "该电子学通道相对统一时钟的离散延迟。"],
+    [".fir", "电子学链的 FIR 系数；所有系数之和必须为 1。"],
+    [".matrix.", "输入通道到物理输出坐标的静态线性混合系数。"],
+    ["acceptance", "Stage 4.1 对控制链数值结果的准入阈值。"],
+  ];
+  return rules.find(([token]) => text.includes(token))?.[1] || `用于配置“${label || normalizeFieldPath(path)}”的运行参数。`;
+}
 function fieldId(path) { return `field-${String(path).replace(/[^a-zA-Z0-9_-]/g, "-")}`; }
 function uncalibrated(text) { return `<div class="uncalibrated">${status("uninitialized")}<span>${esc(text)}</span></div>`; }
 
@@ -721,7 +833,10 @@ function markDraftDirty() {
   if (saveState) saveState.textContent = "有未保存修改";
   document.querySelector("#validate-draft")?.setAttribute("disabled", "");
   document.querySelector("#publish-draft")?.setAttribute("disabled", "");
-  state.draftSaveTimer = setTimeout(() => persistDraft({ automatic: true }), 700);
+  document.querySelector("#snapshot-current")?.setAttribute("disabled", "");
+  if (state.detail?.artifact_type !== "platform_configuration_current") {
+    state.draftSaveTimer = setTimeout(() => persistDraft({ automatic: true }), 700);
+  }
 }
 
 function collectDraft(item) {
@@ -732,10 +847,19 @@ function collectDraft(item) {
   const note = noteInput ? noteInput.value.trim() : item.note;
   document.querySelectorAll("[data-path]").forEach((input) => {
     const type = input.dataset.valueType;
-    const value = type === "boolean" ? input.checked : type === "number" ? Number(input.value) : type === "number-array" ? input.value.split(",").map((entry) => Number(entry.trim())).filter((entry) => Number.isFinite(entry)) : input.value;
+    const value = type === "boolean" ? input.checked : type === "number" ? Number(input.value) : type === "number-array" ? parseNumberList(input.value, input.getAttribute("aria-label")) : input.value;
     setPath(editable, input.dataset.path, value);
   });
   return { editable, name, note };
+}
+
+function parseNumberList(text, label = "浮点数组") {
+  const tokens = String(text).split(",").map((entry) => entry.trim());
+  const values = tokens.map(Number);
+  if (!tokens.length || tokens.some((entry) => !entry) || values.some((entry) => !Number.isFinite(entry))) {
+    throw new Error(`${label} 必须是使用逗号分隔的有限数值列表`);
+  }
+  return values;
 }
 
 function editorEditable(item) {
@@ -764,23 +888,6 @@ function setPath(value, path, next) {
 }
 
 function bindStructuredEditor() {
-  document.querySelectorAll("[data-array-add]").forEach((button) => button.addEventListener("click", () => {
-    const record = pathValue(editorEditable(state.detail), button.dataset.arrayAdd);
-    if (!record) return;
-    record.coupling_detune_GHz.push(0);
-    record.zbias_offset_phi0.push(0);
-    markDraftDirty();
-    persistDraft().then((saved) => { if (saved) renderDraft(state.detail.draft_id); });
-  }));
-  document.querySelectorAll("[data-array-remove]").forEach((button) => button.addEventListener("click", () => {
-    const record = pathValue(editorEditable(state.detail), button.dataset.arrayRemove);
-    if (!record || record.coupling_detune_GHz.length <= 2) return toast("G2ZBIAS 至少需要两个配对点", true);
-    const index = Number(button.dataset.arrayIndex);
-    record.coupling_detune_GHz.splice(index, 1);
-    record.zbias_offset_phi0.splice(index, 1);
-    markDraftDirty();
-    persistDraft().then((saved) => { if (saved) renderDraft(state.detail.draft_id); });
-  }));
   document.querySelectorAll("[data-path]").forEach((input) => input.addEventListener("change", () => {
     if (input.dataset.path.endsWith("waveform_class")) {
       const draft = editorEditable(state.detail);
@@ -791,9 +898,17 @@ function bindStructuredEditor() {
       if (input.value === "flattop") record.edge_samples = 0;
       if (input.value === "acz") record.parameters = { thf: 1, thi: 1, lam2: 0, lam3: 0 };
       markDraftDirty();
-      persistDraft().then((saved) => { if (saved) renderDraft(state.detail.draft_id); });
+      persistDraft().then((saved) => { if (saved) renderActiveEditor(); });
     }
   }));
+}
+
+function renderActiveEditor() {
+  if (state.detail?.artifact_type === "platform_configuration_current") {
+    renderCurrentConfiguration(state.detail.device_id);
+  } else if (state.detail?.draft_id) {
+    renderDraft(state.detail.draft_id);
+  }
 }
 
 function pathValue(value, path) {
@@ -818,11 +933,11 @@ function normalizeFieldPath(path) {
 
 function showMutationError(error) {
   if (error.status === 409) {
-    toast("草稿已被更新，请刷新后处理冲突", true);
+    toast("配置已被更新，请刷新后处理冲突", true);
     const target = document.querySelector("#field-errors");
     if (target) {
       target.hidden = false;
-      target.innerHTML = "<div><strong>保存冲突</strong> 草稿已被服务器更新。请刷新页面后根据最新内容重新编辑。</div>";
+      target.innerHTML = "<div><strong>保存冲突</strong> 配置已被服务器更新。请刷新页面后根据最新内容重新编辑。</div>";
     }
   }
   else toast(error.message, true);
@@ -840,25 +955,31 @@ function persistDraft(options = {}) {
 async function persistDraftNow({ automatic = false, notify = false } = {}) {
   clearTimeout(state.draftSaveTimer);
   if (!state.draftDirty) {
-    if (notify) toast("草稿已保存，无新增修改");
+    if (notify) toast("当前内容已保存，无新增修改");
     return true;
   }
   const item = state.detail;
+  const isCurrent = item.artifact_type === "platform_configuration_current";
   const editVersion = state.draftEditVersion;
   try {
     const { editable, name, note } = collectDraft(item);
-    const result = await mutate(`/api/v1/drafts/${item.draft_id}`, { actor_id: actor(), expected_content_sha256: item.content_sha256, name, note, editable }, "PUT");
+    const endpoint = isCurrent
+      ? `/api/v1/current-configurations/${encodeURIComponent(item.device_id)}`
+      : `/api/v1/drafts/${item.draft_id}`;
+    const result = await mutate(endpoint, { actor_id: actor(), expected_content_sha256: item.content_sha256, name, note, editable }, "PUT");
     state.detail = result;
     state.draftDirty = state.draftEditVersion !== editVersion;
     const saveState = document.querySelector(".save-state");
-    if (saveState) saveState.textContent = `${automatic ? "已自动保存" : "已保存"} / 检查点 ${result.checkpoint}`;
-    if (state.draftDirty) {
+    if (saveState) saveState.textContent = isCurrent ? `已保存 / 修订 r${result.revision}` : `${automatic ? "已自动保存" : "已保存"} / 检查点 ${result.checkpoint}`;
+    if (state.draftDirty && !isCurrent) {
       state.draftSaveTimer = setTimeout(() => persistDraft({ automatic: true }), 700);
     } else {
       document.querySelector("#validate-draft")?.removeAttribute("disabled");
     }
     document.querySelector("#publish-draft")?.setAttribute("disabled", "");
-    if (notify) toast("草稿已保存");
+    if (isCurrent && result.validation?.status === "valid") document.querySelector("#snapshot-current")?.removeAttribute("disabled");
+    if (isCurrent && result.validation?.field_errors?.length) showFieldErrors(result.validation.field_errors);
+    if (notify) toast(isCurrent ? "当前配置已保存" : "草稿已保存");
     return true;
   } catch (error) {
     const saveState = document.querySelector(".save-state");
@@ -1041,6 +1162,7 @@ function bindExperimentRows() {
 
 function bindConfigurationRows() {
   document.querySelectorAll("[data-config-id]").forEach((row) => bindClickableRow(row, () => { location.hash = `#/configurations/${row.dataset.configId}`; }));
+  document.querySelectorAll("[data-current-device]").forEach((row) => bindClickableRow(row, () => { location.hash = `#/configurations/current/${row.dataset.currentDevice}`; }));
   document.querySelectorAll("[data-draft-id]").forEach((row) => bindClickableRow(row, () => { location.hash = `#/configurations/drafts/${row.dataset.draftId}`; }));
   document.querySelectorAll("[data-platform-id]").forEach((row) => bindClickableRow(row, () => { location.hash = `#/configurations/snapshots/${row.dataset.platformId}`; }));
 }
@@ -1082,6 +1204,34 @@ function openPublish(item) {
   openDialog("发布快照", `<div class="field"><label>名称</label><input id="dialog-name" value="${esc(item.name)}"></div><div class="field"><label>变更原因</label><textarea id="dialog-reason" required></textarea></div><label><input id="dialog-keep" type="checkbox"> 长期保存</label>`, "发布", async () => {
     const result = await mutate(`/api/v1/drafts/${item.draft_id}/publish`, { actor_id: actor(), expected_content_sha256: item.content_sha256, name: document.querySelector("#dialog-name").value.trim(), reason: document.querySelector("#dialog-reason").value.trim(), keep: document.querySelector("#dialog-keep").checked });
     await refresh(); location.hash = `#/configurations/snapshots/${result.snapshot_id}`;
+  });
+}
+
+function openCurrentSnapshot(item) {
+  openDialog("保存当前配置快照", `<div class="field"><label>快照名称</label><input id="dialog-name" value="${esc(item.name)}"></div><div class="field"><label>版本说明</label><textarea id="dialog-reason" required placeholder="说明本次快照保留的原因"></textarea></div><label class="check-row"><input id="dialog-keep" type="checkbox"> 长期保存，不参与自动清理</label>`, "保存快照", async () => {
+    const result = await mutate(`/api/v1/current-configurations/${encodeURIComponent(item.device_id)}/snapshots`, {
+      actor_id: actor(),
+      expected_content_sha256: state.detail.content_sha256,
+      name: document.querySelector("#dialog-name").value.trim(),
+      reason: document.querySelector("#dialog-reason").value.trim(),
+      keep: document.querySelector("#dialog-keep").checked,
+    });
+    state.draftDirty = false;
+    await refresh();
+    location.hash = `#/configurations/snapshots/${result.snapshot_id}`;
+  });
+}
+
+function openApplySnapshot(item) {
+  openDialog("恢复快照到当前配置", `<div class="restore-summary"><strong>${esc(item.name)}</strong><span class="mono">${esc(short(item.snapshot_id))}</span><p>该快照的全部可编辑参数将复制到 ${esc(item.device_id)} 的当前配置。快照本身保持只读，原当前配置不会自动生成备份。</p></div>`, "确认恢复", async () => {
+    const current = await api(`/api/v1/current-configurations/${encodeURIComponent(item.device_id)}`);
+    await mutate(`/api/v1/platform-snapshots/${item.snapshot_id}/apply`, {
+      actor_id: actor(),
+      expected_current_content_sha256: current.content_sha256,
+    });
+    state.draftDirty = false;
+    await refresh();
+    location.hash = `#/configurations/current/${item.device_id}`;
   });
 }
 
@@ -1142,6 +1292,7 @@ function statusText(value) {
     accepted_simulation: "已接受的仿真校准",
     bootstrap_seed: "初始种子值",
     active: "当前生效",
+    current: "当前配置",
     valid: "校验通过",
     keep: "长期保存",
     published: "已发布",

@@ -323,6 +323,23 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
         assert captured.value.code == 404
         management = _http_json(f"{base_url}/api/v1/configuration-management")
         assert len(management["drafts"]) == 1
+        assert len(management["current"]) == 1
+        current = _http_json(
+            f"{base_url}/api/v1/current-configurations/demo_2q1c2r"
+        )
+        updated_current = _http_json(
+            f"{base_url}/api/v1/current-configurations/demo_2q1c2r",
+            method="PUT",
+            payload={
+                "actor_id": "project.manager",
+                "expected_content_sha256": current["content_sha256"],
+                "name": "HTTP current configuration",
+                "note": "saved directly through current API",
+                "editable": current["editable"],
+            },
+        )
+        assert updated_current["revision"] == current["revision"] + 1
+        assert updated_current["name"] == "HTTP current configuration"
 
         stale_payload = {
             "actor_id": "project.manager",
@@ -391,7 +408,12 @@ def test_workbench_diff_uses_backend_requalification_field():
     assert "result.requires_requalification" in source
     assert "result.requalification ?" not in source
     assert '<details class="diff-group">' in source
-    assert 'class="setting-grid mapper-grid"' in source
+    assert 'class="parameter-folders"' in source
+    assert 'class="data-type"' in source
+    assert '"list[float]"' in source
+    assert 'coupling_detune_GHz`, xs' in source
+    assert 'zbias_offset_phi0`, ys' in source
+    assert "新增配对点" not in source
     assert 'validation.status === "valid"' in source
     assert "配置校验通过" in source
     assert 'aria-label="${esc(accessibleLabel)}"' in source
@@ -399,7 +421,8 @@ def test_workbench_diff_uses_backend_requalification_field():
 
     styles = (ROOT / "src" / "sqvm" / "web" / "static" / "styles.css").read_text("utf-8")
     assert ".field-errors[hidden] { display: none; }" in styles
-    assert ".mapper-grid { grid-template-columns: minmax(0, 1fr); }" in styles
+    assert ".parameter-field" in styles
+    assert ".parameter-folder" in styles
 
 
 def test_snapshot_workbench_exposes_detailed_values_as_read_only_controls():

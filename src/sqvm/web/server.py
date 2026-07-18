@@ -93,6 +93,11 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/configuration-management":
             self._json(200, self.server.store.summary())
             return
+        if path.startswith("/api/v1/current-configurations/"):
+            device_id = path.removeprefix("/api/v1/current-configurations/")
+            if "/" not in device_id and device_id:
+                self._json(200, self.server.store.current_configuration(device_id))
+                return
         if path.startswith("/api/v1/drafts/"):
             tail = path.removeprefix("/api/v1/drafts/").split("/")
             draft_id = tail[0]
@@ -213,6 +218,39 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
             )
             self._json(201, result)
             return
+        if path.startswith("/api/v1/current-configurations/"):
+            tail = path.removeprefix("/api/v1/current-configurations/").split("/")
+            device_id = tail[0]
+            if method == "PUT" and len(tail) == 1:
+                result = self.server.store.update_current_configuration(
+                    device_id,
+                    actor_id=payload.get("actor_id"),
+                    expected_content_sha256=payload.get("expected_content_sha256"),
+                    name=payload.get("name"),
+                    note=payload.get("note", ""),
+                    editable=payload.get("editable"),
+                )
+                self._json(200, result)
+                return
+            if method == "POST" and tail[1:] == ["initialize-calibration"]:
+                result = self.server.store.initialize_current_calibration(
+                    device_id,
+                    actor_id=payload.get("actor_id"),
+                    expected_content_sha256=payload.get("expected_content_sha256"),
+                )
+                self._json(200, result)
+                return
+            if method == "POST" and tail[1:] == ["snapshots"]:
+                result = self.server.store.snapshot_current_configuration(
+                    device_id,
+                    actor_id=payload.get("actor_id"),
+                    expected_content_sha256=payload.get("expected_content_sha256"),
+                    name=payload.get("name"),
+                    reason=payload.get("reason"),
+                    keep=payload.get("keep") is True,
+                )
+                self._json(201, result)
+                return
         if path.startswith("/api/v1/drafts/"):
             tail = path.removeprefix("/api/v1/drafts/").split("/")
             draft_id = tail[0]
@@ -266,6 +304,16 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     snapshot_id,
                     actor_id=payload.get("actor_id"),
                     confirmation_phrase=payload.get("confirmation_phrase"),
+                )
+                self._json(200, result)
+                return
+            if method == "POST" and tail[1:] == ["apply"]:
+                result = self.server.store.apply_snapshot_to_current(
+                    snapshot_id,
+                    actor_id=payload.get("actor_id"),
+                    expected_current_content_sha256=payload.get(
+                        "expected_current_content_sha256"
+                    ),
                 )
                 self._json(200, result)
                 return

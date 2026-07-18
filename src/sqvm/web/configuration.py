@@ -105,6 +105,7 @@ class PlatformConfigurationStore:
         )
         self.drafts_root = self.root / "drafts"
         self.snapshots_root = self.root / "snapshots"
+        self.current_root = self.root / "current"
         self.active_root = self.root / "active"
         self.pins_root = self.root / "pins"
         self.audit_root = self.root / "audit"
@@ -113,14 +114,294 @@ class PlatformConfigurationStore:
         drafts = self.drafts()
         snapshots = self.snapshots()
         active = self.active_configurations()
+        current = self.current_configurations()
         return {
             "schema_version": "0.2",
             "checkpoint_limit": _MAX_CHECKPOINTS,
             "automatic_snapshot_limit": _MAX_AUTOMATIC_SNAPSHOTS,
             "drafts": drafts,
             "snapshots": snapshots,
+            "current": current,
             "active": active,
         }
+
+    def current_configurations(self) -> list[dict[str, Any]]:
+        """Return one mutable current configuration per managed device.
+
+        Existing installations are migrated lazily from their Active snapshot (or
+        newest managed version) so the previous lifecycle remains readable.
+        """
+
+        devices = {
+            row["device_id"] for row in self.active_configurations()
+        } | {
+            row["device_id"] for row in self.snapshots()
+        } | {
+            row["device_id"] for row in self.drafts()
+        }
+        for device_id in sorted(devices):
+            self._ensure_current_configuration(device_id)
+        if not self.current_root.is_dir():
+            return []
+        rows = []
+        for path in sorted(self.current_root.glob("*.json")):
+            try:
+                payload = self._load_json(path, "current configuration")
+                rows.append(self._current_summary(payload))
+            except Exception:
+                continue
+        rows.sort(key=lambda row: (row["updated_utc"], row["device_id"]), reverse=True)
+        return rows
+
+    def current_configuration(self, device_id: str) -> dict[str, Any]:
+        self._device(device_id)
+        self._ensure_current_configuration(device_id)
+        path = self._current_path(device_id)
+        payload = self._load_json(path, "current configuration")
+        return {
+            **payload,
+            "editor_view": editor_view(),
+            "field_errors": payload.get("validation", {}).get("field_errors", []),
+        }
+
+    def update_current_configuration(
+        self,
+        device_id: str,
+        *,
+        actor_id: str,
+        expected_content_sha256: str,
+        name: str,
+        note: str,
+        editable: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        self._actor(actor_id)
+        self._device(device_id)
+        self._text(name, "name", 1, 96)
+        self._text(note, "note", 0, 1024)
+        payload = self._load_json(self._current_path(device_id), "current configuration")
+        if payload["content_sha256"] != expected_content_sha256:
+            raise ConfigurationManagementError("current configuration changed since it was loaded", status=409)
+        normalized = self._validate_editable_shape(editable)
+        self._assert_system_fields_unchanged(payload["editable"], normalized)
+        write_errors = [
+            row for row in validate_editable(normalized, published=False)
+            if row["code"] in {"additional", "generated"}
+            or "physical" in row["message"].lower()
+        ]
+        if write_errors:
+            raise ConfigurationManagementError(
+                "editable input contains generated or unsupported fields",
+                field_errors=write_errors,
+            )
+        errors = validate_editable(normalized, published=False)
+        payload.update(
+            {
+                "name": name,
+                "note": note,
+                "actor_id": actor_id,
+                "updated_utc": utc_now_text(),
+                "revision": int(payload.get("revision", 0)) + 1,
+                "editable": normalized,
+                "content_sha256": sha256_json(normalized),
+                "validation": {
+                    "status": "valid" if not errors else "invalid",
+                    "field_errors": errors,
+                    "requires_requalification": self._requires_requalification(
+                        {**payload, "editable": normalized}
+                    ),
+                },
+            }
+        )
+        self._atomic_json(self._current_path(device_id), payload)
+        self._audit(
+            "current_configuration_updated",
+            actor_id,
+            {"device_id": device_id, "revision": payload["revision"]},
+        )
+        return self.current_configuration(device_id)
+
+    def initialize_current_calibration(
+        self,
+        device_id: str,
+        *,
+        actor_id: str,
+        expected_content_sha256: str,
+    ) -> dict[str, Any]:
+        self._actor(actor_id)
+        payload = self._load_json(self._current_path(device_id), "current configuration")
+        if payload["content_sha256"] != expected_content_sha256:
+            raise ConfigurationManagementError("current configuration changed since it was loaded", status=409)
+        if payload["editable"].get("calibration_values") != {}:
+            raise ConfigurationManagementError("current calibration is already initialized")
+        editable = copy.deepcopy(payload["editable"])
+        editable["calibration_values"] = initial_typed_calibration()
+        errors = validate_editable(editable, published=False)
+        payload.update(
+            {
+                "actor_id": actor_id,
+                "updated_utc": utc_now_text(),
+                "revision": int(payload.get("revision", 0)) + 1,
+                "editable": editable,
+                "content_sha256": sha256_json(editable),
+                "validation": {
+                    "status": "valid" if not errors else "invalid",
+                    "field_errors": errors,
+                    "requires_requalification": self._requires_requalification(
+                        {**payload, "editable": editable}
+                    ),
+                },
+            }
+        )
+        self._atomic_json(self._current_path(device_id), payload)
+        self._audit("current_calibration_initialized", actor_id, {"device_id": device_id})
+        return self.current_configuration(device_id)
+
+    def snapshot_current_configuration(
+        self,
+        device_id: str,
+        *,
+        actor_id: str,
+        expected_content_sha256: str,
+        name: str,
+        reason: str,
+        keep: bool = False,
+    ) -> dict[str, Any]:
+        self._actor(actor_id)
+        self._device(device_id)
+        self._text(name, "name", 1, 96)
+        self._text(reason, "reason", 1, 1024)
+        current = self._load_json(self._current_path(device_id), "current configuration")
+        if current["content_sha256"] != expected_content_sha256:
+            raise ConfigurationManagementError("current configuration changed since it was loaded", status=409)
+        errors = validate_editable(current["editable"], published=False)
+        if errors:
+            raise ConfigurationManagementError(
+                "current configuration must be valid before saving a snapshot",
+                field_errors=errors,
+            )
+        snapshot_id = str(uuid.uuid4())
+        base_calibration: Mapping[str, Any] = {}
+        source_snapshot_id = current.get("source_snapshot_id")
+        if isinstance(source_snapshot_id, str):
+            base_calibration = self.snapshot(source_snapshot_id)["editable"].get(
+                "calibration_values", {}
+            )
+        editable = copy.deepcopy(current["editable"])
+        try:
+            editable["calibration_values"] = publish_calibration(
+                editable["calibration_values"],
+                base_calibration,
+                manual_run_id=f"manual_{snapshot_id}",
+            )
+        except ValueError as exc:
+            raise ConfigurationManagementError(str(exc)) from exc
+        now = utc_now_text()
+        requires_requalification = self._requires_requalification(current)
+        snapshot = {
+            "schema_version": "0.2",
+            "artifact_type": "platform_configuration_snapshot",
+            "artifact_version": "0.2",
+            "snapshot_id": snapshot_id,
+            "state_id": snapshot_id,
+            "device_id": device_id,
+            "name": name,
+            "reason": reason,
+            "actor_id": actor_id,
+            "published_utc": now,
+            "status": "published",
+            "keep": bool(keep),
+            "parent": current["parent"],
+            "readonly": current["readonly"],
+            "editable": editable,
+            "content_sha256": sha256_json(editable),
+            "requires_requalification": requires_requalification,
+            "experiment_eligible": not requires_requalification,
+        }
+        document_errors = validate_document(snapshot)
+        if document_errors:
+            raise ConfigurationManagementError(
+                "snapshot document is invalid", field_errors=document_errors
+            )
+        directory = self.snapshots_root / snapshot_id
+        directory.mkdir(parents=True, exist_ok=False)
+        self._atomic_json(directory / "snapshot.json", snapshot)
+        if keep:
+            self._pin(snapshot_id, actor_id)
+
+        current_editable = copy.deepcopy(snapshot["editable"])
+        current_editable["calibration_values"] = draftify_calibration(
+            snapshot["editable"]["calibration_values"]
+        )
+        current.update(
+            {
+                "actor_id": actor_id,
+                "updated_utc": now,
+                "revision": int(current.get("revision", 0)) + 1,
+                "source_snapshot_id": snapshot_id,
+                "parent": self._base_reference(snapshot),
+                "editable": current_editable,
+                "content_sha256": sha256_json(current_editable),
+                "validation": {
+                    "status": "valid",
+                    "field_errors": [],
+                    "requires_requalification": False,
+                },
+            }
+        )
+        self._atomic_json(self._current_path(device_id), current)
+        self._audit(
+            "current_snapshot_saved",
+            actor_id,
+            {"device_id": device_id, "snapshot_id": snapshot_id},
+        )
+        self._prune_automatic_snapshots(device_id)
+        return self.snapshot(snapshot_id)
+
+    def apply_snapshot_to_current(
+        self,
+        snapshot_id: str,
+        *,
+        actor_id: str,
+        expected_current_content_sha256: str,
+    ) -> dict[str, Any]:
+        self._actor(actor_id)
+        snapshot = self.snapshot(snapshot_id)
+        current = self._load_json(
+            self._current_path(snapshot["device_id"]), "current configuration"
+        )
+        if current["content_sha256"] != expected_current_content_sha256:
+            raise ConfigurationManagementError("current configuration changed since it was loaded", status=409)
+        editable = copy.deepcopy(snapshot["editable"])
+        editable["calibration_values"] = draftify_calibration(
+            snapshot["editable"]["calibration_values"]
+        )
+        errors = validate_editable(editable, published=False)
+        current.update(
+            {
+                "name": snapshot["name"],
+                "note": f"从快照 {snapshot_id} 恢复：{snapshot.get('reason', '')}".rstrip("："),
+                "actor_id": actor_id,
+                "updated_utc": utc_now_text(),
+                "revision": int(current.get("revision", 0)) + 1,
+                "source_snapshot_id": snapshot_id,
+                "parent": self._base_reference(snapshot),
+                "readonly": copy.deepcopy(snapshot["readonly"]),
+                "editable": editable,
+                "content_sha256": sha256_json(editable),
+                "validation": {
+                    "status": "valid" if not errors else "invalid",
+                    "field_errors": errors,
+                    "requires_requalification": False,
+                },
+            }
+        )
+        self._atomic_json(self._current_path(snapshot["device_id"]), current)
+        self._audit(
+            "snapshot_applied_to_current",
+            actor_id,
+            {"device_id": snapshot["device_id"], "snapshot_id": snapshot_id},
+        )
+        return self.current_configuration(snapshot["device_id"])
 
     def drafts(self) -> list[dict[str, Any]]:
         if not self.drafts_root.is_dir():
@@ -824,7 +1105,7 @@ class PlatformConfigurationStore:
         raise ConfigurationManagementError("base configuration has no editable sections")
 
     def _readonly_sections(self, base: Mapping[str, Any]) -> dict[str, Any]:
-        if base.get("artifact_type") == "platform_configuration_snapshot":
+        if isinstance(base.get("readonly"), Mapping):
             return copy.deepcopy(dict(base["readonly"]))
         return {
             "device_ref": copy.deepcopy(base.get("device_ref")),
@@ -834,7 +1115,9 @@ class PlatformConfigurationStore:
     def _base_reference(self, base: Mapping[str, Any]) -> dict[str, Any]:
         editable = self._editable_sections(base)
         return {
-            "configuration_id": base.get("snapshot_id") or base.get("configuration_id"),
+            "configuration_id": base.get("snapshot_id")
+            or base.get("current_id")
+            or base.get("configuration_id"),
             "state_id": base.get("state_id"),
             "content_sha256": base.get("content_sha256") or sha256_json(editable),
             "control_values_sha256": sha256_json(editable["control_values"]),
@@ -910,7 +1193,7 @@ class PlatformConfigurationStore:
             self.audit_root.resolve(),
         }
         seen: set[Path] = set()
-        roots = [self.drafts_root, self.snapshots_root]
+        roots = [self.current_root, self.drafts_root, self.snapshots_root]
         if output.is_dir():
             roots.append(output)
         for path in (item for root in roots if root.is_dir() for item in root.rglob("*.json")):
@@ -970,6 +1253,108 @@ class PlatformConfigurationStore:
             "source_candidate": payload.get("source_candidate"),
         }
 
+    def _current_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        qagents = payload.get("editable", {}).get("calibration_values", {}).get(
+            "qagents", {}
+        )
+        frequencies = {
+            target: row.get("reference_frequency_authority", {}).get(
+                "reference_frequency_GHz"
+            )
+            for target, row in qagents.items()
+            if isinstance(row, Mapping)
+            and isinstance(row.get("reference_frequency_authority"), Mapping)
+        }
+        return {
+            "current_id": payload["current_id"],
+            "device_id": payload["device_id"],
+            "name": payload["name"],
+            "note": payload["note"],
+            "updated_utc": payload["updated_utc"],
+            "revision": payload["revision"],
+            "content_sha256": payload["content_sha256"],
+            "validation_status": payload["validation"]["status"],
+            "requires_requalification": payload["validation"].get(
+                "requires_requalification", True
+            ),
+            "source_snapshot_id": payload.get("source_snapshot_id"),
+            "reference_frequencies_GHz": frequencies,
+        }
+
+    def _ensure_current_configuration(self, device_id: str) -> None:
+        self._device(device_id)
+        path = self.current_root / f"{device_id}.json"
+        if path.is_file():
+            return
+        base: Mapping[str, Any] | None = None
+        active = next(
+            (
+                row for row in self.active_configurations()
+                if row.get("device_id") == device_id
+            ),
+            None,
+        )
+        if active:
+            try:
+                base = self.snapshot(active["snapshot_id"])
+            except ConfigurationManagementError:
+                base = None
+        if base is None:
+            newest_snapshot = next(
+                (row for row in self.snapshots() if row["device_id"] == device_id),
+                None,
+            )
+            if newest_snapshot:
+                base = self.snapshot(newest_snapshot["snapshot_id"])
+        if base is None:
+            newest_draft = next(
+                (row for row in self.drafts() if row["device_id"] == device_id),
+                None,
+            )
+            if newest_draft:
+                base = self.draft(newest_draft["draft_id"])
+        if base is None:
+            return
+        editable = self._editable_sections(base)
+        editable["calibration_values"] = draftify_calibration(
+            editable.get("calibration_values", {})
+        )
+        errors = validate_editable(editable, published=False)
+        now = utc_now_text()
+        payload = {
+            "schema_version": "0.3",
+            "artifact_type": "platform_configuration_current",
+            "artifact_version": "0.1",
+            "current_id": device_id,
+            "device_id": device_id,
+            "name": base.get("name") or f"{device_id} 当前配置",
+            "note": "由现有配置版本迁移生成",
+            "actor_id": "system.bootstrap",
+            "created_utc": now,
+            "updated_utc": now,
+            "revision": 1,
+            "source_snapshot_id": base.get("snapshot_id"),
+            "parent": self._base_reference(base),
+            "readonly": self._readonly_sections(base),
+            "editable": editable,
+            "content_sha256": sha256_json(editable),
+            "validation": {
+                "status": "valid" if not errors else "invalid",
+                "field_errors": errors,
+                "requires_requalification": self._requires_requalification(
+                    {"parent": self._base_reference(base), "editable": editable}
+                ),
+            },
+        }
+        self._atomic_json(path, payload)
+
+    def _current_path(self, device_id: str) -> Path:
+        self._device(device_id)
+        path = self.current_root / f"{device_id}.json"
+        if not path.is_file():
+            raise ConfigurationManagementError("current configuration not found", status=404)
+        return path
+
     def _draft_path(self, draft_id: str) -> Path:
         _uuid(draft_id, "draft_id")
         path = self.drafts_root / draft_id / "draft.json"
@@ -983,6 +1368,11 @@ class PlatformConfigurationStore:
         if not path.is_file():
             raise ConfigurationManagementError("snapshot not found", status=404)
         return path
+
+    def _device(self, value: str) -> str:
+        if not isinstance(value, str) or _DEVICE_ID.fullmatch(value) is None:
+            raise ConfigurationManagementError("device_id is invalid")
+        return value
 
     def _actor(self, value: str) -> str:
         if not isinstance(value, str) or _ACTOR_ID.fullmatch(value) is None:

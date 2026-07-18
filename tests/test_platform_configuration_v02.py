@@ -195,6 +195,54 @@ def test_draft_update_rejects_stale_content_hash(platform_root: Path):
     assert captured.value.status == 409
 
 
+def test_current_configuration_saves_snapshots_and_restores_versions(platform_root: Path):
+    store, original_snapshot = _published_store(platform_root)
+    current = store.current_configuration("demo_2q1c2r")
+    assert current["artifact_type"] == "platform_configuration_current"
+    assert current["source_snapshot_id"] == original_snapshot["snapshot_id"]
+
+    editable = copy.deepcopy(current["editable"])
+    editable["calibration_values"]["qagents"]["Q1"][
+        "reference_frequency_authority"
+    ]["reference_frequency_GHz"] = 5.03125
+    current = store.update_current_configuration(
+        "demo_2q1c2r",
+        actor_id="project.manager",
+        expected_content_sha256=current["content_sha256"],
+        name="Current working configuration",
+        note="direct save",
+        editable=editable,
+    )
+    assert current["validation"]["status"] == "valid"
+    assert current["revision"] == 2
+
+    saved = store.snapshot_current_configuration(
+        "demo_2q1c2r",
+        actor_id="project.manager",
+        expected_content_sha256=current["content_sha256"],
+        name="Frequency checkpoint",
+        reason="retain calibrated frequency",
+    )
+    assert saved["editable"]["calibration_values"]["qagents"]["Q1"][
+        "reference_frequency_authority"
+    ]["reference_frequency_GHz"] == pytest.approx(5.03125)
+    current = store.current_configuration("demo_2q1c2r")
+    assert current["source_snapshot_id"] == saved["snapshot_id"]
+
+    restored = store.apply_snapshot_to_current(
+        original_snapshot["snapshot_id"],
+        actor_id="project.manager",
+        expected_current_content_sha256=current["content_sha256"],
+    )
+    assert restored["source_snapshot_id"] == original_snapshot["snapshot_id"]
+    assert restored["editable"]["calibration_values"]["qagents"]["Q1"][
+        "reference_frequency_authority"
+    ]["reference_frequency_GHz"] == pytest.approx(5.0)
+    assert store.snapshot(saved["snapshot_id"])["content_sha256"] == saved[
+        "content_sha256"
+    ]
+
+
 def test_draft_diff_uses_initial_checkpoint_and_groups_editable_changes(platform_root: Path):
     store, snapshot = _published_store(platform_root)
     draft = store.create_draft(snapshot, actor_id="project.manager", name="Workbench diff")
