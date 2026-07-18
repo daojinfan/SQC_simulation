@@ -426,7 +426,16 @@ function renderServerDiff(result) {
     return all;
   }, {});
   const summary = `<div class="diff-summary">${fact("变更字段", result.changed_count ?? changes.length)}${fact("控制链变更", result.control_changed ? "是" : "否")}${fact("重新准入", result.requires_requalification ? "需要" : "不需要")}</div>`;
-  return `${summary}<div class="diff-list">${Object.entries(grouped).map(([group, rows]) => `<div class="diff-group"><strong>${esc(group)}（${rows.length}）</strong>${rows.map((row) => `<span class="mono">${esc(normalizeFieldPath(row.path || ""))}<br><small>${esc(String(row.before ?? "-"))} -> ${esc(String(row.after ?? "-"))}</small></span>`).join("")}</div>`).join("")}</div>`;
+  return `${summary}<div class="diff-list">${Object.entries(grouped).map(([group, rows]) => `<details class="diff-group"><summary><strong>${esc(diffGroupLabel(group))}</strong><span>${rows.length} 个字段</span></summary><div class="diff-group-rows">${rows.map((row) => `<span class="mono">${esc(normalizeFieldPath(row.path || ""))}<br><small>${esc(diffValue(row.before))} -> ${esc(diffValue(row.after))}</small></span>`).join("")}</div></details>`).join("")}</div>`;
+}
+
+function diffGroupLabel(group) {
+  return { control: "控制链", other: "其他" }[group] || group;
+}
+
+function diffValue(value) {
+  if (value === undefined || value === null) return "-";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
 function localDiffSummary(item) {
@@ -450,7 +459,7 @@ function couplerGateEditor(gate, settings, mappers) {
 
 function mapperObjectGroups(mappers, type, target) {
   const rows = Object.entries(mappers).filter(([, row]) => row.mapper_type === type && row.target === target);
-  return rows.length ? `<div class="setting-grid">${rows.map(([id, row]) => mapperEditor(id, row)).join("")}</div>` : uncalibrated(`未校准：尚无 ${type} 记录`);
+  return rows.length ? `<div class="setting-grid mapper-grid">${rows.map(([id, row]) => mapperEditor(id, row)).join("")}</div>` : uncalibrated(`未校准：尚无 ${type} 记录`);
 }
 
 function referenceEvidence(reference) {

@@ -390,3 +390,9 @@ def test_workbench_diff_uses_backend_requalification_field():
     source = (ROOT / "src" / "sqvm" / "web" / "static" / "app.js").read_text("utf-8")
     assert "result.requires_requalification" in source
     assert "result.requalification ?" not in source
+    assert '<details class="diff-group">' in source
+    assert 'class="setting-grid mapper-grid"' in source
+
+    styles = (ROOT / "src" / "sqvm" / "web" / "static" / "styles.css").read_text("utf-8")
+    assert ".field-errors[hidden] { display: none; }" in styles
+    assert ".mapper-grid { grid-template-columns: minmax(0, 1fr); }" in styles
