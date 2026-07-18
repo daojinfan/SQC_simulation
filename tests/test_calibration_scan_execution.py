@@ -11,8 +11,8 @@ import pytest
 
 import sqvm.runtime.calibration_scan as scan_module
 from sqvm.circuits import QCISCircuit, compile_circuit
-from sqvm.evolution.stage51_authority import admit_physics_authority
 from sqvm.evolution.stage51_models import Stage51NumericalResult
+from sqvm.runtime.calibration_model import load_calibration_model_authority
 from sqvm.runtime.calibration_scan import (
     CalibrationScanExecutionError,
     calibration_scan_policy,
@@ -32,6 +32,19 @@ def test_calibration_scan_policy_is_local_and_has_operational_worker_budget():
     assert policy["numerical_replay_policy"] == "deferred_batch_review"
     assert policy["formal_scale_qualified"] is False
     assert policy["hardware_measurement"] is False
+
+
+def test_calibration_model_authority_binds_static_frequency_evidence():
+    authority = load_calibration_model_authority(ROOT)
+
+    assert authority["model"]["model_id"] == "effective_two_qutrit_v1"
+    assert authority["model"]["q1"]["f01_GHz"] == pytest.approx(5.193479909897604)
+    assert authority["model"]["q2"]["f01_GHz"] == pytest.approx(5.331633051009526)
+    assert authority["claim"] == {
+        "formal_scale_qualified": False,
+        "hardware_measurement": False,
+        "scope": "local_simulator_calibration_only",
+    }
 
 
 def test_calibration_scan_admission_enforces_policy_timeout(monkeypatch):
@@ -95,13 +108,14 @@ def test_calibration_scan_artifact_round_trip_without_numerical_replay(
         _context(),
     )
 
-    def fake_worker(coefficients, context, *, timeout_s):
+    def fake_worker(coefficients, repository_root, *, timeout_s):
         assert timeout_s == 600.0
+        assert Path(repository_root).resolve() == ROOT
         edges = np.frombuffer(
             (coefficients.artifact_root / "arrays" / "time_edge_ns.bin").read_bytes(),
             dtype="<f8",
         ).copy()
-        state = np.zeros(27, dtype="<c16")
+        state = np.zeros(9, dtype="<c16")
         state[0] = 1.0
         zeros = np.zeros(edges.size, dtype="<f8")
         populations = {
@@ -110,7 +124,7 @@ def test_calibration_scan_artifact_round_trip_without_numerical_replay(
             "001": zeros.copy(),
             "101": zeros.copy(),
         }
-        authority, _binding = admit_physics_authority(context)
+        authority = load_calibration_model_authority(ROOT)
         return Stage51NumericalResult(
             edges,
             state,
@@ -120,12 +134,14 @@ def test_calibration_scan_artifact_round_trip_without_numerical_replay(
             zeros.copy(),
             MappingProxyType({label: "A" * 64 for label in populations}),
             MappingProxyType({
+                "engine_id": authority["model"]["model_id"],
+                "model_authority_id": authority["model_authority_id"],
                 "solver_spec": dict(authority["solver"]),
                 "runtime_s": 0.0,
             }),
         )
 
-    monkeypatch.setattr(scan_module, "execute_stage51_worker", fake_worker)
+    monkeypatch.setattr(scan_module, "execute_calibration_model_worker", fake_worker)
     handle = run_calibration_scan_point(
         compiled.compilation,
         compiled.circuit.circuit_id,

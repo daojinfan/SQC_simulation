@@ -1,4 +1,4 @@
-"""Local calibration-scan execution without synchronous qualification replay."""
+"""Local effective-model calibration scans without synchronous replay."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from sqvm.control.stage4_1_compile import (
 from sqvm.control.stage4_1_context import production_parameterized_control_context
 from sqvm.control.stage4_1_verify import verify_parameterized_control_artifact
 from sqvm.evolution.stage51_artifacts import ARRAY_SPECS
-from sqvm.evolution.stage51_authority import admit_physics_authority, admit_verified_control
+from sqvm.evolution.stage51_authority import admit_verified_control
 from sqvm.evolution.stage51_coefficients import (
     build_evolution_coefficient_plan,
     publish_evolution_coefficient_artifact,
@@ -31,13 +31,18 @@ from sqvm.evolution.stage51_coefficients import (
 )
 from sqvm.evolution.stage51_context import production_stage51_physics_context
 from sqvm.evolution.stage51_models import Stage51NumericalResult
-from sqvm.evolution.stage51_worker import _validate_worker_result, execute_stage51_worker
+from sqvm.evolution.stage51_worker import _validate_worker_result
 from sqvm.hamiltonian.provenance import canonical_json_bytes, raw_file_sha256
 from sqvm.qcis import (
     QCISCompilation,
     verify_coefficient_inventory,
     verify_compilation,
     verify_drive_event_inventory,
+)
+from sqvm.runtime.calibration_model import (
+    MODEL_AUTHORITY_PATH,
+    execute_calibration_model_worker,
+    load_calibration_model_authority,
 )
 from sqvm.runtime.storage import (
     atomic_publish,
@@ -64,7 +69,7 @@ _RESULT_CHECKS = (
 )
 _POINT_CHECKS = (
     "qcis_verified",
-    "control_and_solver_authorities_verified",
+    "control_and_model_authorities_verified",
     "worker_result_structurally_verified",
     "claim_boundary_explicit",
 )
@@ -95,7 +100,7 @@ def run_calibration_scan_point(
     *,
     timeout_s: float = 600.0,
 ) -> CalibrationScanHandle:
-    """Run one local-simulation point with one isolated Stage 5.1 worker."""
+    """Run one point through Stage 4.1 and an isolated effective-model worker."""
 
     root = _repository_root(repository_root)
     policy = _load_policy(root)
@@ -196,10 +201,8 @@ def _run_worker(control, staging: Path, root: Path, timeout_s: float):
         stage51_root / "coefficient",
         control,
     )
-    return coefficients, execute_stage51_worker(
-        coefficients,
-        context,
-        timeout_s=timeout_s,
+    return coefficients, execute_calibration_model_worker(
+        coefficients, root, timeout_s=timeout_s
     )
 
 
@@ -212,6 +215,7 @@ def _write_scan_result(
     root: Path,
 ) -> Mapping[str, str]:
     target.mkdir()
+    model_authority = load_calibration_model_authority(root)
     arrays = {
         "initial_state": numerical.initial_state,
         "final_state": numerical.final_state,
@@ -256,7 +260,9 @@ def _write_scan_result(
         "coefficient_plan_id": coefficients.coefficient_plan_id,
         "coefficient_manifest_sha256": coefficients.manifest_sha256,
         "coefficient_receipt_sha256": coefficients.receipt_sha256,
-        "physics_authority_id": coefficients.physics_authority_id,
+        "control_adapter_physics_authority_id": coefficients.physics_authority_id,
+        "model_authority_id": model_authority["model_authority_id"],
+        "model_authority_sha256": raw_file_sha256(root / MODEL_AUTHORITY_PATH),
         "policy_sha256": raw_file_sha256(root / POLICY_PATH),
         "edge_time_ns": _plain(numerical.edge_time_ns.tolist()),
         "projector_sha256": _plain(numerical.projector_sha256),
@@ -341,6 +347,7 @@ def _execution_evidence(
             "coefficient_plan_id": coefficients.coefficient_plan_id,
             "manifest_sha256": coefficients.manifest_sha256,
             "receipt_sha256": coefficients.receipt_sha256,
+            "role": "verified_control_array_adapter_only",
         },
         "result_binding": dict(result_binding),
         "claim": {
@@ -348,6 +355,7 @@ def _execution_evidence(
             "hardware_measurement": False,
             "formal_scale_qualified": False,
             "independent_numerical_replay": False,
+            "evolution_model": "effective_two_qutrit_v1",
             "calibration_update_scope": "simulator_configuration_only",
         },
     }
@@ -434,6 +442,7 @@ def _verify_scan_tree(
         "hardware_measurement": False,
         "formal_scale_qualified": False,
         "independent_numerical_replay": False,
+        "evolution_model": "effective_two_qutrit_v1",
         "calibration_update_scope": "simulator_configuration_only",
     }
     if (
@@ -515,6 +524,7 @@ def _verify_scan_tree(
         stage51_context,
         control,
     )
+    model_authority = load_calibration_model_authority(root)
     result_id = _verify_scan_result(
         point_root / "stage51" / "evolution",
         coefficients,
@@ -522,6 +532,7 @@ def _verify_scan_tree(
         compilation,
         policy,
         root,
+        model_authority,
     )
     if evidence.get("result_binding") != {
         "result_id": result_id,
@@ -542,6 +553,7 @@ def _verify_scan_result(
     compilation,
     policy: Mapping[str, Any],
     root: Path,
+    model_authority: Mapping[str, Any],
 ) -> str:
     expected_files = {
         RESULT_NAME,
@@ -625,7 +637,9 @@ def _verify_scan_result(
         "coefficient_plan_id",
         "coefficient_manifest_sha256",
         "coefficient_receipt_sha256",
-        "physics_authority_id",
+        "control_adapter_physics_authority_id",
+        "model_authority_id",
+        "model_authority_sha256",
         "policy_sha256",
         "edge_time_ns",
         "projector_sha256",
@@ -645,7 +659,12 @@ def _verify_scan_result(
         or result.get("coefficient_plan_id") != coefficients.coefficient_plan_id
         or result.get("coefficient_manifest_sha256") != coefficients.manifest_sha256
         or result.get("coefficient_receipt_sha256") != coefficients.receipt_sha256
-        or result.get("physics_authority_id") != coefficients.physics_authority_id
+        or result.get("control_adapter_physics_authority_id")
+        != coefficients.physics_authority_id
+        or result.get("model_authority_id")
+        != model_authority["model_authority_id"]
+        or result.get("model_authority_sha256")
+        != raw_file_sha256(root / MODEL_AUTHORITY_PATH)
         or result.get("policy_sha256") != raw_file_sha256(root / POLICY_PATH)
         or result.get("array_inventory_sha256")
         != raw_file_sha256(target / INVENTORY_NAME)
@@ -678,10 +697,15 @@ def _verify_scan_result(
     )
     if not np.array_equal(numerical.edge_time_ns, expected_edges):
         raise CalibrationScanExecutionError("scan result edge time mismatch")
-    authority, _binding = admit_physics_authority(context)
-    if diagnostics.get("solver_spec") != _plain(authority["solver"]):
+    if (
+        diagnostics.get("solver_spec") != _plain(model_authority["solver"])
+        or diagnostics.get("model_authority_id")
+        != model_authority["model_authority_id"]
+        or diagnostics.get("engine_id")
+        != model_authority["model"]["model_id"]
+    ):
         raise CalibrationScanExecutionError("scan solver authority mismatch")
-    _validate_worker_result(numerical, authority["tolerances"])
+    _validate_worker_result(numerical, model_authority["tolerances"])
     expected_manifest = {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "stage_07_calibration_scan_result_manifest",

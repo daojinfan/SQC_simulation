@@ -131,10 +131,11 @@ def run_qubit_spectroscopy_calibration(
 
     run_id = str(uuid.uuid4())
     recommendation_id = str(uuid.uuid4())
-    staging = root / f".s7sp_{run_id[:8]}"
+    staging = target.parent / f".s7sp_{run_id[:8]}"
     if staging.exists():
         raise FileExistsError(f"calibration staging already exists: {staging}")
     staging.mkdir()
+    preserve_staging = False
     try:
         coarse_dataset = run_qubit_spectroscopy(
             request.coarse_request,
@@ -277,7 +278,13 @@ def run_qubit_spectroscopy_calibration(
         }
         receipt_sha256 = write_canonical_new(staging / "receipt.json", receipt)
         _verify_workflow_directory(staging)
-        atomic_publish(staging, target)
+        try:
+            atomic_publish(staging, target)
+        except Exception as exc:
+            preserve_staging = True
+            raise SpectroscopyCalibrationError(
+                f"workflow publication failed; verified staging was preserved at {staging}"
+            ) from exc
         return SpectroscopyCalibrationRun(
             target,
             run_id,
@@ -290,7 +297,11 @@ def run_qubit_spectroscopy_calibration(
             receipt_sha256,
         )
     except Exception:
-        if staging.exists() and staging.resolve().parent == root:
+        if (
+            not preserve_staging
+            and staging.exists()
+            and staging.resolve().parent == target.parent.resolve()
+        ):
             shutil.rmtree(staging)
         raise
 
@@ -355,8 +366,9 @@ def decide_qubit_spectroscopy_calibration(
         raise FileExistsError(f"decision output already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     decision_id = str(uuid.uuid4())
-    staging = root / f".s7sd_{decision_id[:8]}"
+    staging = target.parent / f".s7sd_{decision_id[:8]}"
     staging.mkdir()
+    preserve_staging = False
     try:
         decision_payload = {
             "schema_version": "0.1",
@@ -404,7 +416,13 @@ def decide_qubit_spectroscopy_calibration(
             "parent_calibration_sha256": parent_sha256,
         }
         receipt_sha256 = write_canonical_new(staging / "receipt.json", receipt)
-        atomic_publish(staging, target)
+        try:
+            atomic_publish(staging, target)
+        except Exception as exc:
+            preserve_staging = True
+            raise SpectroscopyCalibrationError(
+                f"decision publication failed; verified staging was preserved at {staging}"
+            ) from exc
         return SpectroscopyCalibrationDecision(
             target,
             decision_id,
@@ -413,7 +431,11 @@ def decide_qubit_spectroscopy_calibration(
             receipt_sha256,
         )
     except Exception:
-        if staging.exists() and staging.resolve().parent == root:
+        if (
+            not preserve_staging
+            and staging.exists()
+            and staging.resolve().parent == target.parent.resolve()
+        ):
             shutil.rmtree(staging)
         raise
 

@@ -1,0 +1,63 @@
+{
+  "artifact_type": "stage_07_calibration_model_authority",
+  "artifact_version": "0.1",
+  "claim": {
+    "formal_scale_qualified": false,
+    "hardware_measurement": false,
+    "scope": "local_simulator_calibration_only"
+  },
+  "clock": {
+    "dt_ns": 0.5
+  },
+  "model": {
+    "coupling_GHz": 0.0,
+    "idle_flux_phi0": {
+      "c": 0.27,
+      "q1": 0.1,
+      "q2": 0.0
+    },
+    "model_id": "effective_two_qutrit_v1",
+    "q1": {
+      "anharmonicity_GHz": -0.25,
+      "f01_GHz": 5.193479909897604
+    },
+    "q2": {
+      "anharmonicity_GHz": -0.25,
+      "f01_GHz": 5.331633051009526
+    },
+    "tensor_order": [
+      "q1",
+      "q2"
+    ],
+    "truncation": [
+      3,
+      3
+    ]
+  },
+  "model_authority_id": "2C73792FA2D12FF05FCA6F323BDEC6790DB10DF8CB6DDE663CCF95E70FB402F5",
+  "schema_version": "0.1",
+  "solver": {
+    "atol": 1e-12,
+    "max_step_ns": 0.025,
+    "method": "vern9",
+    "normalize_output": false,
+    "nsteps": 100000,
+    "qutip_version_spec": ">=5.1,<5.4",
+    "rtol": 1e-10
+  },
+  "sources": [
+    {
+      "path": "configs/devices/2q1c2r.yaml",
+      "raw_sha256": "CA300E0AE08DCBBE7810F92AFDDFD713C6928A2E04E4A853FCE418B181E18D3F"
+    },
+    {
+      "path": "docs/decisions/2026-07-12-stage5-qutip-evolution-freeze-first.md",
+      "raw_sha256": "892A2A2918A2ACD8A7B128B63ED76A64432C7E2B22EFDC377C4B382F1FEE72FF"
+    }
+  ],
+  "status": "local_simulation_approved",
+  "tolerances": {
+    "norm_error": 1e-09,
+    "population_bound": 1e-10
+  }
+}
