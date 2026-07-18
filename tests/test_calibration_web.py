@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import shutil
@@ -303,6 +304,37 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
         assert created["source_candidate"]["targets"] == ["Q1", "Q2"]
         management = _http_json(f"{base_url}/api/v1/configuration-management")
         assert len(management["drafts"]) == 1
+
+        stale_payload = {
+            "actor_id": "project.manager",
+            "expected_content_sha256": "0" * 64,
+            "name": created["name"],
+            "note": created["note"],
+            "editable": created["editable"],
+        }
+        with pytest.raises(HTTPError) as captured:
+            _http_json(
+                f"{base_url}/api/v1/drafts/{created['draft_id']}",
+                method="PUT",
+                payload=stale_payload,
+            )
+        assert captured.value.code == 409
+
+        invalid_editable = copy.deepcopy(created["editable"])
+        invalid_editable["control_values"]["dac"]["offset_V"] = 0.0
+        with pytest.raises(HTTPError) as captured:
+            _http_json(
+                f"{base_url}/api/v1/drafts/{created['draft_id']}",
+                method="PUT",
+                payload={
+                    **stale_payload,
+                    "expected_content_sha256": created["content_sha256"],
+                    "editable": invalid_editable,
+                },
+            )
+        assert captured.value.code == 422
+        unchanged = _http_json(f"{base_url}/api/v1/drafts/{created['draft_id']}")
+        assert unchanged["content_sha256"] == created["content_sha256"]
 
         request = Request(
             f"{base_url}/api/v1/drafts/{created['draft_id']}/validate",
