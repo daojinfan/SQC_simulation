@@ -394,6 +394,8 @@ def test_workbench_diff_uses_backend_requalification_field():
     assert 'class="setting-grid mapper-grid"' in source
     assert 'validation.status === "valid"' in source
     assert "配置校验通过" in source
+    assert 'aria-label="${esc(accessibleLabel)}"' in source
+    assert '<label for="${esc(id)}">' in source
 
     styles = (ROOT / "src" / "sqvm" / "web" / "static" / "styles.css").read_text("utf-8")
     assert ".field-errors[hidden] { display: none; }" in styles

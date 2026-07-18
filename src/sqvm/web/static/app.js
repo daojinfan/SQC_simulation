@@ -639,10 +639,11 @@ function recordFacts(record, keys = ["setting_id", "mapper_id", "target", "gate_
 }
 
 function textField(label, id, value) { return `<div class="field"><label for="${esc(id)}">${esc(label)}</label><input id="${esc(id)}" value="${esc(value ?? "")}"></div>`; }
-function numberField(label, path, value, step = "any", mode = "") { const input = `<input data-path="${esc(path)}" data-value-type="number" type="number" step="${esc(step)}" value="${esc(value ?? "")}">`; return mode === "inline" ? input : `<div class="field"><label>${esc(label)}</label>${input}</div>`; }
-function selectField(label, path, value, choices) { const unique = [...new Set([value, ...(choices || [])].filter(Boolean))]; return `<div class="field"><label>${esc(label)}</label><select data-path="${esc(path)}" data-value-type="string">${unique.map((entry) => `<option value="${esc(entry)}" ${entry === value ? "selected" : ""}>${esc(entry)}</option>`).join("") || '<option value="">未校准</option>'}</select></div>`; }
+function numberField(label, path, value, step = "any", mode = "") { const id = fieldId(path), accessibleLabel = label || normalizeFieldPath(path); const input = `<input id="${esc(id)}" aria-label="${esc(accessibleLabel)}" data-path="${esc(path)}" data-value-type="number" type="number" step="${esc(step)}" value="${esc(value ?? "")}">`; return mode === "inline" ? input : `<div class="field"><label for="${esc(id)}">${esc(label)}</label>${input}</div>`; }
+function selectField(label, path, value, choices) { const id = fieldId(path), unique = [...new Set([value, ...(choices || [])].filter(Boolean))]; return `<div class="field"><label for="${esc(id)}">${esc(label)}</label><select id="${esc(id)}" aria-label="${esc(label || normalizeFieldPath(path))}" data-path="${esc(path)}" data-value-type="string">${unique.map((entry) => `<option value="${esc(entry)}" ${entry === value ? "selected" : ""}>${esc(entry)}</option>`).join("") || '<option value="">未校准</option>'}</select></div>`; }
 function checkboxField(label, path, value) { return `<label class="check-row"><input data-path="${esc(path)}" data-value-type="boolean" type="checkbox" ${value ? "checked" : ""}> ${esc(label)}</label>`; }
 function arrayField(path, value) { return `<input data-path="${esc(path)}" data-value-type="number-array" value="${esc((value || []).join(", "))}" aria-label="FIR 系数">`; }
+function fieldId(path) { return `field-${String(path).replace(/[^a-zA-Z0-9_-]/g, "-")}`; }
 function uncalibrated(text) { return `<div class="uncalibrated">${status("uninitialized")}<span>${esc(text)}</span></div>`; }
 
 function controlConfigurationView(control) {
