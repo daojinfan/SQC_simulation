@@ -1,0 +1,42 @@
+{
+  "artifact_type": "stage_06_experiment_run_verification_report",
+  "blocking_reasons": [],
+  "checks": [
+    {
+      "name": "payload_inventory_verified",
+      "passed": true
+    },
+    {
+      "name": "event_chain_verified",
+      "passed": true
+    },
+    {
+      "message": "verified",
+      "name": "qcis_replay_verified",
+      "passed": true
+    },
+    {
+      "name": "claim_envelope_verified",
+      "passed": true
+    },
+    {
+      "message": "verified",
+      "name": "dataset_contract_applied",
+      "passed": true
+    }
+  ],
+  "claim_envelope": {
+    "backend_execution": "absent",
+    "calibration_claim": "none",
+    "evidence_class": "compiler_test_fixture",
+    "measurement_payload": null,
+    "observation_model": "absent",
+    "physics_claim": "none",
+    "recommendation_eligible": false
+  },
+  "manifest_sha256": "B0F30B938D4240715FCED2B7BD58840E5C38999441A04EAC5F27616EC41F31DC",
+  "ok": true,
+  "run_id": "22222222-2222-4222-8222-222222222222",
+  "schema_version": "0.2",
+  "status": "completed"
+}

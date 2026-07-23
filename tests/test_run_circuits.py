@@ -434,7 +434,18 @@ def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
     handles = {}
     progress = []
 
-    def fake_scan(_compilation, point_id, output_root, _repository_root, *, timeout_s):
+    def fake_scan(
+        _compilation,
+        point_id,
+        output_root,
+        _repository_root,
+        *,
+        timeout_s,
+        model_configuration,
+        idle_flux_phi0,
+    ):
+        assert model_configuration is None
+        assert idle_flux_phi0 == {"q1": 0.1, "q2": 0.0, "c": 0.27}
         assert timeout_s == 600.0
         root = Path(output_root) / point_id
         root.mkdir()
@@ -494,7 +505,7 @@ def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
     monkeypatch.setattr(
         circuits_module,
         "verify_calibration_scan_point",
-        lambda artifact_root, _compilation, _repository_root: handles[Path(artifact_root).name],
+        lambda artifact_root, _compilation, _repository_root, **_kwargs: handles[Path(artifact_root).name],
     )
     monkeypatch.setattr(
         circuits_module,

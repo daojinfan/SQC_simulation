@@ -174,6 +174,35 @@
       },
       "additionalProperties": false
     },
+    "modeIntegerMap": {
+      "type": "object",
+      "required": ["q1", "c", "q2"],
+      "properties": {
+        "q1": {"type": "integer", "minimum": 1, "maximum": 16},
+        "c": {"type": "integer", "minimum": 1, "maximum": 16},
+        "q2": {"type": "integer", "minimum": 1, "maximum": 16}
+      },
+      "additionalProperties": false
+    },
+    "calibrationSimulationModel": {
+      "type": "object",
+      "required": ["charge_cutoffs", "retained_energy_levels", "convergence_charge_cutoffs", "convergence_retained_energy_levels"],
+      "properties": {
+        "charge_cutoffs": {"$ref": "#/$defs/modeIntegerMap"},
+        "retained_energy_levels": {"$ref": "#/$defs/modeIntegerMap"},
+        "convergence_charge_cutoffs": {"$ref": "#/$defs/modeIntegerMap"},
+        "convergence_retained_energy_levels": {"$ref": "#/$defs/modeIntegerMap"}
+      },
+      "additionalProperties": false
+    },
+    "simulation": {
+      "type": "object",
+      "required": ["calibration_model"],
+      "properties": {
+        "calibration_model": {"$ref": "#/$defs/calibrationSimulationModel"}
+      },
+      "additionalProperties": false
+    },
     "controlValues": {
       "type": "object",
       "required": ["clock", "dac", "lane_order", "lanes", "static_mixing", "idle_flux_phi0", "acceptance"],
@@ -199,7 +228,8 @@
           },
           "additionalProperties": false
         },
-        "acceptance": {"$ref": "#/$defs/acceptance"}
+        "acceptance": {"$ref": "#/$defs/acceptance"},
+        "simulation": {"$ref": "#/$defs/simulation"}
       },
       "additionalProperties": false
     },

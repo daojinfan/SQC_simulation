@@ -1,0 +1,23 @@
+{
+  "blas_threading": [],
+  "packages": {
+    "PyYAML": "6.0.3",
+    "matplotlib": "3.10.9",
+    "nbformat": "5.10.4",
+    "numpy": "2.4.6",
+    "pytest": "9.0.3",
+    "qutip": "5.3.0",
+    "scipy": "1.17.1"
+  },
+  "platform": {
+    "architecture": "64bit",
+    "machine": "AMD64",
+    "release": "10",
+    "system": "Windows"
+  },
+  "python": {
+    "implementation": "CPython",
+    "version": "3.12.10"
+  },
+  "schema_version": "0.1"
+}

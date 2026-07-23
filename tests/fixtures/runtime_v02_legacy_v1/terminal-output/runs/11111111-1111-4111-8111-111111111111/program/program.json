@@ -1,0 +1,14 @@
+{
+  "bindings": {
+    "drive_frequency": {
+      "scan_ref": "drive_frequency",
+      "unit": "GHz"
+    }
+  },
+  "instruction_set_id": "qcis_stage7_calibration_v3",
+  "program_schema_version": "0.3",
+  "source": "PLSXY Q1 0 -1 2 1 $drive_frequency 0 0 2\n",
+  "source_format": "qcis_template",
+  "template_id": "platform_qcis_compile_smoke_v1",
+  "template_sha256": "096E6632CA2E5E82AB7B15B89AB5039E603C8E5253FF7141C937574391A8FC18"
+}

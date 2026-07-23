@@ -63,7 +63,13 @@ __all__ = [
     "verify_qubit_spectroscopy_calibration",
     "verify_qubit_spectroscopy_calibration_decision",
     "CalibrationExperimentError",
+    "CalibrationCandidateUpdate",
+    "SpectroscopyRun",
+    "SpectroscopyParameterUpdate",
+    "apply_calibration_candidates_to_current_configuration",
+    "apply_spectroscopy_candidates_to_current_configuration",
     "run_active_qubit_spectroscopy_calibration",
+    "run_spectroscopy",
 ]
 
 __version__ = "0.1.0"
@@ -71,17 +77,35 @@ __version__ = "0.1.0"
 
 def __getattr__(name: str):
     if name in {
+        "CalibrationCandidateUpdate",
         "CalibrationExperimentError",
+        "SpectroscopyRun",
+        "SpectroscopyParameterUpdate",
+        "apply_calibration_candidates_to_current_configuration",
+        "apply_spectroscopy_candidates_to_current_configuration",
         "run_active_qubit_spectroscopy_calibration",
+        "run_spectroscopy",
     }:
         from sqvm.calibration.api import (
+            CalibrationCandidateUpdate,
             CalibrationExperimentError,
+            SpectroscopyRun,
+            SpectroscopyParameterUpdate,
+            apply_calibration_candidates_to_current_configuration,
+            apply_spectroscopy_candidates_to_current_configuration,
             run_active_qubit_spectroscopy_calibration,
+            run_spectroscopy,
         )
 
         exports = {
+            "CalibrationCandidateUpdate": CalibrationCandidateUpdate,
             "CalibrationExperimentError": CalibrationExperimentError,
+            "SpectroscopyRun": SpectroscopyRun,
+            "SpectroscopyParameterUpdate": SpectroscopyParameterUpdate,
+            "apply_calibration_candidates_to_current_configuration": apply_calibration_candidates_to_current_configuration,
+            "apply_spectroscopy_candidates_to_current_configuration": apply_spectroscopy_candidates_to_current_configuration,
             "run_active_qubit_spectroscopy_calibration": run_active_qubit_spectroscopy_calibration,
+            "run_spectroscopy": run_spectroscopy,
         }
         globals().update(exports)
         return exports[name]

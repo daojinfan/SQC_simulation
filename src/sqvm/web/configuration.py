@@ -9,18 +9,26 @@ import math
 import os
 from pathlib import Path
 import re
-import shutil
+import stat
 from typing import Any, Mapping, Sequence
 import uuid
 
 import yaml
 
+from sqvm.candidate_protocol import (
+    CalibrationCandidateProtocolError,
+    candidate_values_equal,
+    normalize_calibration_candidate,
+    set_parameter_value,
+    value_at_parameter_path,
+)
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.qcis.canonical import sha256_json
 from sqvm.runtime.journal import utc_now_text
 from sqvm.web.configuration_schema import (
     draftify_calibration,
     editor_view,
+    initial_simulation_configuration,
     initial_typed_calibration,
     load_frozen_schema,
     publish_calibration,
@@ -194,6 +202,14 @@ class PlatformConfigurationStore:
                 field_errors=write_errors,
             )
         errors = validate_editable(normalized, published=False)
+        if errors:
+            raise ConfigurationManagementError(
+                "current configuration must be valid before it can become effective",
+                field_errors=errors,
+            )
+        source_candidate = _retained_candidate_source(
+            payload.get("source_candidate"), normalized
+        )
         payload.update(
             {
                 "name": name,
@@ -203,6 +219,7 @@ class PlatformConfigurationStore:
                 "revision": int(payload.get("revision", 0)) + 1,
                 "editable": normalized,
                 "content_sha256": sha256_json(normalized),
+                "source_candidate": source_candidate,
                 "validation": {
                     "status": "valid" if not errors else "invalid",
                     "field_errors": errors,
@@ -217,6 +234,14 @@ class PlatformConfigurationStore:
             "current_configuration_updated",
             actor_id,
             {"device_id": device_id, "revision": payload["revision"]},
+        )
+        self.snapshot_current_configuration(
+            device_id,
+            actor_id=actor_id,
+            expected_content_sha256=payload["content_sha256"],
+            name=name,
+            reason="当前配置保存后自动生效",
+            _activate=True,
         )
         return self.current_configuration(device_id)
 
@@ -243,6 +268,7 @@ class PlatformConfigurationStore:
                 "revision": int(payload.get("revision", 0)) + 1,
                 "editable": editable,
                 "content_sha256": sha256_json(editable),
+                "source_candidate": None,
                 "validation": {
                     "status": "valid" if not errors else "invalid",
                     "field_errors": errors,
@@ -254,6 +280,90 @@ class PlatformConfigurationStore:
         )
         self._atomic_json(self._current_path(device_id), payload)
         self._audit("current_calibration_initialized", actor_id, {"device_id": device_id})
+        if not errors:
+            self.snapshot_current_configuration(
+                device_id,
+                actor_id=actor_id,
+                expected_content_sha256=payload["content_sha256"],
+                name=payload["name"],
+                reason="校准配置初始化后自动生效",
+                _activate=True,
+            )
+        return self.current_configuration(device_id)
+
+    def apply_candidates_to_current_configuration(
+        self,
+        device_id: str,
+        *,
+        actor_id: str,
+        expected_content_sha256: str,
+        experiment_run_id: str,
+        recommendation_id: str,
+        candidates: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Apply verified calibration candidates to the mutable current configuration."""
+
+        self._actor(actor_id)
+        self._device(device_id)
+        if not candidates:
+            raise ConfigurationManagementError("at least one candidate is required")
+        payload = self._load_json(self._current_path(device_id), "current configuration")
+        if payload["content_sha256"] != expected_content_sha256:
+            raise ConfigurationManagementError(
+                "current configuration changed since it was loaded", status=409
+            )
+        editable = copy.deepcopy(payload["editable"])
+        normalized_candidates = _apply_candidate_groups(editable, candidates)
+        errors = validate_editable(editable, published=False)
+        if errors:
+            raise ConfigurationManagementError(
+                "candidate update would make current configuration invalid",
+                field_errors=errors,
+            )
+        source_candidate = _candidate_source(
+            experiment_run_id,
+            recommendation_id,
+            normalized_candidates,
+            editable,
+        )
+        payload.update(
+            {
+                "actor_id": actor_id,
+                "updated_utc": utc_now_text(),
+                "revision": int(payload.get("revision", 0)) + 1,
+                "editable": editable,
+                "content_sha256": sha256_json(editable),
+                "source_candidate": source_candidate,
+                "validation": {
+                    "status": "valid",
+                    "field_errors": [],
+                    "requires_requalification": self._requires_requalification(
+                        {**payload, "editable": editable}
+                    ),
+                },
+            }
+        )
+        self._atomic_json(self._current_path(device_id), payload)
+        self._audit(
+            "experiment_candidates_applied_to_current",
+            actor_id,
+            {
+                "device_id": device_id,
+                "experiment_run_id": experiment_run_id,
+                "recommendation_id": recommendation_id,
+                "candidate_ids": source_candidate["candidate_ids"],
+                "targets": source_candidate["targets"],
+                "content_sha256": payload["content_sha256"],
+            },
+        )
+        self.snapshot_current_configuration(
+            device_id,
+            actor_id=actor_id,
+            expected_content_sha256=payload["content_sha256"],
+            name=payload["name"],
+            reason=f"实验 {experiment_run_id} 的校准候选保存后自动生效",
+            _activate=True,
+        )
         return self.current_configuration(device_id)
 
     def snapshot_current_configuration(
@@ -265,6 +375,7 @@ class PlatformConfigurationStore:
         name: str,
         reason: str,
         keep: bool = False,
+        _activate: bool = False,
     ) -> dict[str, Any]:
         self._actor(actor_id)
         self._device(device_id)
@@ -287,16 +398,22 @@ class PlatformConfigurationStore:
                 "calibration_values", {}
             )
         editable = copy.deepcopy(current["editable"])
+        editable = _with_simulation_defaults(editable)
+        source_candidate = current.get("source_candidate")
+        candidate_runs = _candidate_run_bindings(source_candidate)
         try:
             editable["calibration_values"] = publish_calibration(
                 editable["calibration_values"],
                 base_calibration,
                 manual_run_id=f"manual_{snapshot_id}",
+                candidate_runs=candidate_runs,
             )
         except ValueError as exc:
             raise ConfigurationManagementError(str(exc)) from exc
         now = utc_now_text()
-        requires_requalification = self._requires_requalification(current)
+        requires_requalification = (
+            False if _activate else self._requires_requalification(current)
+        )
         snapshot = {
             "schema_version": "0.2",
             "artifact_type": "platform_configuration_snapshot",
@@ -325,6 +442,8 @@ class PlatformConfigurationStore:
         directory = self.snapshots_root / snapshot_id
         directory.mkdir(parents=True, exist_ok=False)
         self._atomic_json(directory / "snapshot.json", snapshot)
+        if source_candidate:
+            self._atomic_json(directory / "source_candidate.json", source_candidate)
         if keep:
             self._pin(snapshot_id, actor_id)
 
@@ -336,7 +455,11 @@ class PlatformConfigurationStore:
             {
                 "actor_id": actor_id,
                 "updated_utc": now,
-                "revision": int(current.get("revision", 0)) + 1,
+                "revision": (
+                    int(current.get("revision", 0))
+                    if _activate
+                    else int(current.get("revision", 0)) + 1
+                ),
                 "source_snapshot_id": snapshot_id,
                 "parent": self._base_reference(snapshot),
                 "editable": current_editable,
@@ -354,6 +477,8 @@ class PlatformConfigurationStore:
             actor_id,
             {"device_id": device_id, "snapshot_id": snapshot_id},
         )
+        if _activate:
+            self._activate_snapshot(snapshot, actor_id=actor_id)
         self._prune_automatic_snapshots(device_id)
         return self.snapshot(snapshot_id)
 
@@ -371,9 +496,12 @@ class PlatformConfigurationStore:
         )
         if current["content_sha256"] != expected_current_content_sha256:
             raise ConfigurationManagementError("current configuration changed since it was loaded", status=409)
-        editable = copy.deepcopy(snapshot["editable"])
+        editable = _with_simulation_defaults(snapshot["editable"])
         editable["calibration_values"] = draftify_calibration(
             snapshot["editable"]["calibration_values"]
+        )
+        source_candidate = _retained_candidate_source(
+            snapshot.get("source_candidate"), editable
         )
         errors = validate_editable(editable, published=False)
         current.update(
@@ -388,6 +516,7 @@ class PlatformConfigurationStore:
                 "readonly": copy.deepcopy(snapshot["readonly"]),
                 "editable": editable,
                 "content_sha256": sha256_json(editable),
+                "source_candidate": source_candidate,
                 "validation": {
                     "status": "valid" if not errors else "invalid",
                     "field_errors": errors,
@@ -401,6 +530,17 @@ class PlatformConfigurationStore:
             actor_id,
             {"device_id": snapshot["device_id"], "snapshot_id": snapshot_id},
         )
+        if snapshot.get("experiment_eligible"):
+            self._activate_snapshot(snapshot, actor_id=actor_id)
+        else:
+            self.snapshot_current_configuration(
+                snapshot["device_id"],
+                actor_id=actor_id,
+                expected_content_sha256=current["content_sha256"],
+                name=current["name"],
+                reason=f"快照 {snapshot_id} 恢复后自动生效",
+                _activate=True,
+            )
         return self.current_configuration(snapshot["device_id"])
 
     def drafts(self) -> list[dict[str, Any]]:
@@ -555,6 +695,13 @@ class PlatformConfigurationStore:
             "validated_content_sha256": None,
             "requires_requalification": True,
         }
+        source_path = self._draft_path(draft_id).parent / "source_candidate.json"
+        if source_path.is_file():
+            source = self._load_json(source_path, "source candidate")
+            self._atomic_json(
+                source_path,
+                _retained_candidate_source(source, normalized) or {},
+            )
         self._atomic_json(self._draft_path(draft_id), payload)
         self._write_checkpoint(payload)
         self._audit("draft_updated", actor_id, {"draft_id": draft_id})
@@ -574,43 +721,27 @@ class PlatformConfigurationStore:
             raise ConfigurationManagementError("at least one candidate is required")
         payload = self._load_json(self._draft_path(draft_id), "draft")
         editable = copy.deepcopy(payload["editable"])
-        calibration = editable.setdefault("calibration_values", {})
-        qagents = calibration.setdefault("qagents", {})
-        if not isinstance(qagents, dict):
-            raise ConfigurationManagementError("draft qagent calibration values are invalid")
-        applied = []
-        for candidate in candidates:
-            target = candidate.get("target")
-            frequency = candidate.get("proposed_frequency_GHz")
-            if (
-                not isinstance(target, str)
-                or not _number(frequency, positive=True)
-                or candidate.get("recommendation_eligible") is not True
-            ):
-                raise ConfigurationManagementError("candidate is not eligible")
-            existing = qagents.setdefault(target, {}).get("reference_frequency_authority", {})
-            revision = (existing.get("base_revision") if isinstance(existing, Mapping) and type(existing.get("base_revision")) is int else existing.get("revision") if isinstance(existing, Mapping) else None)
-            reference = {
-                "reference_frequency_GHz": float(frequency),
-                "frequency_source": "accepted_simulation",
-                "status": "draft",
-                "base_revision": revision if type(revision) is int else 0,
-                "base_setting_hash": existing.get("base_setting_hash") if isinstance(existing, Mapping) and isinstance(existing.get("base_setting_hash"), str) else existing.get("setting_hash") if isinstance(existing, Mapping) and isinstance(existing.get("setting_hash"), str) else None,
-                "calibration_run_id": None,
-                "revision": None,
-                "setting_hash": None,
-            }
-            qagents[target]["reference_frequency_authority"] = reference
-            applied.append(target)
-        source_candidate = {
-            "experiment_run_id": experiment_run_id,
-            "recommendation_id": recommendation_id,
-            "targets": applied,
-            "candidate_values_GHz": {
-                row["target"]: float(row["proposed_frequency_GHz"])
-                for row in candidates
-            },
-        }
+        initializing_calibration = editable.get("calibration_values") == {}
+        if initializing_calibration:
+            editable["calibration_values"] = initial_typed_calibration()
+        candidate_rows = (
+            _rebase_candidates_to_initialized_calibration(editable, candidates)
+            if initializing_calibration
+            else candidates
+        )
+        normalized_candidates = _apply_candidate_groups(editable, candidate_rows)
+        errors = validate_editable(editable, published=False)
+        if errors:
+            raise ConfigurationManagementError(
+                "candidate update would make draft invalid",
+                field_errors=errors,
+            )
+        source_candidate = _candidate_source(
+            experiment_run_id,
+            recommendation_id,
+            normalized_candidates,
+            editable,
+        )
         payload["editable"] = editable
         payload["updated_utc"] = utc_now_text()
         payload["checkpoint"] += 1
@@ -626,7 +757,12 @@ class PlatformConfigurationStore:
         self._audit(
             "experiment_candidates_applied",
             actor_id,
-            {"draft_id": draft_id, "experiment_run_id": experiment_run_id, "targets": applied},
+            {
+                "draft_id": draft_id,
+                "experiment_run_id": experiment_run_id,
+                "candidate_ids": source_candidate["candidate_ids"],
+                "targets": source_candidate["targets"],
+            },
         )
         return self.draft(draft_id)
 
@@ -715,7 +851,7 @@ class PlatformConfigurationStore:
         )
         source_path = self._draft_path(draft_id).parent / "source_candidate.json"
         source_candidate = self._load_json(source_path, "source candidate") if source_path.is_file() else {}
-        candidate_runs = {target: str(source_candidate["experiment_run_id"]) for target in source_candidate.get("targets", [])} if isinstance(source_candidate, Mapping) and isinstance(source_candidate.get("experiment_run_id"), str) else {}
+        candidate_runs = _candidate_run_bindings(source_candidate)
         editable = copy.deepcopy(draft["editable"])
         editable["calibration_values"] = publish_calibration(
             draft["editable"]["calibration_values"],
@@ -826,12 +962,20 @@ class PlatformConfigurationStore:
         errors = validate_document(self._load_json(self._snapshot_path(snapshot_id), "platform snapshot"))
         if errors:
             raise ConfigurationManagementError("snapshot is not a valid PlatformConfiguration v0.2", field_errors=errors)
+        return self._activate_snapshot(snapshot, actor_id=actor_id)
+
+    def _activate_snapshot(
+        self,
+        snapshot: Mapping[str, Any],
+        *,
+        actor_id: str,
+    ) -> dict[str, Any]:
         payload = {
             "schema_version": "0.2",
             "artifact_type": "platform_configuration_active_pointer",
             "artifact_version": "0.2",
             "device_id": snapshot["device_id"],
-            "snapshot_id": snapshot_id,
+            "snapshot_id": snapshot["snapshot_id"],
             "snapshot_content_sha256": snapshot["content_sha256"],
             "actor_id": actor_id,
             "activated_utc": utc_now_text(),
@@ -856,20 +1000,43 @@ class PlatformConfigurationStore:
 
     def delete_draft(self, draft_id: str, *, actor_id: str) -> None:
         self._actor(actor_id)
-        path = self._draft_path(draft_id).parent
-        shutil.rmtree(path)
+        self._delete_managed_directory(
+            self.drafts_root,
+            draft_id,
+            "draft",
+            "draft.json",
+        )
         self._audit("draft_deleted", actor_id, {"draft_id": draft_id})
 
     def delete_snapshot(self, snapshot_id: str, *, actor_id: str) -> None:
         self._actor(actor_id)
-        snapshot = self.snapshot(snapshot_id)
+        payload_path = self._managed_payload_path(
+            self.snapshots_root,
+            snapshot_id,
+            "snapshot",
+            "snapshot.json",
+        )
+        payload = self._load_json(payload_path, "platform snapshot")
+        snapshot = {
+            **payload,
+            "keep": self._is_pinned(snapshot_id),
+            "active": any(
+                row["snapshot_id"] == snapshot_id
+                for row in self.active_configurations()
+            ),
+        }
         if snapshot["active"]:
             raise ConfigurationManagementError("Active snapshot cannot be deleted")
         if snapshot["keep"]:
             raise ConfigurationManagementError("kept snapshot must be unpinned before deletion")
         if self._snapshot_referenced(snapshot_id):
             raise ConfigurationManagementError("referenced snapshot can only be archived")
-        shutil.rmtree(self._snapshot_path(snapshot_id).parent)
+        self._delete_managed_directory(
+            self.snapshots_root,
+            snapshot_id,
+            "snapshot",
+            "snapshot.json",
+        )
         self._audit("snapshot_deleted", actor_id, {"snapshot_id": snapshot_id})
 
     def active_configurations(self) -> list[dict[str, Any]]:
@@ -910,6 +1077,7 @@ class PlatformConfigurationStore:
                 "acceptance",
             )
         }
+        control_values["simulation"] = initial_simulation_configuration()
         editable = {
             "control_values": control_values,
             "calibration_values": {},
@@ -958,11 +1126,12 @@ class PlatformConfigurationStore:
             "idle_flux_phi0",
             "acceptance",
         }
+        actual_control_sections = frozenset(control)
         checks.append(
             self._check(
                 "control_sections_complete",
-                set(control) == required,
-                "control sections are exact" if set(control) == required else "control sections differ from the editable contract",
+                actual_control_sections in {frozenset(required), frozenset(required | {"simulation"})},
+                "control sections are exact" if actual_control_sections in {frozenset(required), frozenset(required | {"simulation"})} else "control sections differ from the editable contract",
             )
         )
         clock = control.get("clock")
@@ -1030,6 +1199,8 @@ class PlatformConfigurationStore:
         checks.append(self._check("idle_flux_units_valid", flux_ok, "idle flux uses finite Phi/Phi0 values"))
         acceptance_ok = _acceptance_valid(control.get("acceptance"))
         checks.append(self._check("acceptance_valid", acceptance_ok, "acceptance thresholds are complete and positive"))
+        simulation_ok = _simulation_configuration_valid(control.get("simulation"))
+        checks.append(self._check("simulation_model_valid", simulation_ok, "simulation truncation and convergence dimensions are valid"))
         calibration = normalized["calibration_values"]
         checks.append(
             self._check(
@@ -1098,10 +1269,10 @@ class PlatformConfigurationStore:
 
     def _editable_sections(self, base: Mapping[str, Any]) -> dict[str, Any]:
         if base.get("artifact_type") == "platform_configuration_snapshot":
-            return copy.deepcopy(dict(base["editable"]))
+            return _with_simulation_defaults(base["editable"])
         editable = base.get("editable")
         if isinstance(editable, Mapping):
-            return copy.deepcopy(dict(editable))
+            return _with_simulation_defaults(editable)
         raise ConfigurationManagementError("base configuration has no editable sections")
 
     def _readonly_sections(self, base: Mapping[str, Any]) -> dict[str, Any]:
@@ -1172,16 +1343,27 @@ class PlatformConfigurationStore:
                     path.unlink()
 
     def _prune_automatic_snapshots(self, device_id: str) -> None:
-        candidates = [
+        automatic = [
             row
             for row in self.snapshots()
             if row["device_id"] == device_id
             and not row["keep"]
             and not row["active"]
-            and not self._snapshot_referenced(row["snapshot_id"])
+        ]
+        if len(automatic) <= _MAX_AUTOMATIC_SNAPSHOTS:
+            return
+        candidates = [
+            row
+            for row in automatic
+            if not self._snapshot_referenced(row["snapshot_id"])
         ]
         for row in candidates[_MAX_AUTOMATIC_SNAPSHOTS:]:
-            shutil.rmtree(self._snapshot_path(row["snapshot_id"]).parent)
+            self._delete_managed_directory(
+                self.snapshots_root,
+                row["snapshot_id"],
+                "snapshot",
+                "snapshot.json",
+            )
 
     def _snapshot_referenced(self, snapshot_id: str) -> bool:
         output = self.repository_root / "output"
@@ -1285,6 +1467,27 @@ class PlatformConfigurationStore:
         self._device(device_id)
         path = self.current_root / f"{device_id}.json"
         if path.is_file():
+            payload = self._load_json(path, "current configuration")
+            upgraded = _with_simulation_defaults(payload["editable"])
+            if upgraded != payload["editable"]:
+                errors = validate_editable(upgraded, published=False)
+                payload.update(
+                    {
+                        "actor_id": "system.migration",
+                        "updated_utc": utc_now_text(),
+                        "revision": int(payload.get("revision", 0)) + 1,
+                        "editable": upgraded,
+                        "content_sha256": sha256_json(upgraded),
+                        "validation": {
+                            "status": "valid" if not errors else "invalid",
+                            "field_errors": errors,
+                            "requires_requalification": self._requires_requalification(
+                                {**payload, "editable": upgraded}
+                            ),
+                        },
+                    }
+                )
+                self._atomic_json(path, payload)
             return
         base: Mapping[str, Any] | None = None
         active = next(
@@ -1368,6 +1571,254 @@ class PlatformConfigurationStore:
         if not path.is_file():
             raise ConfigurationManagementError("snapshot not found", status=404)
         return path
+
+    def _managed_payload_path(
+        self,
+        container: Path,
+        identifier: str,
+        label: str,
+        payload_name: str,
+    ) -> Path:
+        """Return a deletion candidate only after lexical, no-follow validation."""
+
+        _uuid(identifier, f"{label}_id")
+        target, _components = self._managed_directory_components(
+            container,
+            identifier,
+            label,
+        )
+        payload = target / payload_name
+        self._regular_lstat(payload, f"{label} payload", not_found=f"{label} not found")
+        return payload
+
+    def _delete_managed_directory(
+        self,
+        container: Path,
+        identifier: str,
+        label: str,
+        payload_name: str,
+    ) -> None:
+        """Delete a managed tree only after a no-follow inventory and rechecks.
+
+        `shutil.rmtree` is deliberately not used here: its pathname traversal is
+        unsuitable for a lifecycle boundary that must reject reparse points and
+        detect replacement after validation.
+        """
+
+        payload = self._managed_payload_path(container, identifier, label, payload_name)
+        target = payload.parent
+        _target, components = self._managed_directory_components(
+            container,
+            identifier,
+            label,
+        )
+        directories, files = self._inventory_deletion_tree(target, label)
+
+        # Delete only regular, single-link files from the inventory.  Every
+        # operation revalidates the lexical ancestor chain and the node identity.
+        for path in sorted(files, key=lambda item: (len(item.parts), str(item)), reverse=True):
+            self._verify_deletion_path(path, target, components, directories, files[path], label)
+            try:
+                os.unlink(path)
+            except OSError as exc:
+                raise ConfigurationManagementError(
+                    f"cannot delete {label} file: {exc}"
+                ) from exc
+
+        for path in sorted(directories, key=lambda item: (len(item.parts), str(item)), reverse=True):
+            self._verify_deletion_directory(path, target, components, directories, label)
+            try:
+                os.rmdir(path)
+            except OSError as exc:
+                raise ConfigurationManagementError(
+                    f"cannot remove {label} directory: {exc}"
+                ) from exc
+
+    def _managed_directory_components(
+        self,
+        container: Path,
+        identifier: str,
+        label: str,
+    ) -> tuple[Path, dict[Path, tuple[int, int, int]]]:
+        root = self._lexical_absolute(self.root)
+        container_path = self._lexical_absolute(container)
+        target = container_path / identifier
+        self._lexically_confined(root, container_path, f"{label} container")
+        self._lexically_confined(container_path, target, label)
+        components: dict[Path, tuple[int, int, int]] = {}
+        current = root
+        components[current] = self._directory_lstat(current, "configuration storage")
+        for part in container_path.relative_to(root).parts:
+            current = current / part
+            components[current] = self._directory_lstat(current, f"{label} container")
+        for part in target.relative_to(container_path).parts:
+            current = current / part
+            components[current] = self._directory_lstat(current, label, not_found=f"{label} not found")
+        return target, components
+
+    def _inventory_deletion_tree(
+        self,
+        target: Path,
+        label: str,
+    ) -> tuple[dict[Path, tuple[int, int, int]], dict[Path, tuple[int, int, int]]]:
+        directories: dict[Path, tuple[int, int, int]] = {
+            target: self._directory_lstat(target, label)
+        }
+        files: dict[Path, tuple[int, int, int]] = {}
+
+        def visit(directory: Path) -> None:
+            expected = directories[directory]
+            self._same_directory(directory, expected, label)
+            try:
+                with os.scandir(directory) as entries:
+                    names = sorted(entry.name for entry in entries)
+            except OSError as exc:
+                raise ConfigurationManagementError(
+                    f"cannot inspect {label} directory: {exc}"
+                ) from exc
+            # Do not trust entries obtained through a directory that might have
+            # been replaced while it was being opened.
+            self._same_directory(directory, expected, label)
+            for name in names:
+                path = directory / name
+                result = self._no_follow_lstat(path, f"{label} entry")
+                mode = stat.S_IFMT(result.st_mode)
+                identity = self._identity(result)
+                if stat.S_ISDIR(mode):
+                    directories[path] = identity
+                    visit(path)
+                elif stat.S_ISREG(mode):
+                    if result.st_nlink != 1:
+                        raise ConfigurationManagementError(
+                            f"{label} contains a hardlink"
+                        )
+                    files[path] = identity
+                else:
+                    raise ConfigurationManagementError(
+                        f"{label} contains an unsupported special item"
+                    )
+            self._same_directory(directory, expected, label)
+
+        visit(target)
+        return directories, files
+
+    def _verify_deletion_path(
+        self,
+        path: Path,
+        target: Path,
+        components: Mapping[Path, tuple[int, int, int]],
+        directories: Mapping[Path, tuple[int, int, int]],
+        expected: tuple[int, int, int],
+        label: str,
+    ) -> None:
+        self._same_components(components, label)
+        self._same_directory_chain(path.parent, target, directories, label)
+        result = self._regular_lstat(path, f"{label} entry")
+        if self._identity(result) != expected:
+            raise ConfigurationManagementError(f"{label} entry changed during deletion")
+
+    def _verify_deletion_directory(
+        self,
+        path: Path,
+        target: Path,
+        components: Mapping[Path, tuple[int, int, int]],
+        directories: Mapping[Path, tuple[int, int, int]],
+        label: str,
+    ) -> None:
+        self._same_components(components, label)
+        self._same_directory_chain(path, target, directories, label)
+
+    def _same_directory_chain(
+        self,
+        path: Path,
+        target: Path,
+        directories: Mapping[Path, tuple[int, int, int]],
+        label: str,
+    ) -> None:
+        current = target
+        self._same_directory(current, directories[current], label)
+        for part in path.relative_to(target).parts:
+            current = current / part
+            self._same_directory(current, directories[current], label)
+
+    def _same_components(
+        self,
+        components: Mapping[Path, tuple[int, int, int]],
+        label: str,
+    ) -> None:
+        for path, expected in components.items():
+            self._same_directory(path, expected, label)
+
+    def _same_directory(
+        self,
+        path: Path,
+        expected: tuple[int, int, int],
+        label: str,
+    ) -> None:
+        if self._directory_lstat(path, label) != expected:
+            raise ConfigurationManagementError(f"{label} directory changed during deletion")
+
+    def _directory_lstat(
+        self,
+        path: Path,
+        label: str,
+        *,
+        not_found: str | None = None,
+    ) -> tuple[int, int, int]:
+        result = self._no_follow_lstat(path, label, not_found=not_found)
+        if not stat.S_ISDIR(result.st_mode):
+            raise ConfigurationManagementError(f"{label} is not a directory")
+        return self._identity(result)
+
+    def _regular_lstat(
+        self,
+        path: Path,
+        label: str,
+        *,
+        not_found: str | None = None,
+    ) -> os.stat_result:
+        result = self._no_follow_lstat(path, label, not_found=not_found)
+        if not stat.S_ISREG(result.st_mode):
+            raise ConfigurationManagementError(f"{label} is not a regular file")
+        if result.st_nlink != 1:
+            raise ConfigurationManagementError(f"{label} is a hardlink")
+        return result
+
+    def _no_follow_lstat(
+        self,
+        path: Path,
+        label: str,
+        *,
+        not_found: str | None = None,
+    ) -> os.stat_result:
+        try:
+            result = os.lstat(path)
+        except FileNotFoundError as exc:
+            if not_found:
+                raise ConfigurationManagementError(not_found, status=404) from exc
+            raise ConfigurationManagementError(f"{label} is missing") from exc
+        except OSError as exc:
+            raise ConfigurationManagementError(f"cannot inspect {label}: {exc}") from exc
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        attributes = getattr(result, "st_file_attributes", 0)
+        if stat.S_ISLNK(result.st_mode) or attributes & reparse_flag:
+            raise ConfigurationManagementError(f"{label} is linked or a reparse point")
+        return result
+
+    @staticmethod
+    def _identity(result: os.stat_result) -> tuple[int, int, int]:
+        return (result.st_dev, result.st_ino, stat.S_IFMT(result.st_mode))
+
+    @staticmethod
+    def _lexical_absolute(path: Path) -> Path:
+        return Path(os.path.abspath(os.fspath(path)))
+
+    @staticmethod
+    def _lexically_confined(root: Path, path: Path, label: str) -> None:
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ConfigurationManagementError(f"{label} is outside configuration storage") from exc
 
     def _device(self, value: str) -> str:
         if not isinstance(value, str) or _DEVICE_ID.fullmatch(value) is None:
@@ -1647,6 +2098,53 @@ def _static_mixing_valid(value: Any) -> bool:
     return True
 
 
+def _with_simulation_defaults(editable: Mapping[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(dict(editable))
+    control = result.get("control_values")
+    if isinstance(control, dict) and "simulation" not in control:
+        control["simulation"] = initial_simulation_configuration()
+    return result
+
+
+def _simulation_configuration_valid(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, Mapping) or set(value) != {"calibration_model"}:
+        return False
+    model = value.get("calibration_model")
+    fields = {
+        "charge_cutoffs",
+        "retained_energy_levels",
+        "convergence_charge_cutoffs",
+        "convergence_retained_energy_levels",
+    }
+    if not isinstance(model, Mapping) or set(model) != fields:
+        return False
+    modes = {"q1", "c", "q2"}
+    if any(
+        not isinstance(model[field], Mapping)
+        or set(model[field]) != modes
+        or any(type(item) is not int or not 1 <= item <= 16 for item in model[field].values())
+        for field in fields
+    ):
+        return False
+    baseline_cutoff = model["charge_cutoffs"]
+    baseline_levels = model["retained_energy_levels"]
+    comparison_cutoff = model["convergence_charge_cutoffs"]
+    comparison_levels = model["convergence_retained_energy_levels"]
+    if any(
+        baseline_levels[mode] > 2 * baseline_cutoff[mode] + 1
+        or comparison_cutoff[mode] < baseline_cutoff[mode]
+        or comparison_levels[mode] < baseline_levels[mode]
+        or comparison_levels[mode] > 2 * comparison_cutoff[mode] + 1
+        for mode in modes
+    ):
+        return False
+    if math.prod(baseline_levels.values()) > 512 or math.prod(comparison_levels.values()) > 512:
+        return False
+    return baseline_cutoff != comparison_cutoff or baseline_levels != comparison_levels
+
+
 def _acceptance_valid(value: Any) -> bool:
     return (
         isinstance(value, Mapping)
@@ -1664,6 +2162,16 @@ def _candidate_run_id(
     if not isinstance(source, Mapping):
         return None
     run_id = source.get("experiment_run_id")
+    candidates = source.get("candidates")
+    if isinstance(run_id, str) and run_id and isinstance(candidates, list):
+        if any(
+            isinstance(candidate, Mapping)
+            and target
+            in candidate.get("configuration_targets", [candidate.get("target")])
+            for candidate in candidates
+        ):
+            return run_id
+        return None
     values = source.get("candidate_values_GHz")
     expected = values.get(target) if isinstance(values, Mapping) else None
     actual = reference.get("reference_frequency_GHz")
@@ -1676,6 +2184,355 @@ def _candidate_run_id(
     ):
         return run_id
     return None
+
+
+def _candidate_run_bindings(
+    source: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    if not isinstance(source, Mapping):
+        return {}
+    run_id = source.get("experiment_run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return {}
+    candidates = source.get("candidates")
+    if isinstance(candidates, list):
+        bindings = {}
+        kinds = {
+            "qagent_calibration": "qagent",
+            "waveform_setting": "setting",
+            "waveform_mapper": "mapper",
+        }
+        for candidate in candidates:
+            resources = (
+                candidate.get("configuration_resources")
+                if isinstance(candidate, Mapping)
+                else None
+            )
+            if not isinstance(resources, list):
+                target = candidate.get("target") if isinstance(candidate, Mapping) else None
+                if isinstance(target, str):
+                    bindings[target] = run_id
+                continue
+            for resource in resources:
+                if not isinstance(resource, Mapping):
+                    continue
+                prefix = kinds.get(resource.get("resource_type"))
+                resource_id = resource.get("resource_id")
+                if prefix is not None and isinstance(resource_id, str):
+                    bindings[f"{prefix}:{resource_id}"] = run_id
+        return bindings
+    return {
+        target: run_id
+        for target in source.get("targets", [])
+        if isinstance(target, str)
+    }
+
+
+def _retained_candidate_source(
+    source: Mapping[str, Any] | None,
+    editable: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Keep provenance only for candidate groups still equal to their applied values."""
+
+    if not isinstance(source, Mapping):
+        return None
+    candidates = source.get("candidates")
+    if isinstance(candidates, list):
+        retained = []
+        for candidate in candidates:
+            changes = candidate.get("changes") if isinstance(candidate, Mapping) else None
+            if not isinstance(changes, list) or not changes:
+                continue
+            try:
+                matches = all(
+                    candidate_values_equal(
+                        value_at_parameter_path(editable, change.get("parameter_path")),
+                        change.get("proposed_value"),
+                    )
+                    for change in changes
+                    if isinstance(change, Mapping)
+                ) and len(changes) == sum(isinstance(change, Mapping) for change in changes)
+            except CalibrationCandidateProtocolError:
+                matches = False
+            if matches:
+                retained.append(copy.deepcopy(dict(candidate)))
+        if not retained:
+            return None
+        result = copy.deepcopy(dict(source))
+        result["candidates"] = retained
+        result["candidate_ids"] = [row["candidate_id"] for row in retained]
+        result["calibration_subjects"] = list(
+            dict.fromkeys(
+                subject
+                for row in retained
+                for subject in row.get("calibration_subjects", [row.get("target")])
+                if isinstance(subject, str)
+            )
+        )
+        result["configuration_targets"] = list(
+            dict.fromkeys(
+                target
+                for row in retained
+                for target in row.get("configuration_targets", [row.get("target")])
+                if isinstance(target, str)
+            )
+        )
+        result["targets"] = result["configuration_targets"]
+        frequency_values = _frequency_candidate_values(retained)
+        if frequency_values:
+            result["candidate_values_GHz"] = frequency_values
+        else:
+            result.pop("candidate_values_GHz", None)
+        return result
+    targets = source.get("targets")
+    values = source.get("candidate_values_GHz")
+    qagents = editable.get("calibration_values", {}).get("qagents", {})
+    if not isinstance(targets, list) or not isinstance(values, Mapping) or not isinstance(qagents, Mapping):
+        return None
+    retained = []
+    for target in targets:
+        row = qagents.get(target) if isinstance(target, str) else None
+        reference = row.get("reference_frequency_authority") if isinstance(row, Mapping) else None
+        expected = values.get(target) if isinstance(target, str) else None
+        actual = reference.get("reference_frequency_GHz") if isinstance(reference, Mapping) else None
+        if (
+            isinstance(target, str)
+            and _number(expected, positive=True)
+            and _number(actual, positive=True)
+            and math.isclose(float(actual), float(expected), rel_tol=0.0, abs_tol=1e-12)
+        ):
+            retained.append(target)
+    if not retained:
+        return None
+    result = copy.deepcopy(dict(source))
+    result["targets"] = retained
+    result["candidate_values_GHz"] = {
+        target: float(values[target]) for target in retained
+    }
+    return result
+
+
+def _apply_candidate_groups(
+    editable: dict[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    try:
+        normalized = [
+            normalize_calibration_candidate(_with_legacy_current_value(editable, row))
+            for row in candidates
+        ]
+    except CalibrationCandidateProtocolError as exc:
+        raise ConfigurationManagementError(str(exc)) from exc
+    candidate_ids = [row["candidate_id"] for row in normalized]
+    paths = [
+        change["parameter_path"]
+        for candidate in normalized
+        for change in candidate["changes"]
+    ]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ConfigurationManagementError("candidate_ids must be unique")
+    if len(paths) != len(set(paths)):
+        raise ConfigurationManagementError("candidate parameter paths must be unique")
+    if any(row.get("recommendation_eligible") is not True for row in normalized):
+        raise ConfigurationManagementError("candidate is not eligible")
+    try:
+        for candidate in normalized:
+            for change in candidate["changes"]:
+                _validate_change_resource(editable, change)
+                set_parameter_value(editable, change)
+                _apply_parameter_metadata(editable, change["parameter_path"])
+    except CalibrationCandidateProtocolError as exc:
+        status = 409 if "stale" in str(exc) else 422
+        raise ConfigurationManagementError(str(exc), status=status) from exc
+    return normalized
+
+
+def _with_legacy_current_value(
+    editable: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if (
+        candidate.get("changes") is not None
+        or "current_frequency_GHz" in candidate
+        or "proposed_frequency_GHz" not in candidate
+        or not isinstance(candidate.get("target"), str)
+    ):
+        return candidate
+    target = candidate["target"]
+    path = (
+        "calibration_values.qagents."
+        f"{target}.reference_frequency_authority.reference_frequency_GHz"
+    )
+    enriched = dict(candidate)
+    enriched["current_frequency_GHz"] = value_at_parameter_path(editable, path)
+    return enriched
+
+
+def _rebase_candidates_to_initialized_calibration(
+    editable: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    rebased = []
+    for candidate in candidates:
+        row = copy.deepcopy(dict(candidate))
+        changes = row.get("changes")
+        if isinstance(changes, list):
+            for change in changes:
+                if isinstance(change, dict) and isinstance(change.get("parameter_path"), str):
+                    change["current_value"] = copy.deepcopy(
+                        value_at_parameter_path(editable, change["parameter_path"])
+                    )
+        elif isinstance(row.get("target"), str) and "proposed_frequency_GHz" in row:
+            path = (
+                "calibration_values.qagents."
+                f"{row['target']}.reference_frequency_authority.reference_frequency_GHz"
+            )
+            row["current_frequency_GHz"] = value_at_parameter_path(editable, path)
+        rebased.append(row)
+    return rebased
+
+
+def _apply_parameter_metadata(editable: dict[str, Any], parameter_path: str) -> None:
+    suffix = ".reference_frequency_authority.reference_frequency_GHz"
+    if not parameter_path.endswith(suffix):
+        return
+    parent_path = parameter_path.removesuffix(".reference_frequency_GHz")
+    current: Any = editable
+    for part in parent_path.split("."):
+        current = current[part]
+    if isinstance(current, dict):
+        current["frequency_source"] = "accepted_simulation"
+
+
+def _candidate_source(
+    experiment_run_id: str,
+    recommendation_id: str,
+    candidates: Sequence[Mapping[str, Any]],
+    editable: Mapping[str, Any],
+) -> dict[str, Any]:
+    rows = []
+    for candidate in candidates:
+        changes = [
+            {
+                "parameter_path": change["parameter_path"],
+                "proposed_value": copy.deepcopy(change["proposed_value"]),
+                "unit": change.get("unit"),
+                "configuration_resource": copy.deepcopy(
+                    _resource_for_parameter_path(
+                        editable, change["parameter_path"]
+                    )
+                    or change["configuration_resource"]
+                ),
+            }
+            for change in candidate["changes"]
+        ]
+        configuration_targets = list(
+            dict.fromkeys(
+                change["configuration_resource"]["owner"] for change in changes
+            )
+        )
+        rows.append({
+            "candidate_id": candidate["candidate_id"],
+            "candidate_type": candidate["candidate_type"],
+            "calibration_subjects": list(candidate["calibration_subjects"]),
+            "configuration_resources": copy.deepcopy(
+                candidate["configuration_resources"]
+            ),
+            "configuration_targets": configuration_targets,
+            "target": candidate["target"],
+            "changes": changes,
+        })
+    calibration_subjects = list(
+        dict.fromkeys(
+            subject for row in rows for subject in row["calibration_subjects"]
+        )
+    )
+    configuration_targets = list(
+        dict.fromkeys(
+            target for row in rows for target in row["configuration_targets"]
+        )
+    )
+    result = {
+        "experiment_run_id": experiment_run_id,
+        "recommendation_id": recommendation_id,
+        "candidate_ids": [row["candidate_id"] for row in rows],
+        "calibration_subjects": calibration_subjects,
+        "configuration_targets": configuration_targets,
+        "targets": configuration_targets,
+        "candidates": rows,
+    }
+    frequency_values = _frequency_candidate_values(rows)
+    if frequency_values:
+        result["candidate_values_GHz"] = frequency_values
+    return result
+
+
+def _validate_change_resource(
+    editable: Mapping[str, Any],
+    change: Mapping[str, Any],
+) -> None:
+    expected = _resource_for_parameter_path(editable, change["parameter_path"])
+    if expected is not None and change.get("configuration_resource") != expected:
+        raise CalibrationCandidateProtocolError(
+            f"candidate configuration resource does not own {change['parameter_path']}"
+        )
+
+
+def _resource_for_parameter_path(
+    editable: Mapping[str, Any],
+    parameter_path: str,
+) -> dict[str, str] | None:
+    parts = parameter_path.split(".")
+    if len(parts) >= 4 and parts[:2] == ["calibration_values", "qagents"]:
+        return {
+            "owner": parts[2],
+            "resource_type": "qagent_calibration",
+            "resource_id": parts[2],
+        }
+    if len(parts) >= 5 and parts[:3] in (
+        ["calibration_values", "waveform_registry", "settings"],
+        ["calibration_values", "waveform_registry", "mappers"],
+    ):
+        registry = editable.get("calibration_values", {}).get(
+            "waveform_registry", {}
+        )
+        section = registry.get(parts[2], {}) if isinstance(registry, Mapping) else {}
+        record = section.get(parts[3]) if isinstance(section, Mapping) else None
+        owner = record.get("target") if isinstance(record, Mapping) else None
+        if not isinstance(owner, str):
+            return None
+        return {
+            "owner": owner,
+            "resource_type": (
+                "waveform_setting" if parts[2] == "settings" else "waveform_mapper"
+            ),
+            "resource_id": parts[3],
+        }
+    if len(parts) >= 3 and parts[:2] == ["calibration_values", "gate_configuration"]:
+        return {
+            "owner": parts[2],
+            "resource_type": "gate_configuration",
+            "resource_id": parts[2],
+        }
+    return None
+
+
+def _frequency_candidate_values(
+    candidates: Sequence[Mapping[str, Any]],
+) -> dict[str, float]:
+    suffix = ".reference_frequency_authority.reference_frequency_GHz"
+    values = {}
+    for candidate in candidates:
+        target = candidate.get("target")
+        for change in candidate.get("changes", []):
+            if (
+                isinstance(target, str)
+                and isinstance(change, Mapping)
+                and str(change.get("parameter_path", "")).endswith(suffix)
+                and _number(change.get("proposed_value"), positive=True)
+            ):
+                values[target] = float(change["proposed_value"])
+    return values
 
 
 def _contains_physical_field(value: Any) -> bool:

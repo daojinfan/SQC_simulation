@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -9,7 +10,11 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from sqvm.control.registry import load_control_channel_registry
-from sqvm.control.stage4_1_config import build_parameterized_control_context
+from sqvm.control.stage4_1_config import (
+    _runtime_idle_flux,
+    _runtime_idle_flux_sha256,
+    build_parameterized_control_context,
+)
 from sqvm.control.stage4_1_models import (
     ParameterizedControlContext,
     ParameterizedControlError,
@@ -42,11 +47,14 @@ def production_parameterized_control_context(
     expected_plan_authority_sha256: Mapping[str, str],
     repository_root: Path,
     output_root: Path,
+    *,
+    idle_flux_phi0: Mapping[str, Any] | None = None,
 ) -> ParameterizedControlContext:
     """Build the only production Stage 4.1 context from tracked authorities.
 
-    Per-point QCIS authorities remain process-local caller input.  The factory
-    validates their hash shape but never supplies or transforms a plan itself.
+    Per-point QCIS authorities remain process-local caller input. The factory
+    admits an optional runtime idle operating point while keeping the tracked
+    electronics and device-limit authorities unchanged.
     """
 
     try:
@@ -74,20 +82,27 @@ def production_parameterized_control_context(
         control_path = _safe_file(root, _CONTROL_CONFIG)
         registry_path = _safe_file(root, _CHANNEL_REGISTRY)
         control = load_control_chain_config(control_path)
+        runtime_idle = None
+        if idle_flux_phi0 is not None:
+            runtime_idle = _runtime_idle_flux(idle_flux_phi0)
+            control = replace(control, idle_flux_phi0=runtime_idle)
         registry = load_control_channel_registry(registry_path)
-        authority_hashes = MappingProxyType(
-            {
-                "stage4_1_production_authority": raw_file_sha256(authority_path),
-                "stage4_1_production_approval": raw_file_sha256(approval_path),
-                "stage4_1_qcis_design": raw_file_sha256(_safe_file(root, _DESIGN)),
-                "stage4_1_control_config": raw_file_sha256(control_path),
-                "stage4_1_channel_registry": raw_file_sha256(registry_path),
-                "stage4_1_device_config": raw_file_sha256(_safe_file(root, _DEVICE_CONFIG)),
-                "stage4_1_source_snapshot": raw_file_sha256(source_path),
-                "stage4_1_environment_snapshot": raw_file_sha256(environment_path),
-                "stage4_1_publication_policy": raw_file_sha256(publication_path),
-            }
-        )
+        authority_hash_values = {
+            "stage4_1_production_authority": raw_file_sha256(authority_path),
+            "stage4_1_production_approval": raw_file_sha256(approval_path),
+            "stage4_1_qcis_design": raw_file_sha256(_safe_file(root, _DESIGN)),
+            "stage4_1_control_config": raw_file_sha256(control_path),
+            "stage4_1_channel_registry": raw_file_sha256(registry_path),
+            "stage4_1_device_config": raw_file_sha256(_safe_file(root, _DEVICE_CONFIG)),
+            "stage4_1_source_snapshot": raw_file_sha256(source_path),
+            "stage4_1_environment_snapshot": raw_file_sha256(environment_path),
+            "stage4_1_publication_policy": raw_file_sha256(publication_path),
+        }
+        if runtime_idle is not None:
+            authority_hash_values["stage4_1_runtime_idle_flux"] = (
+                _runtime_idle_flux_sha256(runtime_idle)
+            )
+        authority_hashes = MappingProxyType(authority_hash_values)
         return build_parameterized_control_context(
             control,
             registry,
@@ -101,6 +116,7 @@ def production_parameterized_control_context(
             compiler_source_snapshot=source,
             environment_snapshot=environment,
             publication_policy=publication,
+            runtime_idle_flux_phi0=runtime_idle,
         )
     except ParameterizedControlError:
         raise

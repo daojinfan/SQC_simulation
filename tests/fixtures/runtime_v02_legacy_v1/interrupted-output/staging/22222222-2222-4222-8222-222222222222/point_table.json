@@ -1,0 +1,42 @@
+{
+  "experiment_id": "platform_qcis_compile_smoke_v1",
+  "points": [
+    {
+      "coordinates": [
+        {
+          "axis": "drive_frequency",
+          "unit": "GHz",
+          "value": 5.2
+        }
+      ],
+      "experiment_id": "platform_qcis_compile_smoke_v1",
+      "point_id": "C60473361822C38D0F61E85D62DE56EC2B7AB0B0DCBCEA48F0977A647B9F2471",
+      "point_index": 0,
+      "program_authority_sha256": "E55E955E54204DDB447D98830ADB76D161B3CA05965F7FF9631FB9A3238D864C",
+      "repetition": 0,
+      "request_sha256": "CED549D5CA352ED2E28DEF36209D642967E511F9DF5AD4A6AAEF7510739777FB",
+      "schema_version": "0.2",
+      "seed": 18192855843897715631
+    },
+    {
+      "coordinates": [
+        {
+          "axis": "drive_frequency",
+          "unit": "GHz",
+          "value": 5.3
+        }
+      ],
+      "experiment_id": "platform_qcis_compile_smoke_v1",
+      "point_id": "4692C2D0FC6223B5A3808E0AD56C3EE7C8F54BCF1BE3E02B1473944413CD13B1",
+      "point_index": 1,
+      "program_authority_sha256": "E55E955E54204DDB447D98830ADB76D161B3CA05965F7FF9631FB9A3238D864C",
+      "repetition": 0,
+      "request_sha256": "CED549D5CA352ED2E28DEF36209D642967E511F9DF5AD4A6AAEF7510739777FB",
+      "schema_version": "0.2",
+      "seed": 6762282415118935206
+    }
+  ],
+  "program_authority_sha256": "E55E955E54204DDB447D98830ADB76D161B3CA05965F7FF9631FB9A3238D864C",
+  "request_sha256": "CED549D5CA352ED2E28DEF36209D642967E511F9DF5AD4A6AAEF7510739777FB",
+  "schema_version": "0.2"
+}

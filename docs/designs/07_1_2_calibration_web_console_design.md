@@ -132,13 +132,15 @@ POST   /api/v1/platform-snapshots/<snapshot_id>/keep
 DELETE /api/v1/platform-snapshots/<snapshot_id>
 ```
 
-生命周期固定为：
+旧版 Draft 兼容流程为：
 
 ```text
 Save Draft -> Validate -> Publish Snapshot -> Set Active
 ```
 
-Publish 不自动激活。已发布 Snapshot 不可修改；修改必须以其为父配置新建 Draft。实验候选接口只在候选为 eligible 时创建 Draft，不接受候选、不改 Active。
+旧版 Draft 的 Publish 不自动激活。新版 Current 主流程使用“保存并生效”：已发布 Snapshot
+仍不可修改，Current 校验保存、eligible 实验候选确认更新或快照恢复成功后，服务端自动生成
+或复用不可变运行版本并切换 Active。浏览器中未保存的编辑不会影响正在运行的实验。
 
 ### 4.3 Experiments
 
@@ -224,9 +226,9 @@ Snapshot 保存分层：
 
 - 可按状态、workflow、target 搜索；
 - 详情首屏显示身份、状态、claim、候选；
-- 频谱曲线使用 Canvas，根据每个目标自己的 frequency axis 绘制 coarse/refined/confirmation；
+- 实验曲线使用统一 `plot_spec v1.0` Canvas 组件，支持对象/指标筛选、点选择、坐标读数、line、scatter 和 heatmap；
 - gate 使用扫描友好的通过/失败表；
-- 数据点表显示 frequency、主响应、leakage、norm error；
+- 频谱数据点按目标显示等长的 frequency 与 P1 list；完整 population、leakage 和 norm error 保留在导出数据；
 - 原始 published PNG 作为可审计辅助资产；Canvas 数据图为交互视图，不替代证据 PNG。
 - eligible 候选可创建 Draft；Web 不提供 Run、Rerun 或执行按钮。
 

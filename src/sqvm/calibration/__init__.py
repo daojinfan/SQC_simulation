@@ -31,9 +31,21 @@ from sqvm.calibration.spectroscopy_workflow import (
     verify_qubit_spectroscopy_calibration,
     verify_qubit_spectroscopy_calibration_decision,
 )
+from sqvm.calibration.spectroscopy_run import (
+    SPECTROSCOPY_SCAN_WORKFLOW_ID,
+    SpectroscopyRun,
+    SpectroscopyRunError,
+    run_qubit_spectroscopy_scan,
+    verify_qubit_spectroscopy_scan,
+)
 from sqvm.calibration.api import (
+    CalibrationCandidateUpdate,
     CalibrationExperimentError,
+    SpectroscopyParameterUpdate,
+    apply_calibration_candidates_to_current_configuration,
+    apply_spectroscopy_candidates_to_current_configuration,
     run_active_qubit_spectroscopy_calibration,
+    run_spectroscopy,
 )
 
 __all__ = [
@@ -64,6 +76,16 @@ __all__ = [
     "run_qubit_spectroscopy_calibration",
     "verify_qubit_spectroscopy_calibration",
     "verify_qubit_spectroscopy_calibration_decision",
+    "SPECTROSCOPY_SCAN_WORKFLOW_ID",
+    "SpectroscopyRun",
+    "SpectroscopyRunError",
+    "run_qubit_spectroscopy_scan",
+    "verify_qubit_spectroscopy_scan",
     "CalibrationExperimentError",
+    "CalibrationCandidateUpdate",
+    "SpectroscopyParameterUpdate",
+    "apply_calibration_candidates_to_current_configuration",
+    "apply_spectroscopy_candidates_to_current_configuration",
     "run_active_qubit_spectroscopy_calibration",
+    "run_spectroscopy",
 ]

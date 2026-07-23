@@ -34,7 +34,9 @@ from sqvm.runtime.calibration_scan import (
     run_calibration_scan_point,
     verify_calibration_scan_point,
 )
-from sqvm.runtime.storage import atomic_publish, write_canonical_new
+from sqvm.runtime.calibration_model import calibration_model_configuration_sha256
+from sqvm.runtime.publication import publish_calibration_directory
+from sqvm.runtime.storage import write_canonical_new
 
 
 _CIRCUIT_ID = re.compile(r"[a-z][a-z0-9_]{0,63}$")
@@ -121,6 +123,7 @@ class CircuitExecutionContext:
     platform_snapshot_id: str | None = None
     platform_snapshot_content_sha256: str | None = None
     authority_context_sha256: str | None = None
+    calibration_model_configuration: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +323,9 @@ def compile_circuit(
             "snapshot_id": context.platform_snapshot_id,
             "snapshot_content_sha256": context.platform_snapshot_content_sha256,
             "authority_context_sha256": context.authority_context_sha256,
+            "calibration_model_configuration_sha256": calibration_model_configuration_sha256(
+                context.calibration_model_configuration
+            ) if context.calibration_model_configuration is not None else None,
         }) if context.platform_snapshot_id is not None else None,
     )
 
@@ -381,12 +387,16 @@ def run_circuits(
             if execution_profile is CircuitExecutionProfile.CALIBRATION_SCAN
             else run_bounded_model_point
         )
+        runner_kwargs: dict[str, Any] = {"timeout_s": timeout_s}
+        if execution_profile is CircuitExecutionProfile.CALIBRATION_SCAN:
+            runner_kwargs["model_configuration"] = context.calibration_model_configuration
+            runner_kwargs["idle_flux_phi0"] = context.idle_flux_phi0
         handle = runner(
             compiled.compilation,
             circuit.circuit_id,
             output_root,
             repository_root,
-            timeout_s=timeout_s,
+            **runner_kwargs,
         )
         arrays, observable_binding = _load_verified_final_observables(
             handle.artifact_root / "stage51" / "evolution"
@@ -464,7 +474,16 @@ def verify_circuit_result(
             verifier = verify_bounded_model_point
         else:
             _fail(CircuitReasonCode.RESULT_EVIDENCE_INVALID, "unknown qualification scope")
-        handle = verifier(model_root, compiled.compilation, repository_root)
+        verifier_kwargs: dict[str, Any] = {}
+        if qualification_scope == CALIBRATION_SCAN_SCOPE:
+            verifier_kwargs["model_configuration"] = context.calibration_model_configuration
+            verifier_kwargs["idle_flux_phi0"] = context.idle_flux_phi0
+        handle = verifier(
+            model_root,
+            compiled.compilation,
+            repository_root,
+            **verifier_kwargs,
+        )
     except Exception as exc:
         raise CircuitExecutionError(CircuitReasonCode.RESULT_EVIDENCE_INVALID, str(exc)) from exc
     _verify_circuit_execution_evidence(root, compiled, handle, readout_selection)
@@ -530,6 +549,16 @@ def _validate_context(context: CircuitExecutionContext) -> None:
         _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "only lab_ground is admitted by the smoke backend")
     if context.observable_set_id != "dressed_computational_populations_v1":
         _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "unsupported observable_set_id")
+    if context.calibration_model_configuration is not None:
+        try:
+            calibration_model_configuration_sha256(
+                context.calibration_model_configuration
+            )
+        except ValueError as exc:
+            raise CircuitExecutionError(
+                CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
+                str(exc),
+            ) from exc
     platform = (context.platform_snapshot_id, context.platform_snapshot_content_sha256, context.authority_context_sha256)
     if any(value is not None for value in platform):
         if not all(isinstance(value, str) and re.fullmatch(r"[0-9A-Fa-f]{64}", value) is not None for value in platform[1:]) or not isinstance(platform[0], str) or not platform[0]:
@@ -934,7 +963,7 @@ def _publish_circuit_execution_evidence(
             },
         )
         _verify_circuit_execution_evidence(staging, compiled, handle, readout_selection)
-        atomic_publish(staging, target)
+        publish_calibration_directory(staging, target)
         return target, receipt_sha256
     except CircuitExecutionError:
         if staging.exists():

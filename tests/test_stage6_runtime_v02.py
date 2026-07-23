@@ -6,13 +6,17 @@ import json
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
+import sys
 import uuid
 
 import pytest
 import yaml
 
 import sqvm.runtime_v02.runner as v02_runner
+import sqvm.runtime_v02.core as v02_core
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_json as qcis_sha256_json
 from sqvm.runtime_v02 import (
     ExperimentRequestV02,
     BACKEND_ID as V02_BACKEND_ID,
@@ -34,11 +38,24 @@ from sqvm.runtime.models import frozen_mapping
 from sqvm.runtime.journal import canonical_json_line_bytes
 from sqvm.runtime.provenance import build_source_snapshot
 from sqvm.runtime.storage import inventory_tree
-from sqvm.runtime_v02.core import RESULT_SCHEMA, load_compiler_fixture_authority, validate_dataset_v02, write_dataset_v02
+from sqvm.runtime_v02.core import (
+    RESULT_SCHEMA,
+    canonical_request_payload_v02,
+    compiler_fixture_versions,
+    fixture_binding_from_persisted_payload_v02,
+    load_compiler_fixture_authority,
+    load_experiment_request_v02,
+    validate_dataset_v02,
+    write_dataset_v02,
+)
+from sqvm.runtime_v02.recovery import recover_interrupted_run_v02
+from sqvm.runtime_v02.runner import run_experiment_v02
+from sqvm.runtime_v02.verify import verify_experiment_run_v02
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/experiments/platform_qcis_compile_smoke_v1.yaml"
+LEGACY_FIXTURE_ROOT = ROOT / "tests/fixtures/runtime_v02_legacy_v1"
 
 
 @pytest.fixture
@@ -81,9 +98,87 @@ def _rebind_terminal(run_dir: Path) -> None:
     receipt_path.write_bytes(canonical_json_bytes(receipt))
 
 
+def _verify_legacy_fixture_provenance() -> dict[str, object]:
+    provenance = json.loads((LEGACY_FIXTURE_ROOT / "provenance.json").read_text(encoding="utf-8"))
+    assert provenance["source_commit"] == "8e054797227ed58a53ec80a1e35df5ac205de032"
+    assert provenance["source_compiler_sha256"] == "7E94B3B7D24EDA24AA720D532754F4ED564B9D8E700B2B125BC59522E01ACB23"
+    assert provenance["generator_path"] == "tests/tools/generate_runtime_v02_legacy_v1_fixture.py"
+    generator = ROOT / provenance["generator_path"]
+    assert hashlib.sha256(generator.read_bytes()).hexdigest().upper() == provenance["generator_raw_sha256"]
+    assert provenance["fixed_inputs"]["terminal_run_id"] == "11111111-1111-4111-8111-111111111111"
+    assert provenance["fixed_inputs"]["interrupted_run_id"] == "22222222-2222-4222-8222-222222222222"
+    assert provenance["fixed_inputs"]["excluded_derived_files"] == ["terminal-output/catalog_v02.sqlite"]
+    files = provenance["files"]
+    assert provenance["file_count"] == len(files) == 63
+    for entry in files:
+        path = LEGACY_FIXTURE_ROOT / entry["path"]
+        assert path.is_file()
+        assert path.stat().st_size == entry["byte_length"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest().upper() == entry["raw_sha256"]
+    encoded = json.dumps(files, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    assert hashlib.sha256(encoded).hexdigest().upper() == provenance["file_manifest_aggregate_sha256"]
+    return provenance
+
+
+def _assert_tree_byte_equal(actual: Path, expected: Path) -> None:
+    actual_files = {
+        path.relative_to(actual).as_posix(): path
+        for path in actual.rglob("*") if path.is_file()
+    }
+    expected_files = {
+        path.relative_to(expected).as_posix(): path
+        for path in expected.rglob("*") if path.is_file()
+    }
+    assert actual_files.keys() == expected_files.keys()
+    for relative, expected_path in expected_files.items():
+        assert actual_files[relative].read_bytes() == expected_path.read_bytes(), relative
+
+
+def test_v02_frozen_legacy_fixture_generator_byte_matches_checked_evidence():
+    _verify_legacy_fixture_provenance()
+    generated = Path("D:/") / f"sqc_v02_{uuid.uuid4().hex[:8]}"
+    assert not generated.exists()
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "tests/tools/generate_runtime_v02_legacy_v1_fixture.py",
+                "--repository-root", ".",
+                "--target", str(generated),
+                "--verify-against", "tests/fixtures/runtime_v02_legacy_v1",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr or completed.stdout
+        _assert_tree_byte_equal(generated, LEGACY_FIXTURE_ROOT)
+    finally:
+        if generated.exists():
+            shutil.rmtree(generated)
+
+
+@pytest.fixture
+def frozen_legacy_root():
+    _verify_legacy_fixture_provenance()
+    root = ROOT / "tmp" / f"legacy_v1_{uuid.uuid4().hex[:8]}"
+    root.mkdir()
+    try:
+        shutil.copy2(ROOT / "pyproject.toml", root / "pyproject.toml")
+        shutil.copy2(ROOT / "requirements-stage6-lock.txt", root / "requirements-stage6-lock.txt")
+        shutil.copytree(ROOT / "configs", root / "configs")
+        target = root / "tests/fixtures/runtime_v02_legacy_v1"
+        target.parent.mkdir(parents=True)
+        shutil.copytree(LEGACY_FIXTURE_ROOT, target)
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_v02_public_loader_is_exact_and_keeps_v01_separate(tmp_path):
     assert get_runtime_schema_registry().versions() == ("0.1", "0.2")
-    assert build_source_snapshot(ROOT)["aggregate_sha256"] == "4AD30147E0044275320DDB04CD8FD2D5D1D5D7AFCB0C03AF2A253B256737BFEE"
+    assert build_source_snapshot(ROOT)["aggregate_sha256"] == "357ACB3B4AE0A48E5FDCDCB95526D088476A81A39D98FB2E8ABA8ACD6386E425"
     request = load_experiment_request(CONFIG, ROOT)
     assert isinstance(request, ExperimentRequestV02)
     assert request.schema_version == "0.2"
@@ -110,7 +205,7 @@ def test_v02_public_loader_is_exact_and_keeps_v01_separate(tmp_path):
 
 def test_v02_authority_point_identity_and_compiler_evidence_are_deterministic():
     authority, authority_sha = load_compiler_fixture_authority(ROOT)
-    assert authority["authority_id"] == "2B255F518ABA1A0949965CB5E53A7AE6B19BD619A8F1739D9A6D2B1458E34EB5"
+    assert authority["authority_id"] == "89168201511D2BF75667B3593969F4B9CC21AB7AC8DE9570DFE58A6BA897F4D5"
     request = load_experiment_request(CONFIG, ROOT)
     assert request.authority_sha256 == authority_sha
     first = expand_scan_v02(request)
@@ -135,19 +230,236 @@ def test_v02_authority_point_identity_and_compiler_evidence_are_deterministic():
         compile_point_v02(request, forged)
 
 
-@pytest.mark.parametrize("relative", [
-    "configs/runtime/stage6v02/compiler_fixture_authority_v1.json",
-    "configs/runtime/stage6v02/compiler_fixture_approval_v1.json",
+@pytest.mark.parametrize(("relative", "fixture_version"), [
+    ("configs/runtime/stage6v02/compiler_fixture_authority_v1.json", "v1"),
+    ("configs/runtime/stage6v02/compiler_fixture_approval_v1.json", "v1"),
+    ("configs/runtime/stage6v02/compiler_fixture_authority_v2.json", "v2"),
+    ("configs/runtime/stage6v02/compiler_fixture_approval_v2.json", "v2"),
 ])
-def test_v02_authority_and_external_approval_are_raw_hash_anchored(relative):
+def test_v02_authority_and_external_approval_are_raw_hash_anchored(relative, fixture_version):
     path = ROOT / relative
     original = path.read_bytes()
     try:
         path.write_bytes(original + b" ")
         with pytest.raises(ValueError):
-            load_compiler_fixture_authority(ROOT)
+            load_compiler_fixture_authority(ROOT, fixture_version=fixture_version)
     finally:
         path.write_bytes(original)
+
+
+def test_v02_compiler_fixture_v2_is_versioned_and_is_the_default_admission_authority():
+    assert compiler_fixture_versions() == ("v1", "v2")
+    authority = json.loads(
+        (ROOT / "configs/runtime/stage6v02/compiler_fixture_authority_v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(authority["source_bindings"]) == {
+        "docs/decisions/2026-07-16-stage4-1-qcis-v0-3-design-freeze.md",
+        "docs/designs/04_1_parameterized_control_design.md",
+        "docs/designs/06_1_experiment_runtime_v02_design.md",
+        "docs/designs/07_1_3_platform_configuration_v0_2.schema.json",
+        "docs/designs/07_1_3_platform_configuration_v0_2_design.md",
+        "docs/designs/07_qcis_compiler_design.md",
+        "docs/designs/07_qcis_compiler_v0_3_phase_amendment.md",
+        "src/sqvm/qcis/compiler.py",
+        "src/sqvm/qcis/models.py",
+        "src/sqvm/qcis/parser.py",
+    }
+    loaded, raw_sha = load_compiler_fixture_authority(ROOT)
+    assert loaded["authority_id"] == authority["authority_id"]
+    assert raw_sha == "4B7D901D910A706D24353CC7CC3C4B2DBE7427EEB77C8D6A4A6A8DD50F278BFF"
+    with pytest.raises(ValueError, match="compiler fixture version is not registered"):
+        load_compiler_fixture_authority(ROOT, fixture_version="v3")
+
+
+def _synthetic_approved_fixture_registry():
+    """Exercise activation wiring without minting an approval artifact in configs/."""
+
+    template = json.loads((ROOT / "configs/runtime/stage6v02/compiler_fixture_authority_v2.json").read_text(encoding="utf-8"))
+    # _safe_regular_file deliberately requires repository containment. Keep every
+    # synthetic byte under one uniquely named, finally-cleaned test base.
+    base = ROOT / "tmp" / f"synthetic_fixture_registry_{uuid.uuid4().hex}"
+    base.mkdir(parents=True)
+    registry = {}
+    for version in ("v1", "v2"):
+        authority = json.loads(json.dumps(template))
+        authority["qcis_authorities"]["compiler"]["compiler_id"] = f"synthetic_{version}"
+        compiler = authority["qcis_authorities"]["compiler"]
+        authority["qcis_authorities"]["expected_sha256"]["compiler"] = qcis_sha256_json(compiler)
+        authority["authority_id"] = hashlib.sha256(canonical_json_bytes({
+            key: value for key, value in authority.items() if key != "authority_id"
+        })).hexdigest().upper()
+        authority_path = base / f"authority_{version}.json"
+        authority_path.write_bytes(canonical_json_bytes(authority))
+        authority_sha = hashlib.sha256(authority_path.read_bytes()).hexdigest().upper()
+        approval = {
+            "schema_version": "0.1",
+            "artifact_type": "stage_06_qcis_compiler_fixture_approval",
+            "artifact_version": "2",
+            "authority_id": authority["authority_id"],
+            "authority_raw_sha256": authority_sha,
+            "design_path": "docs/designs/06_1_experiment_runtime_v02_design.md",
+            "design_sha256": authority["source_bindings"]["docs/designs/06_1_experiment_runtime_v02_design.md"],
+            "reviewer_role": "independent_test",
+            "decision": "APPROVE",
+            "blocking_findings": [],
+        }
+        approval_path = base / f"approval_{version}.json"
+        approval_path.write_bytes(canonical_json_bytes(approval))
+        registry[version] = {
+            "authority_path": authority_path.relative_to(ROOT).as_posix(),
+            "approval_path": approval_path.relative_to(ROOT).as_posix(),
+            "authority_id": authority["authority_id"],
+            "approval_sha256": hashlib.sha256(approval_path.read_bytes()).hexdigest().upper(),
+            "authority_artifact_version": "2",
+            "candidate": False,
+            "source_paths": frozenset(authority["source_bindings"]),
+            "required_approval": approval,
+        }
+    assert registry["v1"]["authority_id"] != registry["v2"]["authority_id"]
+    return registry, base
+
+
+def test_v02_unknown_fixture_rejects_before_reservation_or_output(tmp_path, monkeypatch):
+    output = Path("tmp") / f"unknown_fixture_{uuid.uuid4().hex}"
+    monkeypatch.setattr(v02_core, "DEFAULT_COMPILER_FIXTURE_VERSION", "v3")
+    with pytest.raises(ValueError, match="compiler fixture version is not registered"):
+        run_experiment_v02(CONFIG, output, ROOT)
+    assert not (ROOT / output).exists()
+
+
+def test_v02_fixture_activation_persists_and_dispatches_without_default_drift(monkeypatch):
+    registry, synthetic_base = _synthetic_approved_fixture_registry()
+    monkeypatch.setattr(v02_core, "_FIXTURE_VERSIONS", registry)
+    try:
+        monkeypatch.setattr(v02_core, "DEFAULT_COMPILER_FIXTURE_VERSION", "v2")
+        v2_request = load_experiment_request_v02(CONFIG, ROOT)
+        payload = canonical_request_payload_v02(v2_request)
+        assert payload["compiler_fixture_version"] == "v2"
+        assert payload["compiler_fixture_authority_id"] == v2_request.authority_id
+        assert payload["compiler_fixture_authority_sha256"] == v2_request.authority_sha256
+        assert all(
+            point.compiler_fixture_version == "v2"
+            and point.authority_id == registry["v2"]["authority_id"]
+            and point.program_authority_sha256 == registry["v2"]["required_approval"]["authority_raw_sha256"]
+            for point in expand_scan_v02(v2_request)
+        )
+
+        relative = synthetic_base.relative_to(ROOT) / "dispatch"
+        monkeypatch.setattr(v02_core, "DEFAULT_COMPILER_FIXTURE_VERSION", "v1")
+        result = run_experiment_v02(CONFIG, relative, ROOT)
+        request_payload = json.loads((result.run_dir / "request.json").read_text(encoding="utf-8"))
+        assert request_payload["compiler_fixture_version"] == "v1"
+        assert request_payload["compiler_fixture_authority_id"] == registry["v1"]["authority_id"]
+        assert request_payload["compiler_fixture_authority_sha256"] == registry["v1"]["required_approval"]["authority_raw_sha256"]
+        fixture_snapshot = json.loads((result.run_dir / "snapshots/compiler_fixture.json").read_text(encoding="utf-8"))
+        assert fixture_snapshot == {
+            "schema_version": "0.1",
+            "compiler_fixture_version": "v1",
+            "compiler_fixture_authority_id": registry["v1"]["authority_id"],
+            "compiler_fixture_authority_sha256": registry["v1"]["required_approval"]["authority_raw_sha256"],
+        }
+        point_payload = json.loads((result.run_dir / "point_table.json").read_text(encoding="utf-8"))
+        assert point_payload["compiler_fixture_version"] == "v1"
+        assert all(
+            point["compiler_fixture_authority_id"] == registry["v1"]["authority_id"]
+            and point["compiler_fixture_authority_sha256"] == registry["v1"]["required_approval"]["authority_raw_sha256"]
+            for point in point_payload["points"]
+        )
+
+        # A historical payload with no binding is always v1, even after v2 becomes default.
+        legacy = dict(request_payload)
+        for key in ("compiler_fixture_version", "compiler_fixture_authority_id", "compiler_fixture_authority_sha256"):
+            legacy.pop(key)
+        monkeypatch.setattr(v02_core, "DEFAULT_COMPILER_FIXTURE_VERSION", "v2")
+        assert fixture_binding_from_persisted_payload_v02(legacy).version == "v1"
+        assert verify_experiment_run_v02(result.run_dir, ROOT).ok
+        _tamper_canonical(result.run_dir / "request.json", lambda row: row.__setitem__("compiler_fixture_version", "missing"))
+        assert not verify_experiment_run_v02(result.run_dir, ROOT).ok
+        (result.run_dir / "request.json").write_bytes(canonical_json_bytes(request_payload))
+
+        original_publish = v02_runner.atomic_publish
+        monkeypatch.setattr(v02_runner, "atomic_publish", lambda _staging, _target: (_ for _ in ()).throw(OSError("stop")))
+        interrupted_root = synthetic_base.relative_to(ROOT) / "recovery"
+        with pytest.raises(OSError, match="stop"):
+            monkeypatch.setattr(v02_core, "DEFAULT_COMPILER_FIXTURE_VERSION", "v1")
+            run_experiment_v02(CONFIG, interrupted_root, ROOT)
+        staging = next((ROOT / interrupted_root / "staging").iterdir())
+        monkeypatch.setattr(v02_runner, "atomic_publish", original_publish)
+        monkeypatch.setattr(v02_core, "DEFAULT_COMPILER_FIXTURE_VERSION", "v2")
+        recovered = recover_interrupted_run_v02(ROOT / interrupted_root, staging.name)
+        reason = json.loads((recovered.run_dir / "recovery.json").read_text(encoding="utf-8"))["reason"]
+        assert "compiler_fixture_version=v1" in reason
+        assert registry["v1"]["authority_id"] in reason
+        assert registry["v2"]["authority_id"] not in reason
+
+        tampered = dict(request_payload)
+        tampered["compiler_fixture_version"] = "missing"
+        with pytest.raises(ValueError, match="not registered"):
+            fixture_binding_from_persisted_payload_v02(tampered)
+        tampered = dict(request_payload)
+        tampered["compiler_fixture_authority_sha256"] = "0" * 64
+        with pytest.raises(ValueError, match="binding"):
+            fixture_binding_from_persisted_payload_v02(tampered)
+        tampered = dict(request_payload)
+        tampered["compiler_fixture_authority_id"] = registry["v2"]["authority_id"]
+        with pytest.raises(ValueError, match="binding"):
+            fixture_binding_from_persisted_payload_v02(tampered)
+    finally:
+        shutil.rmtree(synthetic_base, ignore_errors=True)
+
+
+def test_v02_frozen_legacy_v1_evidence_replays_and_recovers_after_v2_default(frozen_legacy_root, monkeypatch):
+    synthetic, synthetic_base = _synthetic_approved_fixture_registry()
+    registry = dict(v02_core._FIXTURE_VERSIONS)
+    registry["v2"] = synthetic["v2"]
+    monkeypatch.setattr(v02_core, "_FIXTURE_VERSIONS", registry)
+    try:
+        monkeypatch.setattr(v02_core, "DEFAULT_COMPILER_FIXTURE_VERSION", "v2")
+        terminal_output = frozen_legacy_root / "tests/fixtures/runtime_v02_legacy_v1/terminal-output"
+        terminal = next((terminal_output / "runs").iterdir())
+        legacy_request = json.loads((terminal / "request.json").read_text(encoding="utf-8"))
+        legacy_points = json.loads((terminal / "point_table.json").read_text(encoding="utf-8"))
+        assert "compiler_fixture_version" not in legacy_request
+        assert "compiler_fixture.json" not in {row.name for row in (terminal / "snapshots").iterdir()}
+        assert all("compiler_fixture_version" not in point for point in legacy_points["points"])
+        assert verify_experiment_run_v02(terminal, frozen_legacy_root).ok
+
+        request_path = terminal / "request.json"
+        request_raw = request_path.read_bytes()
+        request_path.write_bytes(request_raw + b" ")
+        assert not verify_experiment_run_v02(terminal, frozen_legacy_root).ok
+        request_path.write_bytes(request_raw)
+        event_path = terminal / "events.jsonl"
+        event_raw = event_path.read_bytes()
+        event_path.write_bytes(event_raw[:-1] + b" \n")
+        assert not verify_experiment_run_v02(terminal, frozen_legacy_root).ok
+        event_path.write_bytes(event_raw)
+        authority_path = terminal / "snapshots/compiler_authority.json"
+        authority_raw = authority_path.read_bytes()
+        authority_path.write_bytes(authority_raw + b" ")
+        assert not verify_experiment_run_v02(terminal, frozen_legacy_root).ok
+        authority_path.write_bytes(authority_raw)
+        assert verify_experiment_run_v02(terminal, frozen_legacy_root).ok
+
+        link = frozen_legacy_root / "legacy-run-link"
+        try:
+            link.symlink_to(terminal, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+        assert not verify_experiment_run_v02(link, frozen_legacy_root).ok
+        link.unlink()
+
+        interrupted = frozen_legacy_root / "tests/fixtures/runtime_v02_legacy_v1/interrupted-output"
+        run_id = next((interrupted / "staging").iterdir()).name
+        recovered = recover_interrupted_run_v02(interrupted, run_id)
+        recovery = json.loads((recovered.run_dir / "recovery.json").read_text(encoding="utf-8"))
+        assert "compiler_fixture_version=v1" in recovery["reason"]
+        assert registry["v1"]["authority_id"] in recovery["reason"]
+        assert registry["v2"]["authority_id"] not in recovery["reason"]
+    finally:
+        shutil.rmtree(synthetic_base, ignore_errors=True)
 
 
 def test_v02_multi_variable_dataset_rejects_binary_and_order_tampering(tmp_path):
@@ -263,7 +575,7 @@ def test_v02_interrupted_atomic_publish_uses_versioned_no_resume_recovery(output
     recovered = recover_interrupted_run(absolute, run_id)
     assert recovered.status == "interrupted"
     recovery_payload = json.loads((recovered.run_dir / "recovery.json").read_text(encoding="utf-8"))
-    assert recovery_payload["reason"].startswith("runtime_v02|schema=0.2|authority_id=")
+    assert recovery_payload["reason"].startswith("runtime_v02|schema=0.2|compiler_fixture_version=v2|authority_id=")
     assert not (absolute / "staging" / run_id).exists()
     assert (absolute / "quarantine" / run_id).is_dir()
 

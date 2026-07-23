@@ -30,7 +30,7 @@ from sqvm.runtime.storage import (
     write_canonical_new,
 )
 from sqvm.runtime_v02.verify import verify_experiment_run_v02, verify_interrupted_prefix_v02
-from sqvm.runtime_v02.core import AUTHORITY_ID, _safe_regular_file
+from sqvm.runtime_v02.core import _safe_regular_file, fixture_binding_from_persisted_payload_v02
 
 
 def recover_interrupted_run_v02(output_root: str | Path, run_id: str) -> RecoveryArtifactSet:
@@ -81,14 +81,16 @@ def recover_interrupted_run_v02(output_root: str | Path, run_id: str) -> Recover
         recovery_staging.mkdir()
         interrupted_request = _load_canonical(quarantine / "request.json")
         interrupted_source = _load_canonical(quarantine / "snapshots/source.json")
+        fixture_binding = fixture_binding_from_persisted_payload_v02(interrupted_request)
         payload = {
             "schema_version": "0.1",
             "recovery_id": recovery_id,
             "status": "interrupted",
             "original_run_id": run_id,
             "reason": (
-                f"runtime_v02|schema=0.2|authority_id={AUTHORITY_ID}"
-                f"|authority_sha256={interrupted_request['program_authority_sha256']}"
+                f"runtime_v02|schema=0.2|compiler_fixture_version={fixture_binding.version}"
+                f"|authority_id={fixture_binding.authority_id}"
+                f"|authority_sha256={fixture_binding.authority_sha256}"
                 f"|source_aggregate={interrupted_source['aggregate_sha256']}|stale_or_crashed_attempt"
             ),
             "original_run_lock_sha256": _raw_sha256(run_lock),

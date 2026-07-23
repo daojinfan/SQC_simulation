@@ -31,8 +31,10 @@ from sqvm.runtime.storage import (
 from sqvm.runtime_v02.core import (
     BACKEND_ID,
     CLAIM_ENVELOPE,
+    CompilerFixtureBindingV02,
     CompiledPointV02,
     compile_point_v02,
+    load_experiment_request_v02,
     point_table_payload_v02,
     resolve_output_root_no_follow,
 )
@@ -50,7 +52,8 @@ def run_experiment_v02(
     from sqvm.runtime_v02.adapters import get_runtime_schema_adapter
 
     adapter = get_runtime_schema_adapter("0.2")
-    request = adapter.load_request(request_path, repository_root)
+    # Admission happens before output/layout reservation so pending candidates have no side effects.
+    request = load_experiment_request_v02(request_path, repository_root)
     root = request.repository_root
     output = resolve_output_root_no_follow(output_root, root)
     request_payload = dict(adapter.canonical_request(request))
@@ -60,7 +63,10 @@ def run_experiment_v02(
     point_sha = _sha_payload(point_payload)
     environment = build_environment_snapshot()
     validate_locked_environment(root, environment)
-    source = build_source_snapshot_v02(root)
+    fixture_binding = CompilerFixtureBindingV02(
+        request.compiler_fixture_version, request.authority_id, request.authority_sha256,
+    )
+    source = build_source_snapshot_v02(root, fixture_binding=fixture_binding)
     environment_sha = _sha_payload(environment)
     capabilities_sha = _sha_payload(CAPABILITIES)
 
@@ -97,6 +103,12 @@ def run_experiment_v02(
             "environment": write_canonical_new(snapshots_dir / "environment.json", environment),
             "source": write_canonical_new(snapshots_dir / "source.json", source),
             "compiler_authority": write_canonical_new(snapshots_dir / "compiler_authority.json", _plain(request.authority)),
+            "compiler_fixture": write_canonical_new(snapshots_dir / "compiler_fixture.json", {
+                "schema_version": "0.1",
+                "compiler_fixture_version": request.compiler_fixture_version,
+                "compiler_fixture_authority_id": request.authority_id,
+                "compiler_fixture_authority_sha256": request.authority_sha256,
+            }),
             "run_lock": run_lock_sha,
             "resource_lock": resource_lock_sha,
         }
@@ -236,6 +248,9 @@ def _publish(
         "backend_capabilities": {**CAPABILITIES, "sha256": capabilities_sha},
         "payload_files": inventory_tree(staging),
         "dataset_summary": None if dataset_summary is None else _plain(dataset_summary),
+        "compiler_fixture_version": request.compiler_fixture_version,
+        "compiler_fixture_authority_id": request.authority_id,
+        "compiler_fixture_authority_sha256": request.authority_sha256,
     }
     manifest_sha = write_canonical_new(staging / "manifest.json", manifest)
     report = {
@@ -275,6 +290,9 @@ def _publish(
         "run_lock_sha256": snapshots["run_lock"],
         "resource_lock_sha256": snapshots["resource_lock"],
         "dataset_hashes": dataset_hashes,
+        "compiler_fixture_version": request.compiler_fixture_version,
+        "compiler_fixture_authority_id": request.authority_id,
+        "compiler_fixture_authority_sha256": request.authority_sha256,
     }
     receipt_sha = write_canonical_new(staging / "receipt.json", receipt)
     from sqvm.runtime_v02.verify import verify_experiment_run_v02

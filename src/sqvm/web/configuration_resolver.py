@@ -13,7 +13,12 @@ import yaml
 
 from sqvm.circuits import CircuitExecutionContext
 from sqvm.qcis.canonical import sha256_json
-from sqvm.web.configuration_schema import load_frozen_schema, project_wave_indices, validate_document
+from sqvm.web.configuration_schema import (
+    initial_simulation_configuration,
+    load_frozen_schema,
+    project_wave_indices,
+    validate_document,
+)
 
 
 class PlatformAuthorityResolutionError(ValueError):
@@ -51,7 +56,20 @@ class PlatformAuthorityResolver:
             raise PlatformAuthorityResolutionError("uninitialized snapshot cannot resolve a compiler authority")
         authorities = self._authorities(snapshot, device, calibration)
         frozen = _freeze(authorities)
-        context_hash = sha256_json(_plain(frozen))
+        simulation = snapshot["editable"]["control_values"].get(
+            "simulation",
+            initial_simulation_configuration(),
+        )
+        model_configuration = simulation.get("calibration_model") if isinstance(simulation, Mapping) else None
+        if not isinstance(model_configuration, Mapping):
+            raise PlatformAuthorityResolutionError("calibration simulation model is invalid")
+        frozen_model_configuration = _freeze(model_configuration)
+        context_hash = sha256_json(
+            {
+                "qcis_authorities": _plain(frozen),
+                "calibration_model_configuration": _plain(frozen_model_configuration),
+            }
+        )
         return CircuitExecutionContext(
             frozen,
             MappingProxyType({name: float(snapshot["editable"]["control_values"]["idle_flux_phi0"][name]) for name in ("q1", "q2", "c")} ),
@@ -59,6 +77,7 @@ class PlatformAuthorityResolver:
             platform_snapshot_id=snapshot_id,
             platform_snapshot_content_sha256=snapshot["content_sha256"],
             authority_context_sha256=context_hash,
+            calibration_model_configuration=frozen_model_configuration,
         )
 
     def _device(self, snapshot: Mapping[str, Any]) -> Mapping[str, Any]:

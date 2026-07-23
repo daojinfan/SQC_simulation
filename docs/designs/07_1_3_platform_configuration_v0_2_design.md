@@ -53,6 +53,9 @@ PlatformConfigurationSnapshot
 │  │  ├─ lane_order, lanes.<lane> {latency_samples, fir}
 │  │  ├─ static_mixing.{xy,z,readout} {input_lanes, output_coordinates, matrix}
 │  │  ├─ idle_flux_phi0 {q1, q2, c}
+│  │  ├─ simulation.calibration_model {charge_cutoffs, retained_energy_levels,
+│  │  │                                  convergence_charge_cutoffs,
+│  │  │                                  convergence_retained_energy_levels}
 │  │  └─ acceptance {...Stage 4.1 thresholds...}
 │  └─ calibration_values
 │     ├─ qagents.{Q1,Q2}.reference_frequency_authority
@@ -73,6 +76,11 @@ version. `Q1`, `Q2`, and `C` are canonical QCIS tokens; the resolved tensor orde
 `waveform_class` is the canonical waveform discriminator: `rectangle`, `gaussian`, `flattop`, or `acz`.
 `wave_index` is generated only as a QCIS compatibility projection (`0`, `1`, `2`, `5` respectively), and is
 not a stored editable input. Formula version and the class-to-index mapping are instruction-profile authority.
+
+`control_values.simulation.calibration_model` is the editable numerical truncation used by local calibration
+evolution. The default retained dimensions are `q1=5`, `c=3`, and `q2=5`, so the projected Hilbert dimension
+is 75. The product is derived and is not stored separately. Old snapshots may omit `simulation`; the resolver
+then uses the default model configuration, while mutable current configurations are migrated on read.
 
 ## 3. Canonical JSON example
 
@@ -131,6 +139,14 @@ not a stored editable input. Formula version and the class-to-index mapping are 
         "readout": {"input_lanes": ["r1_ro_i", "r1_ro_q", "r2_ro_i", "r2_ro_q"], "output_coordinates": ["r1_device_i_V", "r1_device_q_V", "r2_device_i_V", "r2_device_q_V"], "matrix": [[0.001, 0.00001, 0, 0], [-0.00001, 0.001, 0, 0], [0, 0, 0.00102, 0.00001], [0, 0, -0.00001, 0.00102]]}
       },
       "idle_flux_phi0": {"q1": 0.1, "q2": 0.0, "c": 0.27},
+      "simulation": {
+        "calibration_model": {
+          "charge_cutoffs": {"q1": 7, "c": 7, "q2": 7},
+          "retained_energy_levels": {"q1": 5, "c": 3, "q2": 5},
+          "convergence_charge_cutoffs": {"q1": 8, "c": 8, "q2": 8},
+          "convergence_retained_energy_levels": {"q1": 6, "c": 4, "q2": 6}
+        }
+      },
       "acceptance": {"max_condition_number": 100, "max_xy_area_relative_error": 0.005, "max_readout_area_relative_error": 0.005, "max_z_flat_top_error_phi0": 0.00002, "max_phase_proxy_rad": 0.1, "phase_proxy_window_ns": 32, "max_formal_samples_per_scenario": 10000, "analysis_runtime_budget_seconds": 10, "total_runtime_budget_seconds": 60}
     },
     "calibration_values": {

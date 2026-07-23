@@ -1,0 +1,217 @@
+{
+  "aggregate_sha256": "EB4ABF877D5CA3C56CF2F40B93D275E980199035D843C34776ACFD2557C4D2DF",
+  "files": [
+    {
+      "byte_length": 886,
+      "path": "configs/experiments/platform_qcis_compile_smoke_v1.yaml",
+      "raw_sha256": "7B7E4130649F4D25384B4ADCD4B74CB62DDE0ECA49B0552A83DD06BC83B58110"
+    },
+    {
+      "byte_length": 548,
+      "path": "configs/runtime/stage6v02/compiler_fixture_approval_v1.json",
+      "raw_sha256": "70D268BCE6DAFC1F49AB1E3A9BE9BEC82B32099E148517B2EAC30B50D071A445"
+    },
+    {
+      "byte_length": 3812,
+      "path": "configs/runtime/stage6v02/compiler_fixture_authority_v1.json",
+      "raw_sha256": "E55E955E54204DDB447D98830ADB76D161B3CA05965F7FF9631FB9A3238D864C"
+    },
+    {
+      "byte_length": 8675,
+      "path": "docs/designs/06_1_experiment_runtime_v02_design.md",
+      "raw_sha256": "D377E9DD8B92C62FA6D22913168E0FA65FC2176F7481942B323F8B22D6873E3B"
+    },
+    {
+      "byte_length": 6751,
+      "path": "src/sqvm/runtime_api.py",
+      "raw_sha256": "CE2924701F0B034078629F31E8AF58177F96A60569A06561EAAA196F2F9DF4B8"
+    },
+    {
+      "byte_length": 772,
+      "path": "src/sqvm/runtime_v02/__init__.py",
+      "raw_sha256": "BF16C5B9F7D860E6DA0EBCE1AA1A22312F6EEFE7EDD0AEA625329E46A5EE5047"
+    },
+    {
+      "byte_length": 5955,
+      "path": "src/sqvm/runtime_v02/adapters.py",
+      "raw_sha256": "375772108DFA5B52218367B596F308367841B2A17FDA73A965CB7AC89F4D4385"
+    },
+    {
+      "byte_length": 6910,
+      "path": "src/sqvm/runtime_v02/catalog.py",
+      "raw_sha256": "54F0CC2B90868860064AA5FB0EB1AC63632F37E64B8FA030E7FA068A52DBF73F"
+    },
+    {
+      "byte_length": 31537,
+      "path": "src/sqvm/runtime_v02/core.py",
+      "raw_sha256": "2D70DE8EA852C48176EA81B4B738B335DA79A5402B69692E6AA3233F6C7876AE"
+    },
+    {
+      "byte_length": 2309,
+      "path": "src/sqvm/runtime_v02/provenance.py",
+      "raw_sha256": "AB13FB452BF52550E6E6B672B4163E111DDD198A45F4D8C19E0EF46453A93110"
+    },
+    {
+      "byte_length": 9354,
+      "path": "src/sqvm/runtime_v02/recovery.py",
+      "raw_sha256": "F056FBF69ECB47E37BA537AA2D0AB183291080A66D2C6BE097A181A167A2D06C"
+    },
+    {
+      "byte_length": 13868,
+      "path": "src/sqvm/runtime_v02/runner.py",
+      "raw_sha256": "1497251EC302ABB822F7C81AFA6AA9E09E0189A9AE160FDA7F49DE9829496F8E"
+    },
+    {
+      "byte_length": 28629,
+      "path": "src/sqvm/runtime_v02/verify.py",
+      "raw_sha256": "D0D9CE20313BD88BE9C63620545AD7D300DACA7F14CD724893122271794CB3DB"
+    }
+  ],
+  "legacy_runtime_v01": {
+    "aggregate_sha256": "4AD30147E0044275320DDB04CD8FD2D5D1D5D7AFCB0C03AF2A253B256737BFEE",
+    "files": [
+      {
+        "byte_length": 274,
+        "path": "configs/calibration/platform_uncalibrated_v1.json",
+        "raw_sha256": "E3DD8BB9508AEE3984DAC6D01729466DB0023769DF437CF63A7C1BD15FEDD2F4"
+      },
+      {
+        "byte_length": 570,
+        "path": "configs/experiments/platform_deterministic_smoke_v1.yaml",
+        "raw_sha256": "BCD7B001E44A405F43AE44D179DA0CB9121C3BBFA85E382EF9F2459E7E0BD679"
+      },
+      {
+        "byte_length": 2598,
+        "path": "docs/decisions/2026-07-14-stage6-platform-only-entry.md",
+        "raw_sha256": "936D1CC1B226FC3FE0346B6EE42C0DE33EABBF2951561DC72722F0C70DEFA837"
+      },
+      {
+        "byte_length": 1896,
+        "path": "docs/decisions/2026-07-14-stage6-program-extension-amendment.md",
+        "raw_sha256": "94D4B3B462FB66C1AD914BAC63C911FF3D430C2F081A836454F116E55E7861BA"
+      },
+      {
+        "byte_length": 1889,
+        "path": "docs/decisions/2026-07-14-stage6-program-extension-freeze-review.md",
+        "raw_sha256": "CFE55ECEC6AE8979AECDF3BDF30EDC895B100279E09CF6D5C935E8614F9B4AA5"
+      },
+      {
+        "byte_length": 30952,
+        "path": "docs/designs/06_experiment_runtime_design.md",
+        "raw_sha256": "67E7B781F4170CB963301C68C1F1418B853920F0A31B483756E7E4C6D017872B"
+      },
+      {
+        "byte_length": 10851,
+        "path": "docs/stages/06_experiment_runtime_plan.md",
+        "raw_sha256": "ED715B3165669BB3B96EEC6A367256299D5F9ED034B9D4F2FCFDF73C28D42669"
+      },
+      {
+        "byte_length": 561,
+        "path": "pyproject.toml",
+        "raw_sha256": "4A9EEB72E2132C5704207C25908C7D634CD231A8CB50485EF8ABE9CB9E1E5CD1"
+      },
+      {
+        "byte_length": 234,
+        "path": "requirements-stage6-lock.txt",
+        "raw_sha256": "B2932270649650F48796F12809A502C583806FE7A13B20ABAD15B6D1EEDCBFE1"
+      },
+      {
+        "byte_length": 9625,
+        "path": "src/sqvm/__main__.py",
+        "raw_sha256": "95D0337C65261BD9D7337D2AFC7C04712977AB7C7CD848B35553672D9D81E9ED"
+      },
+      {
+        "byte_length": 2926,
+        "path": "src/sqvm/hamiltonian/provenance.py",
+        "raw_sha256": "926D49088A51F3BAC9338D12D83E546D588789EC0DDAA99C4E3D6021AD6A6076"
+      },
+      {
+        "byte_length": 2364,
+        "path": "src/sqvm/runtime/__init__.py",
+        "raw_sha256": "044CFFEB79A452EBF0F0C5F45E19AC3C26B95BAAD2E1BBC1C1A61CA37C2A74FC"
+      },
+      {
+        "byte_length": 1142,
+        "path": "src/sqvm/runtime/backend.py",
+        "raw_sha256": "151464091A7B1C527754D7F74DA12DAA6CB7A03E6402BD8DA47E01023A1C6245"
+      },
+      {
+        "byte_length": 7626,
+        "path": "src/sqvm/runtime/catalog.py",
+        "raw_sha256": "4CBE263F3E600D515EAB1C6493D8676201189D0A5B6A2528CB1F603E063375D6"
+      },
+      {
+        "byte_length": 12509,
+        "path": "src/sqvm/runtime/config.py",
+        "raw_sha256": "083D469CE5281CE57D84C6CD5E31BCDD2B76F9B879087F3CFA4B8A7706891AFF"
+      },
+      {
+        "byte_length": 7808,
+        "path": "src/sqvm/runtime/dataset.py",
+        "raw_sha256": "BC6C95CE8569E6CB1E83271488037B1E49B781AE424B1B18089890701C7CC1C3"
+      },
+      {
+        "byte_length": 3345,
+        "path": "src/sqvm/runtime/fake.py",
+        "raw_sha256": "E4626BF1868D3B342B672BE9EF7E2132337466CB71910D4F8C7B8CF062BC84C2"
+      },
+      {
+        "byte_length": 7385,
+        "path": "src/sqvm/runtime/journal.py",
+        "raw_sha256": "E5DFCAA38227A8968B35A186ABA779ED05B88FF1AC739331202E1079C844FC9A"
+      },
+      {
+        "byte_length": 2518,
+        "path": "src/sqvm/runtime/lifecycle.py",
+        "raw_sha256": "05905FD9064E6325A64ABA5C768C93675A704CAD710A19AD2E353EB9EF7FE3AB"
+      },
+      {
+        "byte_length": 6470,
+        "path": "src/sqvm/runtime/models.py",
+        "raw_sha256": "D98810BDE4BA2222E1E87D3769CD3CBF92FCAE336E99B79C7F0DC1B30CFF2FBB"
+      },
+      {
+        "byte_length": 5266,
+        "path": "src/sqvm/runtime/provenance.py",
+        "raw_sha256": "79894A4B455695CA32407AE8939DD1C7D7A4BEAD996861B1E652D1FC6C863332"
+      },
+      {
+        "byte_length": 20856,
+        "path": "src/sqvm/runtime/recovery.py",
+        "raw_sha256": "33679317D421B6EB69707E19957B0EB192C03BCC8C0CD57FBCF105A4AFA6B163"
+      },
+      {
+        "byte_length": 2344,
+        "path": "src/sqvm/runtime/registry.py",
+        "raw_sha256": "D2E8E17BC463EA00EE46BB157E6696FDCCCCCB2C42D51E009F4D871A17297AD7"
+      },
+      {
+        "byte_length": 20116,
+        "path": "src/sqvm/runtime/runner.py",
+        "raw_sha256": "8A5DC139F1ECBDAEC25611DCBEAECAD961CD07E75EC3EE1FC7A9B57EC9D4A236"
+      },
+      {
+        "byte_length": 2743,
+        "path": "src/sqvm/runtime/scan.py",
+        "raw_sha256": "869A1D6637FA6D31E89C89A270F6391C02659EE0CD9661503F58DC367D10851F"
+      },
+      {
+        "byte_length": 27863,
+        "path": "src/sqvm/runtime/stage71.py",
+        "raw_sha256": "75AB4DF07B474F1E579787F1513667D843D6E54138B3744B6FA35BF6330701BF"
+      },
+      {
+        "byte_length": 12140,
+        "path": "src/sqvm/runtime/storage.py",
+        "raw_sha256": "872C512914E18500DBAF74563F35866166CC102E59A8E9CD7A1A0F395B4CAD67"
+      },
+      {
+        "byte_length": 20811,
+        "path": "src/sqvm/runtime/verify.py",
+        "raw_sha256": "D33292EC7AA7488FF441D741CFF2056584D3FECEC44D104622D01E84C86A5279"
+      }
+    ],
+    "schema_version": "0.1"
+  },
+  "schema_version": "0.2"
+}

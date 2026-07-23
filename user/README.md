@@ -4,11 +4,19 @@
 
 | Notebook | 用途 | 状态 |
 | --- | --- | --- |
-| `01_qubit_spectroscopy.ipynb` | 单比特或双比特并行频谱校准 | 可运行 |
+| `01_qubit_spectroscopy.ipynb` | 单比特或双比特并行频谱扫描 | 可运行 |
 
-Notebook 通过 `sqvm.calibration` 公共接口运行实验。实验结果写入
+首次使用或更换 Python 环境后，先运行：
+
+```powershell
+.\user\setup_environment.cmd
+```
+
+该脚本把当前项目安装为 editable package，并验证
+`from sqvm.calibration import run_spectroscopy`。Notebook 随后可以直接通过
+`sqvm.calibration` 公共接口运行实验。实验结果写入
 `output/experiments/`，随后可以在校准 Web 控制台中查看。
 
-真实 QuTiP 扫描可能耗时较长。Notebook 默认将 `RUN_EXPERIMENT` 设为
-`False`；确认参数后显式改为 `True` 才会开始运行。运行后会逐点打印 phase、进度和
-circuit ID。当前严格 solver 实测约两分钟一个点，每点 watchdog 上限为 600 秒。
+真实 QuTiP 扫描可能耗时较长。Notebook 的 `RUN_EXPERIMENT=True` 会开始运行；需要先
+检查导入和参数时可改成 `False`。运行后逐点打印进度和 circuit ID，每个 worker 的
+watchdog 上限为 600 秒。

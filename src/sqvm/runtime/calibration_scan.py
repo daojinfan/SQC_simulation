@@ -1,4 +1,4 @@
-"""Local effective-model calibration scans without synchronous replay."""
+"""Local projected-charge calibration scans without synchronous replay."""
 
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ from sqvm.evolution.stage51_coefficients import (
 )
 from sqvm.evolution.stage51_context import production_stage51_physics_context
 from sqvm.evolution.stage51_models import Stage51NumericalResult
-from sqvm.evolution.stage51_worker import _validate_worker_result
 from sqvm.hamiltonian.provenance import canonical_json_bytes, raw_file_sha256
 from sqvm.qcis import (
     QCISCompilation,
@@ -41,11 +40,14 @@ from sqvm.qcis import (
 )
 from sqvm.runtime.calibration_model import (
     MODEL_AUTHORITY_PATH,
+    calibration_model_configuration_sha256,
     execute_calibration_model_worker,
-    load_calibration_model_authority,
+    model_configuration_from_authority,
+    resolve_calibration_model_authority,
+    validate_calibration_model_result,
 )
+from sqvm.runtime.publication import publish_calibration_directory
 from sqvm.runtime.storage import (
-    atomic_publish,
     inventory_tree_no_follow,
     write_canonical_new,
 )
@@ -99,10 +101,19 @@ def run_calibration_scan_point(
     repository_root: str | Path | None = None,
     *,
     timeout_s: float = 600.0,
+    model_configuration: Mapping[str, Any] | None = None,
+    idle_flux_phi0: Mapping[str, Any] | None = None,
 ) -> CalibrationScanHandle:
-    """Run one point through Stage 4.1 and an isolated effective-model worker."""
+    """Run one point through Stage 4.1 and an isolated projected-charge worker."""
 
     root = _repository_root(repository_root)
+    model_authority = resolve_calibration_model_authority(
+        root,
+        model_configuration,
+        idle_flux_phi0=idle_flux_phi0,
+    )
+    resolved_configuration = model_configuration_from_authority(model_authority)
+    resolved_idle_flux = model_authority["model"]["idle_flux_phi0"]
     policy = _load_policy(root)
     _admit(compilation, point_id, timeout_s, policy)
     output = _safe_output_root(output_root, root)
@@ -113,8 +124,21 @@ def run_calibration_scan_point(
     staging = output / f".cs_{uuid.uuid4().hex[:8]}"
     try:
         staging.mkdir()
-        control = _publish_control(compilation, point_id, staging, root)
-        coefficients, numerical = _run_worker(control, staging, root, timeout_s)
+        control = _publish_control(
+            compilation,
+            point_id,
+            staging,
+            root,
+            resolved_idle_flux,
+        )
+        coefficients, numerical = _run_worker(
+            control,
+            staging,
+            root,
+            timeout_s,
+            resolved_configuration,
+            resolved_idle_flux,
+        )
         result_binding = _write_scan_result(
             staging / "stage51" / "evolution",
             compilation,
@@ -122,6 +146,7 @@ def run_calibration_scan_point(
             numerical,
             policy,
             root,
+            model_authority,
         )
         evidence = _execution_evidence(
             compilation,
@@ -131,12 +156,21 @@ def run_calibration_scan_point(
             result_binding,
             policy,
             root,
+            model_authority,
         )
         write_canonical_new(staging / EVIDENCE_NAME, evidence)
         _write_terminal_documents(staging, evidence)
-        _verify_scan_tree(staging, compilation, policy, root, point_id)
-        atomic_publish(staging, target)
-        return verify_calibration_scan_point(target, compilation, root)
+        _verify_scan_tree(
+            staging, compilation, policy, root, point_id, model_authority
+        )
+        publish_calibration_directory(staging, target)
+        return verify_calibration_scan_point(
+            target,
+            compilation,
+            root,
+            model_configuration=resolved_configuration,
+            idle_flux_phi0=resolved_idle_flux,
+        )
     except Exception:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -147,15 +181,25 @@ def verify_calibration_scan_point(
     artifact_root: str | Path,
     compilation: QCISCompilation,
     repository_root: str | Path | None = None,
+    *,
+    model_configuration: Mapping[str, Any] | None = None,
+    idle_flux_phi0: Mapping[str, Any] | None = None,
 ) -> CalibrationScanHandle:
     """Structurally verify a scan point without rerunning numerical evolution."""
 
     root = _repository_root(repository_root)
+    model_authority = resolve_calibration_model_authority(
+        root,
+        model_configuration,
+        idle_flux_phi0=idle_flux_phi0,
+    )
     point_root = Path(artifact_root).resolve()
     _inside(point_root, root, "artifact root")
     policy = _load_policy(root)
     _admit(compilation, point_root.name, policy["max_worker_wall_seconds"], policy)
-    _verify_scan_tree(point_root, compilation, policy, root, point_root.name)
+    _verify_scan_tree(
+        point_root, compilation, policy, root, point_root.name, model_authority
+    )
     return CalibrationScanHandle(
         point_root,
         raw_file_sha256(point_root / MANIFEST_NAME),
@@ -168,6 +212,7 @@ def _publish_control(
     point_id: str,
     staging: Path,
     root: Path,
+    idle_flux_phi0: Mapping[str, Any],
 ):
     stage41_root = staging / "stage41"
     stage41_root.mkdir()
@@ -175,6 +220,7 @@ def _publish_control(
         compilation.plan.authority_sha256,
         root,
         stage41_root,
+        idle_flux_phi0=idle_flux_phi0,
     )
     expected = adapt_qcis_v03_compilation(compilation, point_id, context)
     built = compile_qcis_waveform_plan(expected, context)
@@ -190,7 +236,14 @@ def _publish_control(
     )
 
 
-def _run_worker(control, staging: Path, root: Path, timeout_s: float):
+def _run_worker(
+    control,
+    staging: Path,
+    root: Path,
+    timeout_s: float,
+    model_configuration: Mapping[str, Any],
+    idle_flux_phi0: Mapping[str, Any],
+):
     stage51_root = staging / "stage51"
     context = production_stage51_physics_context(root, output_root=stage51_root)
     admitted = admit_verified_control(control, context)
@@ -202,7 +255,11 @@ def _run_worker(control, staging: Path, root: Path, timeout_s: float):
         control,
     )
     return coefficients, execute_calibration_model_worker(
-        coefficients, root, timeout_s=timeout_s
+        coefficients,
+        root,
+        timeout_s=timeout_s,
+        model_configuration=model_configuration,
+        idle_flux_phi0=idle_flux_phi0,
     )
 
 
@@ -213,9 +270,9 @@ def _write_scan_result(
     numerical: Stage51NumericalResult,
     policy: Mapping[str, Any],
     root: Path,
+    model_authority: Mapping[str, Any],
 ) -> Mapping[str, str]:
     target.mkdir()
-    model_authority = load_calibration_model_authority(root)
     arrays = {
         "initial_state": numerical.initial_state,
         "final_state": numerical.final_state,
@@ -263,6 +320,9 @@ def _write_scan_result(
         "control_adapter_physics_authority_id": coefficients.physics_authority_id,
         "model_authority_id": model_authority["model_authority_id"],
         "model_authority_sha256": raw_file_sha256(root / MODEL_AUTHORITY_PATH),
+        "model_configuration_sha256": calibration_model_configuration_sha256(
+            model_configuration_from_authority(model_authority)
+        ),
         "policy_sha256": raw_file_sha256(root / POLICY_PATH),
         "edge_time_ns": _plain(numerical.edge_time_ns.tolist()),
         "projector_sha256": _plain(numerical.projector_sha256),
@@ -327,7 +387,9 @@ def _execution_evidence(
     result_binding: Mapping[str, str],
     policy: Mapping[str, Any],
     root: Path,
+    model_authority: Mapping[str, Any],
 ) -> dict[str, Any]:
+    model_id = model_authority["model"]["model_id"]
     base = {
         "point_id": point_id,
         "profile_id": policy["profile_id"],
@@ -355,7 +417,7 @@ def _execution_evidence(
             "hardware_measurement": False,
             "formal_scale_qualified": False,
             "independent_numerical_replay": False,
-            "evolution_model": "effective_two_qutrit_v1",
+            "evolution_model": model_id,
             "calibration_update_scope": "simulator_configuration_only",
         },
     }
@@ -407,7 +469,9 @@ def _verify_scan_tree(
     policy: Mapping[str, Any],
     root: Path,
     expected_point_id: str,
+    model_authority: Mapping[str, Any],
 ) -> None:
+    model_id = model_authority["model"]["model_id"]
     expected_top = {
         "stage41",
         "stage51",
@@ -442,7 +506,7 @@ def _verify_scan_tree(
         "hardware_measurement": False,
         "formal_scale_qualified": False,
         "independent_numerical_replay": False,
-        "evolution_model": "effective_two_qutrit_v1",
+        "evolution_model": model_id,
         "calibration_update_scope": "simulator_configuration_only",
     }
     if (
@@ -504,6 +568,7 @@ def _verify_scan_tree(
         compilation.plan.authority_sha256,
         root,
         point_root / "stage41",
+        idle_flux_phi0=model_authority["model"]["idle_flux_phi0"],
     )
     expected_plan = adapt_qcis_v03_compilation(
         compilation,
@@ -524,7 +589,6 @@ def _verify_scan_tree(
         stage51_context,
         control,
     )
-    model_authority = load_calibration_model_authority(root)
     result_id = _verify_scan_result(
         point_root / "stage51" / "evolution",
         coefficients,
@@ -640,6 +704,7 @@ def _verify_scan_result(
         "control_adapter_physics_authority_id",
         "model_authority_id",
         "model_authority_sha256",
+        "model_configuration_sha256",
         "policy_sha256",
         "edge_time_ns",
         "projector_sha256",
@@ -665,6 +730,10 @@ def _verify_scan_result(
         != model_authority["model_authority_id"]
         or result.get("model_authority_sha256")
         != raw_file_sha256(root / MODEL_AUTHORITY_PATH)
+        or result.get("model_configuration_sha256")
+        != calibration_model_configuration_sha256(
+            model_configuration_from_authority(model_authority)
+        )
         or result.get("policy_sha256") != raw_file_sha256(root / POLICY_PATH)
         or result.get("array_inventory_sha256")
         != raw_file_sha256(target / INVENTORY_NAME)
@@ -705,7 +774,12 @@ def _verify_scan_result(
         != model_authority["model"]["model_id"]
     ):
         raise CalibrationScanExecutionError("scan solver authority mismatch")
-    _validate_worker_result(numerical, model_authority["tolerances"])
+    try:
+        validate_calibration_model_result(numerical, model_authority)
+    except ValueError as exc:
+        raise CalibrationScanExecutionError(
+            f"scan model result is invalid: {exc}"
+        ) from exc
     expected_manifest = {
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "stage_07_calibration_scan_result_manifest",

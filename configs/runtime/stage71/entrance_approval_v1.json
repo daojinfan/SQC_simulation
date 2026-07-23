@@ -1,9 +1,9 @@
 {
   "artifact_type": "stage_07_1_model_entrance_approval",
   "artifact_version": "0.1",
-  "authority_id": "A85D2012AB93EDD1FDB56F69DDAD84F8D418101F7EA2E43E76EF6E04A9E97D46",
+  "authority_id": "A2400C3E3053FD7D8A5ADE51122880CB25A7001DCCB5E27FB10BB3C54EF8F3E3",
   "authority_path": "configs/runtime/stage71/entrance_authority_v1.json",
-  "authority_raw_sha256": "F0380D669EF20269D40E3C844EE5A961F839D7B94C2DF44BB9666D37B14CF5DC",
+  "authority_raw_sha256": "1EA014036D1EC9B1C9DD668F66B0290DEEEACF9150BDD7BB1E989F994C833FDD",
   "decision": "bounded_pilot_only_stage6_registration_closed",
   "design_path": "docs/designs/07_1_model_backend_entrance_design.md",
   "design_raw_sha256": "76A3FDD7B07319AF6762EF6EE887A46D7F3DC33FD26017FC493F351F2275F62B",

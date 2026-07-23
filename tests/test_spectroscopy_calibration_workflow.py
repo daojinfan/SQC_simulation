@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import math
 from pathlib import Path
@@ -69,6 +70,8 @@ def _install_synthetic_runner(monkeypatch, calls, *, cross_excitation=0.005):
     centers = {"Q1": 5.0, "Q2": 5.2}
 
     def fake_run(circuits, _context_value, _output_root, _repository_root, **kwargs):
+        evidence_root = Path(_output_root)
+        evidence_root.mkdir(parents=True, exist_ok=True)
         calls.append({
             "circuits": circuits,
             "readout_qubit": kwargs["readout_qubit"],
@@ -86,7 +89,20 @@ def _install_synthetic_runner(monkeypatch, calls, *, cross_excitation=0.005):
             leakage = 0.001
             p101 = 0.0
             p000 = 1.0 - leakage - q1 - q2 - p101
-            results.append(_result(circuit.circuit_id, p000, q1, q2, p101))
+            result = _result(circuit.circuit_id, p000, q1, q2, p101)
+            circuit_evidence = evidence_root / "circuit-execution-evidence" / circuit.circuit_id
+            model_evidence = evidence_root / circuit.circuit_id
+            circuit_evidence.mkdir(parents=True, exist_ok=True)
+            model_evidence.mkdir(parents=True, exist_ok=True)
+            (circuit_evidence / "result.bin").write_bytes(circuit.circuit_id.encode("ascii"))
+            (model_evidence / "model.bin").write_bytes(b"synthetic")
+            results.append(
+                replace(
+                    result,
+                    evidence_root=circuit_evidence,
+                    model_evidence_root=model_evidence,
+                )
+            )
         return tuple(results)
 
     monkeypatch.setattr(spectroscopy_module, "run_circuits", fake_run)

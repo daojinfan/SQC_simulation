@@ -42,6 +42,9 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="配置管理数据目录",
     )
+    parser.add_argument("--experiment-hot-root", type=Path, default=None, help="已发布实验目录")
+    parser.add_argument("--experiment-storage-root", type=Path, default=None, help="实验存储目录")
+    parser.add_argument("--experiment-archive-root", type=Path, default=None, help="受信归档目录（可位于另一块本地磁盘）")
     parser.add_argument("--no-browser", action="store_true", help="启动后不自动打开浏览器")
     return parser
 
@@ -61,6 +64,9 @@ def main() -> int:
             ROOT,
             output_root=args.output_root,
             configuration_storage_root=args.configuration_storage_root,
+            experiment_hot_root=args.experiment_hot_root,
+            experiment_storage_root=args.experiment_storage_root,
+            experiment_archive_root=args.experiment_archive_root,
             host=args.host,
             port=args.port,
         )

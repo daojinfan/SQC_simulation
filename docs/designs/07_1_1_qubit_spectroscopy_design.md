@@ -80,7 +80,7 @@ v1 不支持隐式笛卡尔积。完整二维 `f_a x f_b` 响应面属于单独�
 | 粗扫分析 | `qubit_spectroscopy_coarse_peak_v1` |
 | 细扫分析 | `qubit_spectroscopy_refined_peak_v1` |
 | 并行等价性检查 | `parallel_spectroscopy_equivalence_v1` |
-| 校准候选 | `qubit_reference_frequency_delta_v1` |
+| 校准候选 | `calibration_candidate_v1`，类型为 `qubit_reference_frequency` |
 
 所有标识符必须解析到不可变内容和 authority hash。请求不能自行注册 builder、observable 或分析器。
 
@@ -355,7 +355,8 @@ parallel_peak_nonunique
 
 ## 13. 粗扫、细扫与分析
 
-粗扫和细扫是两次独立、不可变运行。两种模式都使用显式奇数点、严格升序的频率数组。
+初始扫描和局部复核是两次独立、不可变运行。初始扫描使用至少 3 点、严格升序的频率
+数组；点数可以为奇数或偶数。内部局部复核使用显式奇数点，以便稳定地围绕候选峰取样。
 
 每个目标独立执行峰值分析：
 
@@ -373,24 +374,39 @@ parallel_peak_nonunique
 一次并行运行最多生成两个相互独立的 target candidate：
 
 ```yaml
-schema: qubit_reference_frequency_delta_v1
-target: Q1
-field: values.qagents.Q1.reference_frequency_authority
-proposed_value:
-  reference_frequency_GHz: ...
-  frequency_source: accepted_simulation
-source:
-  coarse_run_id: ...
-  refined_run_id: ...
-  confirmation_run_id: ...
-  parallel_equivalence_id: ...
-claim:
-  simulation_only: true
-  hardware_measurement: false
-  recommendation_eligible: true
+schema: calibration_candidate_v1
+candidate_id: Q1.reference_frequency_GHz
+candidate_type: qubit_reference_frequency
+calibration_subjects: [Q1]
+configuration_resources:
+  - owner: Q1
+    resource_type: qagent_calibration
+    resource_id: Q1
+changes:
+  - operation: set
+    parameter_path: calibration_values.qagents.Q1.reference_frequency_authority.reference_frequency_GHz
+    value_type: float
+    current_value: ...
+    proposed_value: ...
+    unit: GHz
+    configuration_resource:
+      owner: Q1
+      resource_type: qagent_calibration
+      resource_id: Q1
+source_dataset_sha256s: [...]
+quality_metrics:
+  contrast: ...
+recommendation_eligible: true
 ```
 
-用户可以分别接受或拒绝每个目标。配置写入器在一次新 snapshot revision 中原子应用所有被接受的 target delta；未接受目标保持父 revision 的值。
+用户可以按 `candidate_id` 分别接受或拒绝候选。统一配置写入器在一次 current revision 中
+原子应用所有被选择候选的 changes；未选择候选保持当前值。保存 Snapshot 和 Set Active
+仍是后续显式操作。Rabi、Ramsey、读出和 CZ 实验使用相同协议，仅 candidate type、
+changes 和质量门限不同。
+
+`calibration_subjects` 与配置 owner 必须分离。例如单独校准 Q1 的 CZ 动力学相位时，
+subject 为 Q1，但 change 的 `configuration_resource` 为 `C/c_cz`。发布 provenance 按
+配置记录写入 `calibration_run_id`，Web 则按 subject 展示实验对象。
 
 `run_circuits`、dataset builder 和分析器均不能直接写配置。
 
@@ -560,7 +576,36 @@ Windows 未开启长路径支持时，`output_root` 应使用仓库内的短运�
 
 ## 22. 已实现完整校准流程
 
-完整流程位于 `sqvm.calibration.spectroscopy_workflow`。粗扫、细扫和 single confirmation 没有各自的执行器，全部通过 `run_qubit_spectroscopy` 调用同一个 `run_circuits`：
+面向 Notebook 和普通调用者的入口是一个封装函数：
+
+```python
+from sqvm.calibration import run_spectroscopy
+
+run = run_spectroscopy(
+    {
+        "Q1": (5.00, 5.40),
+        "Q2": (5.10, 5.50),
+    },
+    frequency_step_GHz=0.20,
+)
+```
+
+该入口根据目标数量自动选择 single 或 `parallel_lockstep`，按闭区间和公共步进生成频率
+数组，并采用默认脉冲参数和 worker watchdog。一次调用只执行这一组频率点，不在内部
+生成第二组扫描。需要改变范围或步进时，上层实验再次调用同一个接口。
+
+基础实验的返回值是 `SpectroscopyRun`，包含一份 dataset、analysis、门限和每目标候选。
+候选只由本次扫描的有效峰生成，不触发额外扫描；用户检查后可调用配置更新事务。更复杂
+的校准实验仍可组合一次或多次基础实验，并实现自己的候选规则。该分层规则也适用于后续
+所有实验类型。
+
+所有实验统一调用 `apply_calibration_candidates_to_current_configuration`。该接口按
+`candidate_ids` 选择候选、调用实验对应的证据校验器、执行 current-value stale 检查，
+并将候选内的一个或多个 changes 原子写入当前配置。扫谱专用更新函数只作为兼容别名保留。
+
+历史兼容校准流程位于 `sqvm.calibration.spectroscopy_workflow`。其中的多阶段工件继续
+用于读取已有结果，但不再作为 `run_spectroscopy` 或后续基础实验的执行路径。以下 typed
+API 仅作为旧流程兼容接口保留：
 
 ```python
 from sqvm import (

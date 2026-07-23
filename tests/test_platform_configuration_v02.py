@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
@@ -10,7 +11,10 @@ import uuid
 import numpy as np
 import pytest
 
+from sqvm.candidate_protocol import calibration_candidate, parameter_change
+
 import sqvm.circuits as circuits_module
+import sqvm.web.configuration as configuration_module
 from sqvm.circuits import QCISCircuit, run_circuits
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.web import (
@@ -20,6 +24,7 @@ from sqvm.web import (
 )
 from sqvm.web.configuration_schema import validate_editable
 from sqvm.web.configuration_schema import project_wave_indices
+from sqvm.runtime.calibration_model import calibration_model_configuration_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +104,119 @@ def _published_store(tmp_path: Path):
     return store, snapshot
 
 
+def test_configuration_delete_rejects_real_symlink_without_touching_external_target(platform_root: Path):
+    store = PlatformConfigurationStore(ROOT, platform_root / "platform-configurations")
+    draft = store.create_draft(
+        store.bootstrap_configuration(_legacy()),
+        actor_id="project.manager",
+        name="Linked draft",
+    )
+    draft_root = store.drafts_root / draft["draft_id"]
+    external = platform_root / "external"
+    external.mkdir()
+    sentinel = external / "sentinel.txt"
+    sentinel.write_text("must remain", encoding="utf-8")
+    linked = draft_root / "external-link"
+    os.symlink(external, linked, target_is_directory=True)
+
+    with pytest.raises(ConfigurationManagementError, match="linked|reparse"):
+        store.delete_draft(draft["draft_id"], actor_id="project.manager")
+
+    assert sentinel.read_text(encoding="utf-8") == "must remain"
+    assert linked.is_symlink()
+    assert draft_root.is_dir()
+
+
+def test_configuration_snapshot_delete_rejects_real_symlink_without_touching_external_target(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    snapshot_root = store.snapshots_root / snapshot["snapshot_id"]
+    external = platform_root / "external-snapshot"
+    external.mkdir()
+    sentinel = external / "sentinel.txt"
+    sentinel.write_text("must remain", encoding="utf-8")
+    linked = snapshot_root / "external-link"
+    os.symlink(external, linked, target_is_directory=True)
+
+    with pytest.raises(ConfigurationManagementError, match="linked|reparse"):
+        store.delete_snapshot(snapshot["snapshot_id"], actor_id="project.manager")
+
+    assert sentinel.read_text(encoding="utf-8") == "must remain"
+    assert linked.is_symlink()
+    assert snapshot_root.is_dir()
+
+
+def test_configuration_delete_rejects_hardlinked_file(platform_root: Path):
+    store = PlatformConfigurationStore(ROOT, platform_root / "platform-configurations")
+    draft = store.create_draft(
+        store.bootstrap_configuration(_legacy()),
+        actor_id="project.manager",
+        name="Hardlinked draft",
+    )
+    draft_root = store.drafts_root / draft["draft_id"]
+    external = platform_root / "outside.json"
+    external.write_text('{"outside":true}', encoding="utf-8")
+    linked = draft_root / "outside-link.json"
+    os.link(external, linked)
+    before_links = external.stat().st_nlink
+
+    with pytest.raises(ConfigurationManagementError, match="hardlink"):
+        store.delete_draft(draft["draft_id"], actor_id="project.manager")
+
+    assert external.read_text(encoding="utf-8") == '{"outside":true}'
+    assert external.stat().st_nlink == before_links
+    assert linked.exists()
+    assert draft_root.is_dir()
+
+
+def test_configuration_delete_rechecks_identity_before_recursive_removal(platform_root: Path, monkeypatch):
+    store = PlatformConfigurationStore(ROOT, platform_root / "platform-configurations")
+    draft = store.create_draft(
+        store.bootstrap_configuration(_legacy()),
+        actor_id="project.manager",
+        name="Replacement draft",
+    )
+    draft_root = store.drafts_root / draft["draft_id"]
+    draft_json = draft_root / "draft.json"
+    external = platform_root / "outside-draft.json"
+    external.write_text('{"outside":true}', encoding="utf-8")
+    original_unlink = configuration_module.os.unlink
+    injected = False
+
+    def replace_after_preflight(path, *args, **kwargs):
+        nonlocal injected
+        if not injected and Path(path).name == "00000000.json":
+            injected = True
+            original_unlink(draft_json)
+            os.symlink(external, draft_json)
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(configuration_module.os, "unlink", replace_after_preflight)
+    with pytest.raises(ConfigurationManagementError, match="changed|linked|reparse"):
+        store.delete_draft(draft["draft_id"], actor_id="project.manager")
+
+    assert injected
+    assert external.read_text(encoding="utf-8") == '{"outside":true}'
+    assert os.path.lexists(draft_json)
+    assert draft_root.exists()
+
+
+def test_configuration_delete_removes_normal_draft_and_snapshot(platform_root: Path):
+    store = PlatformConfigurationStore(ROOT, platform_root / "platform-configurations")
+    draft = store.create_draft(
+        store.bootstrap_configuration(_legacy()),
+        actor_id="project.manager",
+        name="Delete draft",
+    )
+    draft_root = store.drafts_root / draft["draft_id"]
+    store.delete_draft(draft["draft_id"], actor_id="project.manager")
+    assert not draft_root.exists()
+
+    published_store, snapshot = _published_store(platform_root / "published")
+    snapshot_root = published_store.snapshots_root / snapshot["snapshot_id"]
+    published_store.delete_snapshot(snapshot["snapshot_id"], actor_id="project.manager")
+    assert not snapshot_root.exists()
+
+
 def test_schema_rejects_unknown_generated_and_physical_fields(platform_root: Path):
     store = PlatformConfigurationStore(ROOT, platform_root / "configs")
     draft = store.create_draft(store.bootstrap_configuration(_legacy()), actor_id="project.manager", name="Schema")
@@ -110,6 +228,55 @@ def test_schema_rejects_unknown_generated_and_physical_fields(platform_root: Pat
     typed = typed_calibration()
     typed["waveform_registry"]["settings"]["q1_xy"]["wave_index"] = 0
     assert any(row["path"].endswith("wave_index") for row in validate_editable({"control_values": draft["editable"]["control_values"], "calibration_values": typed}, published=False))
+
+
+def test_web_simulation_truncation_defaults_to_75_and_is_editable(platform_root: Path):
+    store = PlatformConfigurationStore(ROOT, platform_root / "configs")
+    draft = store.create_draft(
+        store.bootstrap_configuration(_legacy()),
+        actor_id="project.manager",
+        name="Simulation truncation",
+    )
+    model = draft["editable"]["control_values"]["simulation"]["calibration_model"]
+    assert model["charge_cutoffs"] == {"q1": 7, "c": 7, "q2": 7}
+    assert model["retained_energy_levels"] == {"q1": 5, "c": 3, "q2": 5}
+    assert np.prod(list(model["retained_energy_levels"].values())) == 75
+
+    editable = copy.deepcopy(draft["editable"])
+    editable["control_values"]["simulation"]["calibration_model"][
+        "retained_energy_levels"
+    ]["c"] = 4
+    editable["control_values"]["idle_flux_phi0"]["q1"] = 0.2
+    updated = store.update_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        expected_content_sha256=draft["content_sha256"],
+        name=draft["name"],
+        note="increase coupler levels",
+        editable=editable,
+    )
+    assert updated["validation"]["status"] == "not_validated"
+    assert validate_editable(updated["editable"], published=False) == []
+    assert np.prod(list(updated["editable"]["control_values"]["simulation"]["calibration_model"]["retained_energy_levels"].values())) == 100
+
+
+def test_web_simulation_truncation_rejects_invalid_convergence(platform_root: Path):
+    store = PlatformConfigurationStore(ROOT, platform_root / "configs")
+    draft = store.create_draft(
+        store.bootstrap_configuration(_legacy()),
+        actor_id="project.manager",
+        name="Invalid simulation truncation",
+    )
+    editable = copy.deepcopy(draft["editable"])
+    editable["control_values"]["simulation"]["calibration_model"][
+        "convergence_retained_energy_levels"
+    ]["q1"] = 4
+    errors = validate_editable(editable, published=False)
+    assert any(
+        row["path"].endswith("convergence_retained_energy_levels.q1")
+        and row["code"] == "range"
+        for row in errors
+    )
 
 
 def test_waveform_class_projection_preserves_published_hashes():
@@ -153,6 +320,8 @@ def test_uninitialized_is_not_active_and_typed_snapshot_resolves_immutably(platf
     store, snapshot = _published_store(platform_root / "typed")
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
     context = store.resolve_active_context()
+    model_configuration = context.calibration_model_configuration
+    assert model_configuration["retained_energy_levels"] == {"q1": 5, "c": 3, "q2": 5}
     assert context.platform_snapshot_id == snapshot["snapshot_id"]
     with pytest.raises(TypeError):
         context.authorities["clock"]["dt_ns"] = 1.0
@@ -200,11 +369,19 @@ def test_current_configuration_saves_snapshots_and_restores_versions(platform_ro
     current = store.current_configuration("demo_2q1c2r")
     assert current["artifact_type"] == "platform_configuration_current"
     assert current["source_snapshot_id"] == original_snapshot["snapshot_id"]
+    levels = current["editable"]["control_values"]["simulation"]["calibration_model"][
+        "retained_energy_levels"
+    ]
+    assert np.prod(list(levels.values())) == 75
 
     editable = copy.deepcopy(current["editable"])
     editable["calibration_values"]["qagents"]["Q1"][
         "reference_frequency_authority"
     ]["reference_frequency_GHz"] = 5.03125
+    editable["control_values"]["idle_flux_phi0"]["q1"] = 0.2
+    editable["control_values"]["simulation"]["calibration_model"][
+        "retained_energy_levels"
+    ]["c"] = 4
     current = store.update_current_configuration(
         "demo_2q1c2r",
         actor_id="project.manager",
@@ -215,6 +392,17 @@ def test_current_configuration_saves_snapshots_and_restores_versions(platform_ro
     )
     assert current["validation"]["status"] == "valid"
     assert current["revision"] == 2
+    levels = current["editable"]["control_values"]["simulation"]["calibration_model"][
+        "retained_energy_levels"
+    ]
+    assert np.prod(list(levels.values())) == 100
+    active = store.active_configurations()
+    assert len(active) == 1
+    assert active[0]["snapshot_id"] == current["source_snapshot_id"]
+    assert store.snapshot(active[0]["snapshot_id"])["editable"]["control_values"][
+        "idle_flux_phi0"
+    ]["q1"] == pytest.approx(0.2)
+    assert store.resolve_active_context().idle_flux_phi0["q1"] == pytest.approx(0.2)
 
     saved = store.snapshot_current_configuration(
         "demo_2q1c2r",
@@ -226,6 +414,9 @@ def test_current_configuration_saves_snapshots_and_restores_versions(platform_ro
     assert saved["editable"]["calibration_values"]["qagents"]["Q1"][
         "reference_frequency_authority"
     ]["reference_frequency_GHz"] == pytest.approx(5.03125)
+    assert saved["editable"]["control_values"]["simulation"]["calibration_model"][
+        "retained_energy_levels"
+    ]["c"] == 4
     current = store.current_configuration("demo_2q1c2r")
     assert current["source_snapshot_id"] == saved["snapshot_id"]
 
@@ -238,6 +429,11 @@ def test_current_configuration_saves_snapshots_and_restores_versions(platform_ro
     assert restored["editable"]["calibration_values"]["qagents"]["Q1"][
         "reference_frequency_authority"
     ]["reference_frequency_GHz"] == pytest.approx(5.0)
+    assert store.active_configurations()[0]["snapshot_id"] == original_snapshot["snapshot_id"]
+    levels = restored["editable"]["control_values"]["simulation"][
+        "calibration_model"
+    ]["retained_energy_levels"]
+    assert np.prod(list(levels.values())) == 75
     assert store.snapshot(saved["snapshot_id"])["content_sha256"] == saved[
         "content_sha256"
     ]
@@ -315,6 +511,138 @@ def test_candidate_update_publishes_new_reference_revision_and_hash(platform_roo
     assert current["calibration_run_id"] == "spectroscopy_0042"
 
 
+def test_generic_candidate_group_applies_multiple_parameters_atomically(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    draft = store.create_draft(snapshot, actor_id="project.manager", name="XY candidate")
+    candidate = calibration_candidate(
+        "Q1_Q2.xy_amplitude_and_drag",
+        ["Q1", "Q2"],
+        [
+            parameter_change(
+                "calibration_values.waveform_registry.settings.q1_xy.amplitude_GHz",
+                0.1,
+                0.11,
+                unit="GHz",
+            ),
+            parameter_change(
+                "calibration_values.waveform_registry.settings.q1_xy.dragAlpha_samples",
+                0.0,
+                0.02,
+                unit="samples",
+            ),
+            parameter_change(
+                "calibration_values.waveform_registry.settings.q2_xy.amplitude_GHz",
+                0.1,
+                0.12,
+                unit="GHz",
+                configuration_resource={
+                    "owner": "Q2",
+                    "resource_type": "waveform_setting",
+                    "resource_id": "q2_xy",
+                },
+            ),
+        ],
+        recommendation_eligible=True,
+        candidate_type="xy_pulse_shape",
+    )
+
+    updated = store.apply_candidates_to_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        experiment_run_id="rabi_0042",
+        recommendation_id="recommendation_0042",
+        candidates=[candidate],
+    )
+
+    setting = updated["editable"]["calibration_values"]["waveform_registry"]["settings"]["q1_xy"]
+    assert setting["amplitude_GHz"] == pytest.approx(0.11)
+    assert setting["dragAlpha_samples"] == pytest.approx(0.02)
+    q2_setting = updated["editable"]["calibration_values"]["waveform_registry"]["settings"]["q2_xy"]
+    assert q2_setting["amplitude_GHz"] == pytest.approx(0.12)
+    assert updated["source_candidate"]["candidate_ids"] == ["Q1_Q2.xy_amplitude_and_drag"]
+    assert updated["source_candidate"]["calibration_subjects"] == ["Q1", "Q2"]
+    assert updated["source_candidate"]["configuration_targets"] == ["Q1", "Q2"]
+    assert len(updated["source_candidate"]["candidates"][0]["changes"]) == 3
+    with pytest.raises(ConfigurationManagementError) as captured:
+        store.apply_candidates_to_draft(
+            draft["draft_id"],
+            actor_id="project.manager",
+            experiment_run_id="rabi_0042",
+            recommendation_id="recommendation_0042",
+            candidates=[candidate],
+        )
+    assert captured.value.status == 409
+
+
+def test_cz_q1_phase_candidate_separates_subject_from_configuration_owner(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    draft = store.create_draft(snapshot, actor_id="project.manager", name="CZ Q1 phase")
+    path = (
+        "calibration_values.waveform_registry.settings."
+        "c_cz.q0_calibrated_dynamic_phase_rad"
+    )
+    candidate = calibration_candidate(
+        "CZ.c_cz.Q1.dynamic_phase",
+        "Q1",
+        [
+            parameter_change(
+                path,
+                0.0,
+                0.13,
+                unit="rad",
+                configuration_resource={
+                    "owner": "C",
+                    "resource_type": "waveform_setting",
+                    "resource_id": "c_cz",
+                },
+            )
+        ],
+        recommendation_eligible=True,
+        candidate_type="cz_dynamic_phase",
+    )
+
+    updated = store.apply_candidates_to_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        experiment_run_id="cz_phase_0042",
+        recommendation_id="recommendation_0042",
+        candidates=[candidate],
+    )
+
+    assert updated["source_candidate"]["calibration_subjects"] == ["Q1"]
+    assert updated["source_candidate"]["configuration_targets"] == ["C"]
+    assert updated["source_candidate"]["targets"] == ["C"]
+    setting = updated["editable"]["calibration_values"]["waveform_registry"]["settings"]["c_cz"]
+    assert setting["q0_calibrated_dynamic_phase_rad"] == pytest.approx(0.13)
+    assert store.validate_draft(updated["draft_id"], actor_id="project.manager")["status"] == "valid"
+    published = store.publish_draft(
+        updated["draft_id"],
+        actor_id="project.manager",
+        expected_content_sha256=updated["content_sha256"],
+        name="CZ Q1 phase",
+        reason="accept Q1 dynamic phase from CZ experiment",
+    )
+    published_setting = published["editable"]["calibration_values"]["waveform_registry"]["settings"]["c_cz"]
+    assert published_setting["calibration_run_id"] == "cz_phase_0042"
+
+    missing_owner = calibration_candidate(
+        "CZ.c_cz.Q1.invalid_owner",
+        "Q1",
+        [parameter_change(path, 0.0, 0.13, unit="rad")],
+        recommendation_eligible=True,
+        candidate_type="cz_dynamic_phase",
+    )
+    second = store.create_draft(snapshot, actor_id="project.manager", name="Invalid owner")
+    with pytest.raises(ConfigurationManagementError, match="does not own"):
+        store.apply_candidates_to_draft(
+            second["draft_id"],
+            actor_id="project.manager",
+            experiment_run_id="cz_phase_invalid",
+            recommendation_id="recommendation_invalid",
+            candidates=[missing_owner],
+        )
+
+
 def test_active_context_binds_circuit_execution_evidence(platform_root: Path, monkeypatch):
     store, snapshot = _published_store(platform_root)
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
@@ -332,4 +660,11 @@ def test_active_context_binds_circuit_execution_evidence(platform_root: Path, mo
     monkeypatch.setattr(circuits_module, "_load_verified_final_observables", lambda _path: (arrays, {"arrays": {}, "evolution_manifest_sha256": "A" * 64, "evolution_receipt_sha256": "B" * 64, "array_inventory_sha256": "C" * 64}))
     result = run_circuits((QCISCircuit("active_case", "X2P Q1\n"),), context, platform_root / "runs", ROOT)[0]
     evidence = __import__("json").loads((result.evidence_root / "evidence.json").read_text("utf-8"))
-    assert evidence["platform_configuration"] == {"snapshot_id": snapshot["snapshot_id"], "snapshot_content_sha256": snapshot["content_sha256"], "authority_context_sha256": context.authority_context_sha256}
+    assert evidence["platform_configuration"] == {
+        "snapshot_id": snapshot["snapshot_id"],
+        "snapshot_content_sha256": snapshot["content_sha256"],
+        "authority_context_sha256": context.authority_context_sha256,
+        "calibration_model_configuration_sha256": calibration_model_configuration_sha256(
+            context.calibration_model_configuration
+        ),
+    }

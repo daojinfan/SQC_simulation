@@ -1,0 +1,80 @@
+{
+  "claim_envelope": {
+    "backend_execution": "absent",
+    "calibration_claim": "none",
+    "evidence_class": "compiler_test_fixture",
+    "measurement_payload": null,
+    "observation_model": "absent",
+    "physics_claim": "none",
+    "recommendation_eligible": false
+  },
+  "dimensions": {
+    "point": 2
+  },
+  "point_table_sha256": "D9404987FC9D3DF80351909D4F0328E0F464FDC06BA524F36172FF9629604502",
+  "schema_version": "0.2",
+  "variable_order": [
+    "instruction_count",
+    "logical_sample_count",
+    "trace_byte_count",
+    "logical_array_bytes"
+  ],
+  "variables": {
+    "instruction_count": {
+      "byte_length": 16,
+      "dimensions": [
+        "point"
+      ],
+      "dtype": "<u8",
+      "order": "C",
+      "raw_sha256": "814DD7B9784D57C15B9C2972E9B4FD6CF7E164F8162A934BDB2452A413DAB1F7",
+      "semantic_role": "compiler_structure",
+      "shape": [
+        2
+      ],
+      "unit": "count"
+    },
+    "logical_array_bytes": {
+      "byte_length": 16,
+      "dimensions": [
+        "point"
+      ],
+      "dtype": "<u8",
+      "order": "C",
+      "raw_sha256": "57C9CCCDE13CC4703C9D8670A1F4147490CF2E0310FDD487CD7E2F3C12D8BC51",
+      "semantic_role": "compiler_structure",
+      "shape": [
+        2
+      ],
+      "unit": "bytes"
+    },
+    "logical_sample_count": {
+      "byte_length": 16,
+      "dimensions": [
+        "point"
+      ],
+      "dtype": "<u8",
+      "order": "C",
+      "raw_sha256": "FA7C63F601691B958793C6D5EBE2EC4456E1A35B2B448B4F3E55CD1F86787673",
+      "semantic_role": "compiler_structure",
+      "shape": [
+        2
+      ],
+      "unit": "samples"
+    },
+    "trace_byte_count": {
+      "byte_length": 16,
+      "dimensions": [
+        "point"
+      ],
+      "dtype": "<u8",
+      "order": "C",
+      "raw_sha256": "C19094343E70CA3B38CBA1880CBE74E83147CA54722F7298820AAD9C146DD866",
+      "semantic_role": "compiler_structure",
+      "shape": [
+        2
+      ],
+      "unit": "bytes"
+    }
+  }
+}

@@ -13,6 +13,7 @@ import shutil
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 import uuid
+import warnings
 
 import numpy as np
 
@@ -28,13 +29,20 @@ from sqvm.calibration.spectroscopy import (
     build_qubit_capability_adapter,
     run_qubit_spectroscopy,
 )
+from sqvm.candidate_protocol import (
+    CalibrationCandidateProtocolError,
+    calibration_candidate,
+    normalize_calibration_candidate,
+    parameter_change,
+)
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.qcis.canonical import (
     canonical_json_bytes as qcis_canonical_json_bytes,
     sha256_json,
 )
 from sqvm.runtime.journal import utc_now_text
-from sqvm.runtime.storage import atomic_publish, write_canonical_new
+from sqvm.runtime.publication import publish_calibration_directory
+from sqvm.runtime.storage import write_canonical_new
 
 
 WORKFLOW_ID = "qubit_spectroscopy_calibration_v1"
@@ -279,13 +287,13 @@ def run_qubit_spectroscopy_calibration(
         receipt_sha256 = write_canonical_new(staging / "receipt.json", receipt)
         _verify_workflow_directory(staging)
         try:
-            atomic_publish(staging, target)
+            publish_calibration_directory(staging, target)
         except Exception as exc:
             preserve_staging = True
             raise SpectroscopyCalibrationError(
                 f"workflow publication failed; verified staging was preserved at {staging}"
             ) from exc
-        return SpectroscopyCalibrationRun(
+        published_run = SpectroscopyCalibrationRun(
             target,
             run_id,
             recommendation_id,
@@ -296,6 +304,8 @@ def run_qubit_spectroscopy_calibration(
             workflow_sha256,
             receipt_sha256,
         )
+        _enqueue_web_index_best_effort(root, target)
+        return published_run
     except Exception:
         if (
             not preserve_staging
@@ -417,7 +427,7 @@ def decide_qubit_spectroscopy_calibration(
         }
         receipt_sha256 = write_canonical_new(staging / "receipt.json", receipt)
         try:
-            atomic_publish(staging, target)
+            publish_calibration_directory(staging, target)
         except Exception as exc:
             preserve_staging = True
             raise SpectroscopyCalibrationError(
@@ -523,8 +533,8 @@ def _validate_calibration_request(
     if any(target not in capabilities for target in coarse.targets):
         raise SpectroscopyCalibrationError("coarse request contains an unsupported target")
     for axis in coarse.axes:
-        if len(axis.frequencies_GHz) < 3 or len(axis.frequencies_GHz) % 2 == 0:
-            raise SpectroscopyCalibrationError("coarse axes require an odd point count of at least three")
+        if len(axis.frequencies_GHz) < 3:
+            raise SpectroscopyCalibrationError("spectroscopy axes require at least three points")
     policy = request.policy
     if not isinstance(policy, SpectroscopyCalibrationPolicy):
         raise SpectroscopyCalibrationError("typed calibration policy is required")
@@ -759,14 +769,7 @@ def _build_candidates(
             else None
         )
         current = capabilities[target].reference_frequency_GHz
-        rows.append({
-            "schema": "qubit_reference_frequency_delta_v1",
-            "target": target,
-            "field": f"values.qagents.{target}.reference_frequency_authority",
-            "current_frequency_GHz": current,
-            "proposed_frequency_GHz": proposed,
-            "delta_GHz": None if proposed is None else proposed - current,
-            "source_dataset_sha256s": sorted({
+        source_hashes = sorted({
                 coarse_dataset.dataset_sha256,
                 refined_dataset.dataset_sha256,
                 *(
@@ -774,10 +777,34 @@ def _build_candidates(
                     if target in confirmations
                     else []
                 ),
-            }),
-            "simulation_only": True,
-            "recommendation_eligible": bool(eligible and proposed is not None),
-        })
+            })
+        candidate = calibration_candidate(
+            f"{target}.reference_frequency_GHz",
+            target,
+            [
+                parameter_change(
+                    (
+                        "calibration_values.qagents."
+                        f"{target}.reference_frequency_authority.reference_frequency_GHz"
+                    ),
+                    current,
+                    proposed,
+                    unit="GHz",
+                )
+            ],
+            recommendation_eligible=bool(eligible and proposed is not None),
+            candidate_type="qubit_reference_frequency",
+            source_dataset_sha256s=source_hashes,
+        )
+        candidate.update(
+            {
+                "current_frequency_GHz": current,
+                "proposed_frequency_GHz": proposed,
+                "delta_GHz": None if proposed is None else proposed - current,
+                "simulation_only": True,
+            }
+        )
+        rows.append(candidate)
     return rows
 
 
@@ -1038,10 +1065,38 @@ def _verify_workflow_directory(directory: Path) -> tuple[dict[str, Any], str, st
             if expected_frequency is None
             else expected_frequency - float(current_frequency)
         )
+        try:
+            normalized_candidate = normalize_calibration_candidate(candidate)
+        except CalibrationCandidateProtocolError as exc:
+            raise SpectroscopyCalibrationError(
+                f"{target} candidate protocol is invalid"
+            ) from exc
+        expected_path = (
+            "calibration_values.qagents."
+            f"{target}.reference_frequency_authority.reference_frequency_GHz"
+        )
+        expected_resource = {
+            "owner": target,
+            "resource_type": "qagent_calibration",
+            "resource_id": target,
+        }
+        changes = normalized_candidate["changes"]
         if (
             candidate.get("proposed_frequency_GHz") != expected_frequency
             or candidate.get("source_dataset_sha256s") != expected_sources
             or candidate.get("delta_GHz") != expected_delta
+            or len(changes) != 1
+            or changes[0]["parameter_path"] != expected_path
+            or changes[0]["current_value"] != current_frequency
+            or changes[0]["proposed_value"] != expected_frequency
+            or changes[0]["unit"] != "GHz"
+            or changes[0]["configuration_resource"] != expected_resource
+            or normalized_candidate["calibration_subjects"] != [target]
+            or normalized_candidate["configuration_resources"] != [expected_resource]
+            or (
+                "candidate_id" in candidate
+                and candidate.get("candidate_id") != f"{target}.reference_frequency_GHz"
+            )
         ):
             raise SpectroscopyCalibrationError(f"{target} candidate derivation is invalid")
     if receipt.get("parent_calibration_sha256") != workflow["parent_calibration"]["sha256"]:
@@ -1091,6 +1146,38 @@ def _verify_decision_directory(
 
 def _repository_root(value: str | Path | None) -> Path:
     return Path(value).resolve() if value is not None else Path(__file__).resolve().parents[3]
+
+
+def _enqueue_web_index_best_effort(root: Path, target: Path) -> None:
+    """Keep derived Web indexing outside the immutable publication boundary."""
+
+    try:
+        from sqvm.web.registrar import enqueue_published_run_best_effort
+
+        enqueue_published_run_best_effort(
+            root,
+            target,
+            storage_root=_web_storage_root(target),
+        )
+    except Exception as exc:
+        try:
+            warnings.warn(
+                "published spectroscopy workflow could not be queued for Web indexing "
+                f"({type(exc).__name__}: {exc})",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        except Exception:
+            pass
+
+
+def _web_storage_root(target: Path) -> Path:
+    collection = target.parent
+    return (
+        collection.parent / "experiment-storage"
+        if collection.name == "experiments"
+        else collection / "experiment-storage"
+    )
 
 
 def _inside(value: str | Path, root: Path, label: str) -> Path:

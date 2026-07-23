@@ -76,6 +76,30 @@ def test_production_context_admits_tracked_authority_chain(tmp_path: Path) -> No
     assert context.publication_policy["mode"] == "atomic_no_replace"
 
 
+def test_production_context_binds_runtime_idle_flux_without_changing_electronics(
+    tmp_path: Path,
+) -> None:
+    root = _copy_admitted_repository(tmp_path)
+    context = production_parameterized_control_context(
+        _PLAN_AUTHORITY,
+        root,
+        root / "point-staging" / "stage41",
+        idle_flux_phi0={"q1": 0.12, "q2": 0.0, "c": 0.27},
+    )
+
+    assert {name: float(value) for name, value in context.control_chain_config.idle_flux_phi0.items()} == {
+        "q1": 0.12,
+        "q2": 0.0,
+        "c": 0.27,
+    }
+    assert "stage4_1_runtime_idle_flux" in context.authority_sha256
+    assert context.control_chain_config.static_mixing["z"]["matrix"].tolist() == [
+        [0.5, 0.005, 0.01],
+        [0.004, 0.5, 0.012],
+        [0.008, 0.006, 0.5],
+    ]
+
+
 @pytest.mark.parametrize(
     "relative",
     (

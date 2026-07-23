@@ -1,0 +1,9 @@
+{
+  "accepted": false,
+  "device_snapshot": "configs/devices/2q1c2r.yaml",
+  "device_snapshot_sha256": "CA300E0AE08DCBBE7810F92AFDDFD713C6928A2E04E4A853FCE418B181E18D3F",
+  "schema_version": "0.1",
+  "state_id": "uncalibrated",
+  "status": "uninitialized",
+  "values": {}
+}

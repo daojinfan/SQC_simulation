@@ -10,31 +10,40 @@
     "dt_ns": 0.5
   },
   "model": {
-    "coupling_GHz": 0.0,
+    "charge_cutoffs": [
+      7,
+      7,
+      7
+    ],
+    "convergence_charge_cutoffs": [
+      8,
+      8,
+      8
+    ],
+    "convergence_retained_energy_levels": [
+      6,
+      4,
+      6
+    ],
+    "drive_operator": "nearest_neighbor_charge_rwa_v1",
     "idle_flux_phi0": {
       "c": 0.27,
       "q1": 0.1,
       "q2": 0.0
     },
-    "model_id": "effective_two_qutrit_v1",
-    "q1": {
-      "anharmonicity_GHz": -0.25,
-      "f01_GHz": 5.193479909897604
-    },
-    "q2": {
-      "anharmonicity_GHz": -0.25,
-      "f01_GHz": 5.331633051009526
-    },
+    "model_id": "projected_charge_basis_2q1c_v1",
+    "retained_energy_levels": [
+      5,
+      3,
+      5
+    ],
     "tensor_order": [
       "q1",
+      "c",
       "q2"
-    ],
-    "truncation": [
-      3,
-      3
     ]
   },
-  "model_authority_id": "2C73792FA2D12FF05FCA6F323BDEC6790DB10DF8CB6DDE663CCF95E70FB402F5",
+  "model_authority_id": "479674748C1E59CD6F56DAB5E37BA1D3D282216F04ADEF228C58CAC74D52A70C",
   "schema_version": "0.1",
   "solver": {
     "atol": 1e-12,
@@ -51,13 +60,20 @@
       "raw_sha256": "CA300E0AE08DCBBE7810F92AFDDFD713C6928A2E04E4A853FCE418B181E18D3F"
     },
     {
+      "path": "configs/hamiltonians/2q1c_charge_basis.yaml",
+      "raw_sha256": "B65D1C57083D26F3C0CE1B0F980B07B685F4F21BCBD955DCD73D933416D84E5E"
+    },
+    {
       "path": "docs/decisions/2026-07-12-stage5-qutip-evolution-freeze-first.md",
       "raw_sha256": "892A2A2918A2ACD8A7B128B63ED76A64432C7E2B22EFDC377C4B382F1FEE72FF"
     }
   ],
   "status": "local_simulation_approved",
   "tolerances": {
+    "label_min_overlap": 0.99,
     "norm_error": 1e-09,
-    "population_bound": 1e-10
+    "population_bound": 1e-10,
+    "projection_drive_drift": 0.0001,
+    "projection_f01_drift_GHz": 2e-06
   }
 }

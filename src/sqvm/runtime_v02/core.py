@@ -43,6 +43,80 @@ APPROVAL_PATH = "configs/runtime/stage6v02/compiler_fixture_approval_v1.json"
 AUTHORITY_ID = "2B255F518ABA1A0949965CB5E53A7AE6B19BD619A8F1739D9A6D2B1458E34EB5"
 APPROVAL_SHA256 = "70D268BCE6DAFC1F49AB1E3A9BE9BEC82B32099E148517B2EAC30B50D071A445"
 REQUEST_PATH = "configs/experiments/platform_qcis_compile_smoke_v1.yaml"
+DEFAULT_COMPILER_FIXTURE_VERSION = "v2"
+_V1_APPROVAL = MappingProxyType({
+    "schema_version": "0.1",
+    "artifact_type": "stage_06_qcis_compiler_fixture_approval",
+    "artifact_version": "1",
+    "authority_id": AUTHORITY_ID,
+    "authority_raw_sha256": "E55E955E54204DDB447D98830ADB76D161B3CA05965F7FF9631FB9A3238D864C",
+    "design_path": "docs/designs/06_1_experiment_runtime_v02_design.md",
+    "design_sha256": "D377E9DD8B92C62FA6D22913168E0FA65FC2176F7481942B323F8B22D6873E3B",
+    "reviewer_role": "independent_test",
+    "decision": "APPROVE",
+    "blocking_findings": [],
+})
+_V2_APPROVAL = MappingProxyType({
+    "schema_version": "0.1",
+    "artifact_type": "stage_06_qcis_compiler_fixture_approval",
+    "artifact_version": "2",
+    "authority_id": "89168201511D2BF75667B3593969F4B9CC21AB7AC8DE9570DFE58A6BA897F4D5",
+    "authority_raw_sha256": "4B7D901D910A706D24353CC7CC3C4B2DBE7427EEB77C8D6A4A6A8DD50F278BFF",
+    "design_path": "docs/designs/06_1_experiment_runtime_v02_design.md",
+    "design_sha256": "D377E9DD8B92C62FA6D22913168E0FA65FC2176F7481942B323F8B22D6873E3B",
+    "reviewer_role": "independent_test",
+    "decision": "APPROVE",
+    "blocking_findings": [],
+})
+_FIXTURE_VERSIONS = MappingProxyType(
+    {
+        "v1": MappingProxyType(
+            {
+                "authority_path": AUTHORITY_PATH,
+                "approval_path": APPROVAL_PATH,
+                "authority_id": AUTHORITY_ID,
+                "approval_sha256": APPROVAL_SHA256,
+                "authority_artifact_version": "1",
+                "candidate": False,
+                "required_approval": _V1_APPROVAL,
+                "source_paths": frozenset(
+                    {
+                        "docs/designs/06_1_experiment_runtime_v02_design.md",
+                        "docs/designs/07_qcis_compiler_design.md",
+                        "src/sqvm/qcis/compiler.py",
+                        "src/sqvm/qcis/models.py",
+                        "src/sqvm/qcis/parser.py",
+                    }
+                ),
+            }
+        ),
+        "v2": MappingProxyType(
+            {
+                "authority_path": "configs/runtime/stage6v02/compiler_fixture_authority_v2.json",
+                "approval_path": "configs/runtime/stage6v02/compiler_fixture_approval_v2.json",
+                "authority_id": "89168201511D2BF75667B3593969F4B9CC21AB7AC8DE9570DFE58A6BA897F4D5",
+                "approval_sha256": "EBD33BF0B8BB895086BDBF07552C68FA8AEDED4E5FCE289D2FAF979558258124",
+                "authority_artifact_version": "2",
+                "candidate": False,
+                "required_approval": _V2_APPROVAL,
+                "source_paths": frozenset(
+                    {
+                        "docs/decisions/2026-07-16-stage4-1-qcis-v0-3-design-freeze.md",
+                        "docs/designs/04_1_parameterized_control_design.md",
+                        "docs/designs/06_1_experiment_runtime_v02_design.md",
+                        "docs/designs/07_1_3_platform_configuration_v0_2.schema.json",
+                        "docs/designs/07_1_3_platform_configuration_v0_2_design.md",
+                        "docs/designs/07_qcis_compiler_design.md",
+                        "docs/designs/07_qcis_compiler_v0_3_phase_amendment.md",
+                        "src/sqvm/qcis/compiler.py",
+                        "src/sqvm/qcis/models.py",
+                        "src/sqvm/qcis/parser.py",
+                    }
+                ),
+            }
+        ),
+    }
+)
 ROOT_KEYS = {
     "schema_version", "experiment_id", "backend_id", "device_snapshot", "calibration_snapshot",
     "parameters", "program", "scan", "execution", "publication",
@@ -85,6 +159,8 @@ class ExperimentRequestV02:
     execution: ExecutionSettings
     allow_existing_target: bool
     authority: Mapping[str, Any]
+    compiler_fixture_version: str
+    authority_id: str
     authority_sha256: str
 
 
@@ -96,9 +172,11 @@ class ScanPointV02:
     seed: int
     point_id: str
     request_sha256: str
+    compiler_fixture_version: str
+    authority_id: str
     program_authority_sha256: str
 
-    def payload(self, *, include_point_id: bool = True) -> dict[str, Any]:
+    def payload(self, *, include_point_id: bool = True, include_fixture_binding: bool = True) -> dict[str, Any]:
         payload = {
             "schema_version": SCHEMA_VERSION,
             "experiment_id": EXPERIMENT_ID,
@@ -112,6 +190,12 @@ class ScanPointV02:
             ],
             "seed": self.seed,
         }
+        if include_fixture_binding:
+            payload.update({
+                "compiler_fixture_version": self.compiler_fixture_version,
+                "compiler_fixture_authority_id": self.authority_id,
+                "compiler_fixture_authority_sha256": self.program_authority_sha256,
+            })
         if include_point_id:
             payload["point_id"] = self.point_id
         return payload
@@ -125,6 +209,15 @@ class CompiledPointV02:
     trace_bytes: bytes
     logical_inventory: Mapping[str, Any]
     result: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class CompilerFixtureBindingV02:
+    """The fixture identity persisted with every newly admitted v0.2 artifact."""
+
+    version: str
+    authority_id: str
+    authority_sha256: str
 
 
 def peek_request_schema(path: str | Path, repository_root: str | Path | None = None) -> str:
@@ -148,6 +241,18 @@ def peek_request_schema(path: str | Path, repository_root: str | Path | None = N
 def load_experiment_request_v02(
     path: str | Path,
     repository_root: str | Path | None = None,
+) -> ExperimentRequestV02:
+    return _load_experiment_request_v02_for_version(
+        path, repository_root, current_compiler_fixture_version(),
+    )
+
+
+def _load_experiment_request_v02_for_version(
+    path: str | Path,
+    repository_root: str | Path | None,
+    fixture_version: str,
+    *,
+    authority_override: tuple[Mapping[str, Any], str] | None = None,
 ) -> ExperimentRequestV02:
     lexical_source = Path(path).absolute()
     root = Path(repository_root).resolve() if repository_root is not None else find_repository_root(lexical_source)
@@ -174,7 +279,10 @@ def load_experiment_request_v02(
     device = _resolve_relative(request["device_snapshot"], root, "device_snapshot")
     calibration = _resolve_relative(request["calibration_snapshot"], root, "calibration_snapshot")
     _validate_frozen_snapshots(root, device, calibration)
-    authority, authority_sha = load_compiler_fixture_authority(root)
+    authority, authority_sha = (
+        _load_compiler_fixture_authority_for_version(root, fixture_version)
+        if authority_override is None else authority_override
+    )
     program = _validate_program(request["program"], authority)
     axes, repetitions = _scan_v02(request["scan"])
     execution = _execution(request["execution"])
@@ -192,13 +300,42 @@ def load_experiment_request_v02(
     return ExperimentRequestV02(
         source, root, SCHEMA_VERSION, EXPERIMENT_ID, BACKEND_ID, device, calibration,
         frozen_mapping({}), frozen_mapping(program), axes, repetitions, execution, False,
-        frozen_mapping(authority), authority_sha,
+        frozen_mapping(authority), fixture_version, authority["authority_id"], authority_sha,
     )
 
 
-def load_compiler_fixture_authority(repository_root: str | Path) -> tuple[dict[str, Any], str]:
+def compiler_fixture_versions() -> tuple[str, ...]:
+    """Return all recognized fixture versions without selecting a candidate."""
+
+    return tuple(_fixture_registry())
+
+
+def current_compiler_fixture_version() -> str:
+    """Resolve the one centralized default without ever treating a candidate as active."""
+
+    _fixture_version(DEFAULT_COMPILER_FIXTURE_VERSION)
+    return DEFAULT_COMPILER_FIXTURE_VERSION
+
+
+def load_compiler_fixture_authority(
+    repository_root: str | Path,
+    *,
+    fixture_version: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Inspect the active fixture by default; callers may explicitly inspect v1."""
+    return _load_compiler_fixture_authority_for_version(
+        repository_root,
+        current_compiler_fixture_version() if fixture_version is None else fixture_version,
+    )
+
+
+def _load_compiler_fixture_authority_for_version(
+    repository_root: str | Path,
+    fixture_version: str,
+) -> tuple[dict[str, Any], str]:
     root = Path(repository_root).resolve()
-    approval_path = _safe_regular_file(root, APPROVAL_PATH)
+    fixture = _fixture_version(fixture_version)
+    approval_path = _safe_regular_file(root, str(fixture["approval_path"]))
     approval_raw = approval_path.read_bytes()
     try:
         approval = json.loads(approval_raw.decode("utf-8"))
@@ -210,22 +347,12 @@ def load_compiler_fixture_authority(repository_root: str | Path) -> tuple[dict[s
     }
     if not isinstance(approval, dict) or approval_raw != canonical_json_bytes(approval) or set(approval) != approval_keys:
         raise ValueError("compiler fixture approval schema is invalid")
-    if _raw_sha(approval_path) != APPROVAL_SHA256:
+    approval_sha256 = _raw_sha(approval_path)
+    if fixture.get("approval_sha256") is not None and approval_sha256 != fixture["approval_sha256"]:
         raise ValueError("compiler fixture approval raw hash is invalid")
-    if approval != {
-        "schema_version": "0.1",
-        "artifact_type": "stage_06_qcis_compiler_fixture_approval",
-        "artifact_version": "1",
-        "authority_id": AUTHORITY_ID,
-        "authority_raw_sha256": "E55E955E54204DDB447D98830ADB76D161B3CA05965F7FF9631FB9A3238D864C",
-        "design_path": "docs/designs/06_1_experiment_runtime_v02_design.md",
-        "design_sha256": "D377E9DD8B92C62FA6D22913168E0FA65FC2176F7481942B323F8B22D6873E3B",
-        "reviewer_role": "independent_test",
-        "decision": "APPROVE",
-        "blocking_findings": [],
-    }:
+    if approval != _plain(fixture.get("required_approval")):
         raise ValueError("compiler fixture approval decision or bindings are invalid")
-    path = _safe_regular_file(root, AUTHORITY_PATH)
+    path = _safe_regular_file(root, str(fixture["authority_path"]))
     raw = path.read_bytes()
     try:
         authority = json.loads(raw.decode("utf-8"))
@@ -233,18 +360,70 @@ def load_compiler_fixture_authority(repository_root: str | Path) -> tuple[dict[s
         raise ValueError("compiler fixture authority is invalid JSON") from exc
     if not isinstance(authority, dict) or raw != canonical_json_bytes(authority):
         raise ValueError("compiler fixture authority must be canonical JSON")
+    _validate_fixture_authority_content(authority, _raw_sha(path), fixture, root, require_current_source_bindings=True)
+    if fixture.get("candidate"):
+        raise ValueError(
+            "compiler fixture candidate is NO-GO pending independent approval: "
+            f"{fixture_version}"
+        )
+    return authority, _raw_sha(path)
+
+
+def _load_historical_v1_authority_snapshot(
+    path: str | Path,
+    repository_root: str | Path,
+) -> tuple[dict[str, Any], str]:
+    """Validate immutable v1 authority bytes embedded in pre-binding evidence."""
+
+    fixture = _fixture_version("v1")
+    raw = Path(path).read_bytes()
+    try:
+        authority = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("historical compiler authority snapshot is invalid JSON") from exc
+    if not isinstance(authority, dict) or raw != canonical_json_bytes(authority):
+        raise ValueError("historical compiler authority snapshot must be canonical JSON")
+    raw_sha = hashlib.sha256(raw).hexdigest().upper()
+    approval = fixture["required_approval"]
+    if raw_sha != approval["authority_raw_sha256"] or fixture.get("approval_sha256") != APPROVAL_SHA256:
+        raise ValueError("historical compiler authority or approval raw pin is invalid")
+    _validate_fixture_authority_content(authority, raw_sha, fixture, Path(repository_root).resolve(), require_current_source_bindings=False)
+    return authority, raw_sha
+
+
+def _load_historical_v1_experiment_request_v02(
+    path: str | Path,
+    repository_root: str | Path,
+    authority_snapshot: str | Path,
+) -> ExperimentRequestV02:
+    authority = _load_historical_v1_authority_snapshot(authority_snapshot, repository_root)
+    return _load_experiment_request_v02_for_version(
+        path, repository_root, "v1", authority_override=authority,
+    )
+
+
+def _validate_fixture_authority_content(
+    authority: Mapping[str, Any],
+    authority_raw_sha256: str,
+    fixture: Mapping[str, Any],
+    root: Path,
+    *,
+    require_current_source_bindings: bool,
+) -> None:
     expected_keys = {
         "schema_version", "artifact_type", "artifact_version", "authority_id", "request_config_path",
         "request_config_sha256", "claim_envelope", "source_bindings", "idle_flux_phi0", "qcis_authorities",
     }
     if set(authority) != expected_keys:
         raise ValueError("compiler fixture authority keys are invalid")
-    if authority["schema_version"] != "0.1" or authority["artifact_type"] != "stage_06_qcis_compiler_fixture_authority" or authority["artifact_version"] != "1":
+    expected_artifact_version = fixture.get("authority_artifact_version")
+    if authority["schema_version"] != "0.1" or authority["artifact_type"] != "stage_06_qcis_compiler_fixture_authority" or authority["artifact_version"] != expected_artifact_version:
         raise ValueError("compiler fixture authority identity is invalid")
     authority_id = _sha_payload({key: value for key, value in authority.items() if key != "authority_id"})
-    if authority.get("authority_id") != authority_id or authority_id != AUTHORITY_ID:
+    if authority.get("authority_id") != authority_id or authority_id != fixture["authority_id"]:
         raise ValueError("compiler fixture authority ID is invalid")
-    if _raw_sha(path) != approval["authority_raw_sha256"]:
+    approval = fixture["required_approval"]
+    if authority_raw_sha256 != approval["authority_raw_sha256"]:
         raise ValueError("compiler fixture authority raw hash differs from approval")
     if authority.get("claim_envelope") != CLAIM_ENVELOPE:
         raise ValueError("compiler fixture claim envelope is invalid")
@@ -252,19 +431,13 @@ def load_compiler_fixture_authority(repository_root: str | Path) -> tuple[dict[s
     if request_path != REQUEST_PATH or _raw_sha(_safe_regular_file(root, request_path)) != authority.get("request_config_sha256"):
         raise ValueError("compiler fixture request binding is invalid")
     source_bindings = authority.get("source_bindings")
-    expected_source_paths = {
-        "docs/designs/06_1_experiment_runtime_v02_design.md",
-        "docs/designs/07_qcis_compiler_design.md",
-        "src/sqvm/qcis/compiler.py",
-        "src/sqvm/qcis/models.py",
-        "src/sqvm/qcis/parser.py",
-    }
+    expected_source_paths = fixture["source_paths"]
     if not isinstance(source_bindings, dict) or set(source_bindings) != expected_source_paths:
         raise ValueError("compiler fixture source bindings are invalid")
     for relative, expected in source_bindings.items():
         if not isinstance(relative, str) or not _SHA256.fullmatch(str(expected)):
             raise ValueError("compiler fixture source binding is malformed")
-        if _raw_sha(_safe_regular_file(root, relative)) != expected:
+        if require_current_source_bindings and _raw_sha(_safe_regular_file(root, relative)) != expected:
             raise ValueError(f"compiler fixture source binding drifted: {relative}")
     qcis = _mapping(authority.get("qcis_authorities"), "qcis authorities")
     expected_qcis_keys = {
@@ -288,11 +461,62 @@ def load_compiler_fixture_authority(repository_root: str | Path) -> tuple[dict[s
     idle = authority.get("idle_flux_phi0")
     if idle != {"q1": 0.1, "q2": 0.0, "c": 0.27}:
         raise ValueError("compiler fixture idle flux authority is invalid")
-    return authority, _raw_sha(path)
 
 
-def canonical_request_payload_v02(request: ExperimentRequestV02) -> dict[str, Any]:
-    return {
+def fixture_binding_from_persisted_payload_v02(
+    payload: Mapping[str, Any],
+) -> CompilerFixtureBindingV02:
+    """Read a persisted binding; old v0.2 artifacts are explicitly v1, never current."""
+
+    keys = {
+        "compiler_fixture_version",
+        "compiler_fixture_authority_id",
+        "compiler_fixture_authority_sha256",
+    }
+    present = keys.intersection(payload)
+    if not present:
+        version = "v1"
+        fixture = _fixture_version(version)
+        approval = fixture.get("required_approval")
+        if not isinstance(approval, Mapping):
+            raise ValueError("legacy compiler fixture binding is not registered")
+        return CompilerFixtureBindingV02(version, str(fixture["authority_id"]), str(approval["authority_raw_sha256"]))
+    if present != keys:
+        raise ValueError("compiler fixture binding is incomplete")
+    version = payload["compiler_fixture_version"]
+    fixture = _fixture_version(version)
+    approval = fixture.get("required_approval")
+    if not isinstance(approval, Mapping):
+        raise ValueError("compiler fixture binding is malformed")
+    binding = CompilerFixtureBindingV02(version, str(payload["compiler_fixture_authority_id"]), str(payload["compiler_fixture_authority_sha256"]))
+    if not _SHA256.fullmatch(binding.authority_id) or not _SHA256.fullmatch(binding.authority_sha256):
+        raise ValueError("compiler fixture binding is malformed")
+    if binding.authority_id != fixture["authority_id"] or binding.authority_sha256 != approval["authority_raw_sha256"]:
+        raise ValueError("compiler fixture binding differs from its registered authority")
+    if payload.get("program_authority_sha256") not in {None, binding.authority_sha256}:
+        raise ValueError("compiler fixture binding differs from program authority")
+    return binding
+
+
+def _fixture_registry() -> Mapping[str, Mapping[str, Any]]:
+    return _FIXTURE_VERSIONS
+
+
+def _fixture_version(value: str) -> Mapping[str, Any]:
+    fixtures = _fixture_registry()
+    if not isinstance(value, str) or value not in fixtures:
+        raise ValueError("compiler fixture version is not registered")
+    fixture = fixtures[value]
+    required = {"authority_path", "approval_path", "authority_id", "authority_artifact_version", "candidate", "source_paths", "required_approval"}
+    if not isinstance(fixture, Mapping) or not required.issubset(fixture):
+        raise ValueError("compiler fixture registry entry is invalid")
+    return fixture
+
+
+def canonical_request_payload_v02(
+    request: ExperimentRequestV02, *, include_fixture_binding: bool = True,
+) -> dict[str, Any]:
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "experiment_id": request.experiment_id,
         "backend_id": request.backend_id,
@@ -315,10 +539,19 @@ def canonical_request_payload_v02(request: ExperimentRequestV02) -> dict[str, An
         "publication": {"allow_existing_target": False},
         "claim_envelope": dict(CLAIM_ENVELOPE),
     }
+    if include_fixture_binding:
+        payload.update({
+            "compiler_fixture_version": request.compiler_fixture_version,
+            "compiler_fixture_authority_id": request.authority_id,
+            "compiler_fixture_authority_sha256": request.authority_sha256,
+        })
+    return payload
 
 
-def expand_scan_v02(request: ExperimentRequestV02) -> tuple[ScanPointV02, ...]:
-    request_sha = _sha_payload(canonical_request_payload_v02(request))
+def expand_scan_v02(
+    request: ExperimentRequestV02, *, include_fixture_binding: bool = True,
+) -> tuple[ScanPointV02, ...]:
+    request_sha = _sha_payload(canonical_request_payload_v02(request, include_fixture_binding=include_fixture_binding))
     points: list[ScanPointV02] = []
     combinations = itertools.product(*(axis.values for axis in request.axes))
     combinations = tuple(combinations)
@@ -340,28 +573,48 @@ def expand_scan_v02(request: ExperimentRequestV02) -> tuple[ScanPointV02, ...]:
                     for name, value, unit in coordinates
                 ],
             }
+            if include_fixture_binding:
+                base.update({
+                    "compiler_fixture_version": request.compiler_fixture_version,
+                    "compiler_fixture_authority_id": request.authority_id,
+                    "compiler_fixture_authority_sha256": request.authority_sha256,
+                })
             seed = int.from_bytes(
                 hashlib.sha256(str(request.execution.seed).encode("ascii") + b"\0" + canonical_json_bytes(base)).digest()[:8],
                 "big",
             )
             point_id = _sha_payload({**base, "seed": seed})
-            points.append(ScanPointV02(len(points), repetition, coordinates, seed, point_id, request_sha, request.authority_sha256))
+            points.append(ScanPointV02(
+                len(points), repetition, coordinates, seed, point_id, request_sha,
+                request.compiler_fixture_version, request.authority_id, request.authority_sha256,
+            ))
     return tuple(points)
 
 
-def point_table_payload_v02(request: ExperimentRequestV02) -> dict[str, Any]:
-    request_sha = _sha_payload(canonical_request_payload_v02(request))
-    return {
+def point_table_payload_v02(
+    request: ExperimentRequestV02, *, include_fixture_binding: bool = True,
+) -> dict[str, Any]:
+    request_sha = _sha_payload(canonical_request_payload_v02(request, include_fixture_binding=include_fixture_binding))
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "experiment_id": request.experiment_id,
         "request_sha256": request_sha,
         "program_authority_sha256": request.authority_sha256,
-        "points": [point.payload() for point in expand_scan_v02(request)],
+        "points": [point.payload(include_fixture_binding=include_fixture_binding) for point in expand_scan_v02(request, include_fixture_binding=include_fixture_binding)],
     }
+    if include_fixture_binding:
+        payload.update({
+            "compiler_fixture_version": request.compiler_fixture_version,
+            "compiler_fixture_authority_id": request.authority_id,
+            "compiler_fixture_authority_sha256": request.authority_sha256,
+        })
+    return payload
 
 
-def compile_point_v02(request: ExperimentRequestV02, point: ScanPointV02) -> CompiledPointV02:
-    canonical_points = expand_scan_v02(request)
+def compile_point_v02(
+    request: ExperimentRequestV02, point: ScanPointV02, *, include_fixture_binding: bool = True,
+) -> CompiledPointV02:
+    canonical_points = expand_scan_v02(request, include_fixture_binding=include_fixture_binding)
     if not 0 <= point.point_index < len(canonical_points) or canonical_points[point.point_index] != point:
         raise ValueError("Runtime 0.2 point is not canonical for the admitted request")
     scan_values = {

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import shutil
+import socket
+import subprocess
+import sys
 import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -13,13 +18,15 @@ import pytest
 
 import sqvm.calibration.spectroscopy as spectroscopy_module
 from sqvm.calibration import run_qubit_spectroscopy_calibration
+from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
 from sqvm.web import (
     CalibrationWebIndex,
     ConfigurationManagementError,
     PlatformConfigurationStore,
     create_calibration_web_server,
 )
-from test_qubit_spectroscopy import _context
+from sqvm.web.server import ExperimentStorageWebService, StorageWebError
+from test_qubit_spectroscopy import _context, _result, _single_request
 from test_spectroscopy_calibration_workflow import (
     PARENT,
     _install_synthetic_runner,
@@ -68,8 +75,49 @@ def test_web_index_reads_configuration_and_spectroscopy_detail(web_workspace):
     assert detail["renderer"] == "qubit_spectroscopy"
     assert set(detail["datasets"]["confirmations"]) == {"Q1", "Q2"}
     assert len(detail["datasets"]["coarse"]["points"]) == 3
+    plot_spec = detail["plot_specs"][0]
+    assert plot_spec["plot_type"] == "line"
+    assert [row["id"] for row in plot_spec["objects"]] == ["Q1", "Q2"]
+    assert [row["id"] for row in plot_spec["metrics"]] == ["P0", "P1", "leakage"]
     asset, content_type = index.experiment_asset(run.run_id, "spectroscopy.png")
     assert asset.is_file() and content_type == "image/png"
+
+
+def test_generic_experiment_can_publish_validated_heatmap_plot_spec(web_workspace):
+    _base, output, _storage, _run = web_workspace
+    target = output / "generic_heatmap"
+    target.mkdir()
+    workflow = {
+        "run_id": "generic-heatmap-1",
+        "workflow_id": "rabi_2d_v1",
+        "status": "completed",
+        "plot_specs": [{
+            "schema_version": "1.0",
+            "plot_id": "rabi_2d",
+            "plot_type": "heatmap",
+            "title": "二维 Rabi",
+            "objects": [{"id": "Q1", "label": "Q1", "default_visible": True}],
+            "metrics": [{"id": "P1", "label": "P1", "default_visible": True}],
+            "axes": {"x": {"label": "幅度", "unit": "GHz"}, "y": {"label": "时长", "unit": "ns"}},
+            "layers": [{
+                "id": "Q1:P1", "object_id": "Q1", "metric_id": "P1",
+                "cells": [
+                    {"id": "p0", "x": 0.01, "y": 10.0, "value": 0.2},
+                    {"id": "p1", "x": 0.02, "y": 10.0, "value": 0.4},
+                    {"id": "p2", "x": 0.01, "y": 20.0, "value": 0.6},
+                    {"id": "p3", "x": 0.02, "y": 20.0, "value": 0.8},
+                ],
+            }],
+        }],
+    }
+    (target / "workflow.json").write_text(json.dumps(workflow), "utf-8")
+
+    index = CalibrationWebIndex(ROOT, output)
+    detail = index.experiment("generic-heatmap-1")
+
+    assert detail["renderer"] == "generic"
+    assert detail["verification_status"] == "unverified_generic"
+    assert detail["plot_specs"][0]["plot_type"] == "heatmap"
 
 
 def test_configuration_store_draft_publish_active_and_requalification(web_workspace):
@@ -151,8 +199,8 @@ def test_candidate_creates_draft_without_direct_activation(web_workspace):
     assert updated["source_candidate"]["experiment_run_id"] == run.run_id
 
     validation = store.validate_draft(updated["draft_id"], actor_id="project.manager")
-    assert validation["status"] == "invalid"
-    assert validation["field_errors"]
+    assert validation["status"] == "valid"
+    assert validation["field_errors"] == []
 
 
 def test_draft_checkpoint_retention_is_bounded(web_workspace):
@@ -253,6 +301,20 @@ def test_parent_snapshot_cannot_be_deleted_while_child_exists(web_workspace):
 
 def test_http_api_serves_console_and_configuration_mutations(web_workspace):
     _base, output, storage, run = web_workspace
+    setup_index = CalibrationWebIndex(ROOT, output)
+    setup_store = PlatformConfigurationStore(ROOT, storage)
+    seed = setup_store.create_draft(
+        setup_store.bootstrap_configuration(_legacy_configuration(setup_index)),
+        actor_id="project.manager",
+        name="HTTP current seed",
+    )
+    setup_current = setup_store.current_configuration("demo_2q1c2r")
+    setup_store.initialize_current_calibration(
+        "demo_2q1c2r",
+        actor_id="project.manager",
+        expected_content_sha256=setup_current["content_sha256"],
+    )
+    setup_store.delete_draft(seed["draft_id"], actor_id="project.manager")
     server = create_calibration_web_server(
         ROOT,
         output_root=output,
@@ -281,6 +343,7 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
             "static_mixing",
             "idle_flux_phi0",
             "acceptance",
+            "simulation",
         }
         assert len(configuration["control_values"]["lanes"]) == 11
         assert set(configuration["control_values"]["static_mixing"]) == {
@@ -296,7 +359,10 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
             method="POST",
             payload={
                 "actor_id": "project.manager",
-                "targets": ["Q1", "Q2"],
+                    "candidate_ids": [
+                        "Q1.reference_frequency_GHz",
+                        "Q2.reference_frequency_GHz",
+                    ],
                 "name": "Candidate draft",
                 "note": "from Web API",
             },
@@ -327,6 +393,34 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
         current = _http_json(
             f"{base_url}/api/v1/current-configurations/demo_2q1c2r"
         )
+        with pytest.raises(HTTPError) as captured:
+            _http_json(
+                f"{base_url}/api/v1/experiments/{run.run_id}/apply-current",
+                method="POST",
+                payload={
+                    "actor_id": "project.manager",
+                    "device_id": "demo_2q1c2r",
+                    "expected_content_sha256": current["content_sha256"],
+                    "candidate_ids": ["Q1.reference_frequency_GHz"],
+                    "confirmation_phrase": "APPLY",
+                },
+            )
+        assert captured.value.code == 422
+        current = _http_json(
+            f"{base_url}/api/v1/experiments/{run.run_id}/apply-current",
+            method="POST",
+            payload={
+                "actor_id": "project.manager",
+                "device_id": "demo_2q1c2r",
+                "expected_content_sha256": current["content_sha256"],
+                "candidate_ids": ["Q1.reference_frequency_GHz"],
+                "confirmation_phrase": (
+                    f"APPLY CALIBRATION CANDIDATES {run.run_id}"
+                ),
+            },
+        )
+        assert current["source_candidate"]["experiment_run_id"] == run.run_id
+        assert current["source_candidate"]["targets"] == ["Q1"]
         updated_current = _http_json(
             f"{base_url}/api/v1/current-configurations/demo_2q1c2r",
             method="PUT",
@@ -391,6 +485,241 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
         thread.join(timeout=5)
 
 
+def test_experiment_storage_http_contract_uses_server_authority_only(web_workspace):
+    _base, output, storage, _run = web_workspace
+    run_id = str(uuid.uuid4())
+    row = {
+        "schema_version": "0.1", "run_id": run_id, "workflow_id": "qubit_spectroscopy_scan_v1",
+        "workflow_sha256": "A" * 64, "storage_state": "hot", "retention_state": "normal",
+        "created_utc": "", "carrier": {"read_preference": "hot"}, "logical_bytes": 12,
+        "allocated_bytes": 4096, "allocated_estimated": False, "reference_count": 0,
+        "references": [], "delete_after_utc": None, "allowed_actions": ["archive", "trash"],
+        "blockers": [], "catalog_revision": 7,
+    }
+
+    class StorageStub:
+        def __init__(self): self.calls = []
+        def overview(self):
+            return {"schema_version": "0.1", "catalog_revision": 7, "logical_bytes": 12,
+                    "allocated_bytes": 4096, "archive_bytes": 0, "reclaimable_now_bytes": 0,
+                    "reclaimable_after_trash_bytes": 0, "volume_free_bytes": 10_000,
+                    "volume_total_bytes": 20_000, "allocated_estimated": False, "items": [row]}
+        def run(self, identifier, *, trash_only=False):
+            if identifier != run_id or trash_only: raise __import__("sqvm.web.server", fromlist=["StorageWebError"]).StorageWebError("experiment_not_found", 404, "missing", run_id=identifier)
+            return row
+        def trash(self): return {"schema_version": "0.1", "catalog_revision": 7, "items": []}
+        def mutate(self, identifier, action, payload):
+            self.calls.append((identifier, action, payload)); return {"schema_version": "0.1", "operation_id": "op", "catalog_revision": 8, "item": row}
+
+    server = create_calibration_web_server(ROOT, output_root=output, configuration_storage_root=storage, port=0)
+    server.storage = StorageStub()
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    payload = {"actor_id": "project.manager", "expected_catalog_revision": 7,
+               "expected_workflow_sha256": "A" * 64, "reason": "retention review"}
+    try:
+        assert _http_json(f"{base_url}/api/v1/experiment-storage")["items"][0]["run_id"] == run_id
+        assert _http_json(f"{base_url}/api/v1/experiments/{run_id}/storage")["catalog_revision"] == 7
+        assert _http_json(f"{base_url}/api/v1/experiment-trash")["items"] == []
+        with pytest.raises(HTTPError) as captured:
+            _http_json(f"{base_url}/api/v1/experiment-trash/{run_id}")
+        assert captured.value.code == 404
+        result = _http_json(f"{base_url}/api/v1/experiments/{run_id}/archive", method="POST", payload=payload)
+        assert result["catalog_revision"] == 8 and server.storage.calls[0][1] == "archive"
+        with pytest.raises(HTTPError) as captured:
+            _http_json(f"{base_url}/api/v1/experiments/{run_id}/archive", method="POST", payload={**payload, "client_path": "C:/unsafe"})
+        assert captured.value.code == 422
+        error = json.loads(captured.value.read().decode("utf-8"))
+        assert set(error) == {"code", "status", "error", "details"}
+        with pytest.raises(HTTPError) as captured:
+            _http_json(f"{base_url}/api/v1/experiment-trash/{run_id}/purge", method="POST", payload=payload)
+        assert captured.value.code == 405
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+
+def test_storage_get_is_lazy_read_only_after_first_catalog_build(tmp_path: Path) -> None:
+    hot, storage, configuration = (tmp_path / name for name in ("hot", "storage", "configuration"))
+    hot.mkdir(); configuration.mkdir()
+    service = ExperimentStorageWebService(hot_root=hot, storage_root=storage,
+        configuration_root=configuration, experiment_output_root=hot)
+
+    first = service.overview()
+    catalog = storage / "catalog.sqlite"
+    before = catalog.stat().st_mtime_ns
+    second = service.overview()
+
+    assert first["catalog_revision"] == second["catalog_revision"]
+    assert catalog.stat().st_mtime_ns == before
+
+
+def test_storage_startup_roots_reject_symlinks_without_creating_in_target(tmp_path: Path) -> None:
+    hot, configuration, target = tmp_path / "hot", tmp_path / "configuration", tmp_path / "target"
+    hot.mkdir(); configuration.mkdir(); target.mkdir()
+    storage_link = tmp_path / "storage-link"
+    os.symlink(target, storage_link, target_is_directory=True)
+    service = ExperimentStorageWebService(hot_root=hot, storage_root=storage_link,
+        configuration_root=configuration, experiment_output_root=hot)
+    with pytest.raises(StorageWebError, match="linked"):
+        service._roots()
+    assert not (target / "lifecycle").exists()
+
+    storage = tmp_path / "storage"; archive_link = tmp_path / "archive-link"
+    os.symlink(target, archive_link, target_is_directory=True)
+    service = ExperimentStorageWebService(hot_root=hot, storage_root=storage,
+        configuration_root=configuration, experiment_output_root=hot, archive_root=archive_link)
+    with pytest.raises(StorageWebError, match="linked"):
+        service._roots()
+    assert not (target / "archives").exists()
+
+
+def test_create_server_rejects_linked_startup_root_before_serving_and_releases_port(web_workspace) -> None:
+    base, output, configuration, _run = web_workspace
+    target, hot = base / "linked-target", base / "hot"
+    target.mkdir(); hot.mkdir()
+    storage_link = base / "storage-link"
+    os.symlink(target, storage_link, target_is_directory=True)
+    probe = socket.socket(); probe.bind(("127.0.0.1", 0)); port = probe.getsockname()[1]; probe.close()
+
+    with pytest.raises(StorageWebError, match="linked"):
+        create_calibration_web_server(ROOT, output_root=output, configuration_storage_root=configuration,
+            experiment_hot_root=hot, experiment_storage_root=storage_link, port=port)
+    assert not any(target.iterdir())
+    released = socket.socket()
+    try:
+        released.bind(("127.0.0.1", port))
+    finally:
+        released.close()
+
+
+def test_create_server_bootstraps_fresh_authority_roots_without_catalog(web_workspace) -> None:
+    base, _output, _configuration, _run = web_workspace
+    output = base / "fresh-output"; output.mkdir()
+    server = create_calibration_web_server(ROOT, output_root=output, port=0)
+    try:
+        assert (output / "experiments").is_dir()
+        assert (output / "experiment-storage" / "lifecycle").is_dir()
+        assert not (output / "experiment-storage" / "catalog.sqlite").exists()
+    finally:
+        server.server_close()
+
+
+def test_storage_public_catalog_projection_never_exposes_carrier_paths() -> None:
+    from sqvm.web.server import _public_catalog_row
+
+    class Row:
+        def to_dict(self):
+            return {"carrier": {"hot_path": "C:/private/hot", "archive_path": "C:/private/archive.sqrun",
+                                "trash_path": "C:/private/trash", "read_preference": "archive"}}
+
+    assert _public_catalog_row(Row())["carrier"] == {"read_preference": "archive"}
+
+
+def test_server_accepts_separate_trusted_archive_root_and_rejects_relative_root(web_workspace) -> None:
+    base, output, configuration, _run = web_workspace
+    hot, storage, archive = base / "hot", base / "storage", base / "archive"
+    hot.mkdir(); archive.mkdir()
+    server = create_calibration_web_server(ROOT, output_root=output, configuration_storage_root=configuration,
+        experiment_hot_root=hot, experiment_storage_root=storage, experiment_archive_root=archive, port=0)
+    try:
+        assert server.storage.archive_root == archive.absolute()
+    finally:
+        server.server_close()
+    with pytest.raises(ValueError, match="absolute local"):
+        create_calibration_web_server(ROOT, output_root=output, configuration_storage_root=configuration,
+            experiment_hot_root=hot, experiment_storage_root=storage, experiment_archive_root="relative-archive", port=0)
+
+
+def test_web_storage_reads_operations_lifecycle_keep_and_trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(circuits, _context_value, output_root, _repository_root, **_kwargs):
+        root = Path(output_root); rows = []
+        for circuit in circuits:
+            evidence = root / "circuits" / circuit.circuit_id; evidence.mkdir(parents=True)
+            (evidence / "result.bin").write_bytes(circuit.circuit_id.encode("ascii"))
+            rows.append(replace(_result(circuit.circuit_id, .8, .19, 0, 0), evidence_root=evidence, model_evidence_root=evidence))
+        return tuple(rows)
+
+    monkeypatch.setattr(spectroscopy_module, "run_circuits", fake_run)
+    writer = ROOT / "tmp" / f"web_storage_{uuid.uuid4().hex}"
+    try:
+        scan = run_qubit_spectroscopy_scan(
+            replace(_single_request(), run_phase="scan"), _context(),
+            ROOT / "configs" / "calibration" / "platform_uncalibrated_v1.json",
+            writer / f"qubit_spectroscopy_{uuid.uuid4().hex}", ROOT, timeout_s=10,
+        )
+        hot = tmp_path / "experiments"; hot.mkdir()
+        shutil.copytree(scan.root, hot / scan.root.name)
+        storage = tmp_path / "storage"
+        references = tmp_path / "reference-authority"; references.mkdir()
+        service = ExperimentStorageWebService(hot_root=hot, storage_root=storage, configuration_root=references,
+            experiment_output_root=hot)
+        from sqvm.storage.catalog import CatalogReferenceGraph
+        from sqvm.storage.references import ReferenceGraph
+        import sqvm.storage.operations as operations_module
+        monkeypatch.setattr(service, "_reference_graph", lambda: CatalogReferenceGraph((), False, ()))
+        monkeypatch.setattr(operations_module, "build_reference_graph", lambda **_kwargs: ReferenceGraph((), False, ()))
+        row = service.overview()["items"][0]
+        catalog = storage / "catalog.sqlite"
+        first_mtime = catalog.stat().st_mtime_ns
+        second_get = service.overview()
+        assert second_get["catalog_revision"] == row["catalog_revision"]
+        assert catalog.stat().st_mtime_ns == first_mtime
+        request = {"actor_id": "web.test", "expected_catalog_revision": row["catalog_revision"],
+                   "expected_workflow_sha256": row["workflow_sha256"], "reason": "Web retention test", "keep": True}
+        keep_result = service.mutate(scan.run_id, "keep", request)
+        assert keep_result["catalog_revision"] == row["catalog_revision"] + 1
+        kept = keep_result["item"]
+        assert kept["retention_state"] == "manual_keep" and kept["storage_state"] == "hot"
+        release = {**request, "expected_catalog_revision": kept["catalog_revision"], "keep": False}
+        release_result = service.mutate(scan.run_id, "keep", release)
+        assert release_result["catalog_revision"] == kept["catalog_revision"] + 1
+        unkept = release_result["item"]
+        assert unkept["retention_state"] == "normal" and unkept["storage_state"] == "hot"
+        original_same_volume = operations_module._same_volume
+        def simulate_cross_volume(source, destination):
+            source = Path(source)
+            if source == scan.root or source.name == "payload":
+                return False
+            return original_same_volume(source, destination)
+        monkeypatch.setattr(operations_module, "_same_volume", simulate_cross_volume)
+        trash_result = service.mutate(scan.run_id, "trash", {"actor_id": "web.test",
+            "expected_catalog_revision": unkept["catalog_revision"], "expected_workflow_sha256": unkept["workflow_sha256"],
+            "reason": "Web recoverable cross-volume delete"})
+        assert trash_result["catalog_revision"] == unkept["catalog_revision"] + 1
+        trashed = trash_result["item"]
+        assert trashed["storage_state"] == "trash" and "restore" in trashed["allowed_actions"], trashed
+        assert "trash_carrier_invalid" not in trashed["blockers"]
+        assert (storage / "trash" / scan.run_id / "payload").exists()
+        trash_mtime = catalog.stat().st_mtime_ns
+        assert service.run(scan.run_id)["catalog_revision"] == trashed["catalog_revision"]
+        assert service.run(scan.run_id)["catalog_revision"] == trashed["catalog_revision"]
+        assert catalog.stat().st_mtime_ns == trash_mtime
+        restored_result = service.mutate(scan.run_id, "restore", {"actor_id": "web.test",
+            "expected_catalog_revision": trashed["catalog_revision"], "expected_workflow_sha256": trashed["workflow_sha256"],
+            "reason": "Web restore original carrier"})
+        assert restored_result["catalog_revision"] == trashed["catalog_revision"] + 1
+        restored = restored_result["item"]
+        assert restored["storage_state"] == "hot" and (hot / scan.root.name).is_dir()
+        assert not (storage / "trash" / scan.run_id).exists()
+        assert not any(key.endswith("_path") for key in restored.get("carrier", {}))
+    finally:
+        shutil.rmtree(writer, ignore_errors=True)
+
+
+@pytest.mark.parametrize("statement", (
+    "import sqvm.storage.references",
+    "import sqvm.calibration.spectroscopy",
+    "import sqvm.web",
+    "import sqvm.storage.references; import sqvm.web; import sqvm.calibration.spectroscopy",
+    "import sqvm.web; import sqvm.calibration.spectroscopy; import sqvm.storage.references",
+))
+def test_import_order_isolated_subprocess_has_no_web_storage_cycle(statement: str) -> None:
+    environment = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    result = subprocess.run([sys.executable, "-c", statement], cwd=ROOT, env=environment,
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+
+
 def _http_json(url: str, *, method: str = "GET", payload=None):
     raw = None if payload is None else json.dumps(payload).encode("utf-8")
     request = Request(
@@ -443,4 +772,19 @@ def test_spectroscopy_view_exports_json_and_primitive_population_csv():
     assert '"population_000"' in source
     assert '"circuit_receipt_sha256"' in source
     assert "function spectroscopyCsv(detail)" in source
+    assert "function installUnifiedPlots(specs)" in source
+    assert "function drawXYPlot(" in source
+    assert "function drawHeatmapPlot(" in source
+    assert 'data-plot-filter="${esc(type)}"' in source
+    assert "function selectPlotPoint(" in source
+    assert "function schedulePlotHover(" in source
+    assert "function showPlotHover(" in source
+    assert "}, 300);" in source
+    assert "function drawSpectroscopyChart(" not in source
+    assert 'class="point-list-grid"' in source
+    assert "function targetPointList(detail, target)" in source
+    assert 'pointSeriesList("频率（GHz）", "frequency_GHz", frequencies)' in source
+    assert 'pointSeriesList("P1", "P1", populations)' in source
+    assert "function pointListItem(" not in source
+    assert "pointTable(detail)" not in source
     assert '"synthetic-demo": "合成演示数据"' in source

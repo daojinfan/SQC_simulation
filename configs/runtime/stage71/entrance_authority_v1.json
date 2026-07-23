@@ -1,7 +1,7 @@
 {
   "artifact_type": "stage_07_1_model_entrance_authority",
   "artifact_version": "0.1",
-  "authority_id": "A85D2012AB93EDD1FDB56F69DDAD84F8D418101F7EA2E43E76EF6E04A9E97D46",
+  "authority_id": "A2400C3E3053FD7D8A5ADE51122880CB25A7001DCCB5E27FB10BB3C54EF8F3E3",
   "bounded_envelope": {
     "allowed_cutoffs": {
       "c": 1,
@@ -44,7 +44,7 @@
   },
   "stage4_1_approval": {
     "path": "configs/control/stage41/production_approval_v1.json",
-    "raw_sha256": "802FBFD9299EE4D522E3895BFAC64076D39DCC8ABC6761744640281FEE2CE499"
+    "raw_sha256": "1CA813600A642220B187F42E4F4D0AE68770C4E84DB89713FF23F8A6C1D11DA5"
   },
   "stage5_1_approval": {
     "path": "configs/evolution/stage51/physics_approval_v1.json",

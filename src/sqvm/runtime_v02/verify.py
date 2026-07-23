@@ -23,7 +23,9 @@ from sqvm.runtime_v02.core import (
     canonical_request_payload_v02,
     compile_point_v02,
     expand_scan_v02,
-    load_experiment_request_v02,
+    _load_experiment_request_v02_for_version,
+    _load_historical_v1_experiment_request_v02,
+    fixture_binding_from_persisted_payload_v02,
     point_table_payload_v02,
     safe_directory_no_follow,
     validate_dataset_v02,
@@ -50,18 +52,27 @@ def verify_experiment_run_v02(
             raise ValueError("Runtime 0.2 evidence tree contains a linked or special entry")
         manifest_sha = _safe_raw_sha(directory / "manifest.json")
         receipt_sha = _safe_raw_sha(directory / "receipt.json")
-        request = load_experiment_request_v02(root / REQUEST_PATH, root)
-        expected_request = canonical_request_payload_v02(request)
-        expected_points = point_table_payload_v02(request)
         request_payload = _load_canonical(directory / "request.json")
         point_payload = _load_canonical(directory / "point_table.json")
+        binding = fixture_binding_from_persisted_payload_v02(request_payload)
+        legacy = "compiler_fixture_version" not in request_payload
+        request = (
+            _load_historical_v1_experiment_request_v02(
+                root / REQUEST_PATH, root, directory / "snapshots/compiler_authority.json",
+            )
+            if legacy else _load_experiment_request_v02_for_version(root / REQUEST_PATH, root, binding.version)
+        )
+        if request.authority_id != binding.authority_id or request.authority_sha256 != binding.authority_sha256:
+            raise ValueError("Runtime 0.2 persisted compiler fixture binding differs from authority")
+        expected_request = canonical_request_payload_v02(request, include_fixture_binding=not legacy)
+        expected_points = point_table_payload_v02(request, include_fixture_binding=not legacy)
         if request_payload != expected_request or point_payload != expected_points:
             raise ValueError("Runtime 0.2 request or point table replay mismatch")
 
         manifest = _load_canonical(directory / "manifest.json")
         report = _load_canonical(directory / "verification_report.json")
         receipt = _load_canonical(directory / "receipt.json")
-        status = _verify_terminal_schemas(directory, manifest, report, receipt)
+        status = _verify_terminal_schemas(directory, manifest, report, receipt, binding, legacy)
         output_relative = directory.parent.parent.relative_to(root).as_posix()
         if manifest["output_root"] != output_relative or receipt["published_relative_path"] != f"{output_relative}/runs/{run_id}":
             raise ValueError("Runtime 0.2 publication path binding is invalid")
@@ -72,7 +83,7 @@ def verify_experiment_run_v02(
         if point_payload["request_sha256"] != request_sha:
             raise ValueError("Runtime 0.2 point table request binding is invalid")
 
-        _verify_snapshots(directory, root, request, manifest)
+        _verify_snapshots(directory, root, request, manifest, binding, legacy)
         _verify_program(directory, request)
         journal = verify_event_journal(directory / "events.jsonl", run_id)
         if manifest["events_sha256"] != journal.raw_sha256 or manifest["event_tail_sha256"] != journal.tail_event_sha256:
@@ -90,8 +101,8 @@ def verify_experiment_run_v02(
             raise ValueError("Runtime 0.2 compiler capability binding is invalid")
 
         if status == "completed":
-            results = _verify_points(directory, request)
-            _verify_completed_event_semantics(directory, request)
+            results = _verify_points(directory, request, include_fixture_binding=not legacy)
+            _verify_completed_event_semantics(directory, request, include_fixture_binding=not legacy)
             dataset = validate_dataset_v02(directory / "data", len(results), point_sha)
             expected_summary = {
                 "dataset_manifest_sha256": _raw_sha(directory / "data/dataset.json"),
@@ -110,7 +121,7 @@ def verify_experiment_run_v02(
                 raise ValueError("Runtime 0.2 non-completed run retains point or dataset evidence")
             if manifest["dataset_summary"] is not None or receipt["dataset_hashes"] != {}:
                 raise ValueError("Runtime 0.2 non-completed dataset binding is invalid")
-            _verify_noncompleted_event_semantics(directory, request, status)
+            _verify_noncompleted_event_semantics(directory, request, status, include_fixture_binding=not legacy)
 
         return RunVerificationReport(
             True, run_id, status, _raw_sha(directory / "manifest.json"), _raw_sha(directory / "receipt.json"),
@@ -131,10 +142,20 @@ def verify_interrupted_prefix_v02(staging: Path, run_id: str, run_lock: Path, re
     no_follow_inventory = inventory_tree_no_follow(staging)
     if any(row.get("entry_type") in {"link", "other"} for row in no_follow_inventory):
         raise ValueError("Runtime 0.2 interrupted tree contains a linked or special entry")
-    request = load_experiment_request_v02(root / REQUEST_PATH, root)
-    if _load_canonical(staging / "request.json") != canonical_request_payload_v02(request):
+    request_payload = _load_canonical(staging / "request.json")
+    binding = fixture_binding_from_persisted_payload_v02(request_payload)
+    legacy = "compiler_fixture_version" not in request_payload
+    request = (
+        _load_historical_v1_experiment_request_v02(
+            root / REQUEST_PATH, root, staging / "snapshots/compiler_authority.json",
+        )
+        if legacy else _load_experiment_request_v02_for_version(root / REQUEST_PATH, root, binding.version)
+    )
+    if request.authority_id != binding.authority_id or request.authority_sha256 != binding.authority_sha256:
+        raise ValueError("Runtime 0.2 interrupted compiler fixture binding differs from authority")
+    if request_payload != canonical_request_payload_v02(request, include_fixture_binding=not legacy):
         raise ValueError("Runtime 0.2 interrupted request mismatch")
-    if _load_canonical(staging / "point_table.json") != point_table_payload_v02(request):
+    if _load_canonical(staging / "point_table.json") != point_table_payload_v02(request, include_fixture_binding=not legacy):
         raise ValueError("Runtime 0.2 interrupted point table mismatch")
     _verify_program(staging, request)
     snapshots = staging / "snapshots"
@@ -142,17 +163,21 @@ def verify_interrupted_prefix_v02(staging: Path, run_id: str, run_lock: Path, re
         "device.yaml", "calibration.json", "environment.json", "source.json", "compiler_authority.json",
         "run_lock.json", "resource_lock.json",
     }
+    if not legacy:
+        required_snapshots.add("compiler_fixture.json")
     if {row.name for row in snapshots.iterdir()} != required_snapshots:
         raise ValueError("Runtime 0.2 interrupted snapshot set is invalid")
     if (snapshots / "device.yaml").read_bytes() != request.device_snapshot.read_bytes() or (snapshots / "calibration.json").read_bytes() != request.calibration_snapshot.read_bytes():
         raise ValueError("Runtime 0.2 interrupted frozen snapshot mismatch")
     if _load_canonical(snapshots / "compiler_authority.json") != _plain(request.authority):
         raise ValueError("Runtime 0.2 interrupted compiler authority mismatch")
+    if not legacy and _load_canonical(snapshots / "compiler_fixture.json") != _fixture_snapshot_payload(binding):
+        raise ValueError("Runtime 0.2 interrupted compiler fixture snapshot mismatch")
     environment = _load_canonical(snapshots / "environment.json")
     validate_locked_environment(root, build_environment_snapshot())
     if environment != build_environment_snapshot():
         raise ValueError("Runtime 0.2 interrupted environment mismatch")
-    verify_source_snapshot_v02(_load_canonical(snapshots / "source.json"), root)
+    verify_source_snapshot_v02(_load_canonical(snapshots / "source.json"), root, fixture_binding=binding)
     if (snapshots / "run_lock.json").read_bytes() != run_lock.read_bytes() or (snapshots / "resource_lock.json").read_bytes() != resource_lock_path.read_bytes():
         raise ValueError("Runtime 0.2 interrupted live lock mismatch")
     run_payload = _load_canonical(run_lock)
@@ -173,7 +198,7 @@ def verify_interrupted_prefix_v02(staging: Path, run_id: str, run_lock: Path, re
     if not {row.name for row in staging.iterdir()}.issubset(allowed_root):
         raise ValueError("Runtime 0.2 interrupted root contains an unknown entry")
 
-    points = expand_scan_v02(request)
+    points = expand_scan_v02(request, include_fixture_binding=not legacy)
     by_id = {point.point_id: point for point in points}
     points_root = staging / "points"
     if points_root.exists():
@@ -183,7 +208,7 @@ def verify_interrupted_prefix_v02(staging: Path, run_id: str, run_lock: Path, re
             point = by_id.get(point_dir.name)
             if point is None or point_dir.is_symlink() or not point_dir.is_dir():
                 raise ValueError("Runtime 0.2 interrupted point directory is invalid")
-            expected = compile_point_v02(request, point)
+            expected = compile_point_v02(request, point, include_fixture_binding=not legacy)
             ordered = [
                 ("concrete.qcis", expected.concrete_source),
                 ("ast.json", expected.ast_bytes),
@@ -219,9 +244,9 @@ def verify_interrupted_prefix_v02(staging: Path, run_id: str, run_lock: Path, re
         raise ValueError("Runtime 0.2 interrupted terminal evidence is invalid")
 
 
-def _verify_completed_event_semantics(directory: Path, request) -> None:
+def _verify_completed_event_semantics(directory: Path, request, *, include_fixture_binding: bool = True) -> None:
     events = _load_events(directory / "events.jsonl")
-    points = expand_scan_v02(request)
+    points = expand_scan_v02(request, include_fixture_binding=include_fixture_binding)
     _verify_common_event_prefix(directory, request, events, len(points))
     expected_types = ["run_reserved", "run_prepared", "run_started"]
     for _point in points:
@@ -247,12 +272,12 @@ def _verify_completed_event_semantics(directory: Path, request) -> None:
         raise ValueError("Runtime 0.2 completed event dataset binding is invalid")
 
 
-def _verify_noncompleted_event_semantics(directory: Path, request, status: str) -> None:
+def _verify_noncompleted_event_semantics(directory: Path, request, status: str, *, include_fixture_binding: bool = True) -> None:
     events = _load_events(directory / "events.jsonl")
     expected_tail = "run_cancelled" if status == "cancelled" else "run_failed"
     if events[-1]["event_type"] != expected_tail:
         raise ValueError("Runtime 0.2 non-completed terminal event is invalid")
-    points = expand_scan_v02(request)
+    points = expand_scan_v02(request, include_fixture_binding=include_fixture_binding)
     if len(events) < 3:
         raise ValueError("Runtime 0.2 non-completed event sequence is incomplete")
     _verify_common_event_prefix(directory, request, events, len(points), require_started=False)
@@ -291,7 +316,9 @@ def _verify_noncompleted_event_semantics(directory: Path, request, status: str) 
             break
         if outcome["event_type"] != "point_completed":
             raise ValueError("Runtime 0.2 point outcome is invalid")
-        expected_result = compile_point_v02(request, point).result
+        expected_result = compile_point_v02(
+            request, point, include_fixture_binding=include_fixture_binding,
+        ).result
         expected_sha = hashlib.sha256(canonical_json_bytes(_plain(expected_result))).hexdigest().upper()
         if outcome["payload"] != {**identity, "result_sha256": expected_sha}:
             raise ValueError("Runtime 0.2 failed-run point result binding is invalid")
@@ -330,8 +357,8 @@ def _load_events(path: Path) -> tuple[dict[str, Any], ...]:
     return tuple(events)
 
 
-def _verify_points(directory: Path, request) -> tuple[Mapping[str, Any], ...]:
-    points = expand_scan_v02(request)
+def _verify_points(directory: Path, request, *, include_fixture_binding: bool = True) -> tuple[Mapping[str, Any], ...]:
+    points = expand_scan_v02(request, include_fixture_binding=include_fixture_binding)
     root = directory / "points"
     if not root.is_dir() or root.is_symlink() or {row.name for row in root.iterdir()} != {point.point_id for point in points}:
         raise ValueError("Runtime 0.2 point directory set is invalid")
@@ -342,7 +369,7 @@ def _verify_points(directory: Path, request) -> tuple[Mapping[str, Any], ...]:
             "concrete.qcis", "ast.json", "trace.json", "logical_inventory.json", "result.json",
         }:
             raise ValueError("Runtime 0.2 point evidence file set is invalid")
-        expected = compile_point_v02(request, point)
+        expected = compile_point_v02(request, point, include_fixture_binding=include_fixture_binding)
         comparisons = {
             "concrete.qcis": expected.concrete_source,
             "ast.json": expected.ast_bytes,
@@ -357,12 +384,14 @@ def _verify_points(directory: Path, request) -> tuple[Mapping[str, Any], ...]:
     return tuple(results)
 
 
-def _verify_snapshots(directory: Path, root: Path, request, manifest: Mapping[str, Any]) -> None:
+def _verify_snapshots(directory: Path, root: Path, request, manifest: Mapping[str, Any], binding, legacy: bool) -> None:
     snapshots = directory / "snapshots"
     expected_names = {
         "device.yaml", "calibration.json", "environment.json", "source.json", "compiler_authority.json",
         "run_lock.json", "resource_lock.json",
     }
+    if not legacy:
+        expected_names.add("compiler_fixture.json")
     if not snapshots.is_dir() or snapshots.is_symlink() or {row.name for row in snapshots.iterdir()} != expected_names:
         raise ValueError("Runtime 0.2 snapshot file set is invalid")
     if (snapshots / "device.yaml").read_bytes() != request.device_snapshot.read_bytes():
@@ -371,11 +400,13 @@ def _verify_snapshots(directory: Path, root: Path, request, manifest: Mapping[st
         raise ValueError("Runtime 0.2 calibration snapshot mismatch")
     if _load_canonical(snapshots / "compiler_authority.json") != _plain(request.authority):
         raise ValueError("Runtime 0.2 compiler authority snapshot mismatch")
+    if not legacy and _load_canonical(snapshots / "compiler_fixture.json") != _fixture_snapshot_payload(binding):
+        raise ValueError("Runtime 0.2 compiler fixture snapshot mismatch")
     environment = _load_canonical(snapshots / "environment.json")
     validate_locked_environment(root, build_environment_snapshot())
     if environment != build_environment_snapshot():
         raise ValueError("Runtime 0.2 environment snapshot mismatch")
-    verify_source_snapshot_v02(_load_canonical(snapshots / "source.json"), root)
+    verify_source_snapshot_v02(_load_canonical(snapshots / "source.json"), root, fixture_binding=binding)
     expected_hashes = {
         "device": _raw_sha(snapshots / "device.yaml"),
         "calibration": _raw_sha(snapshots / "calibration.json"),
@@ -385,6 +416,8 @@ def _verify_snapshots(directory: Path, root: Path, request, manifest: Mapping[st
         "run_lock": _raw_sha(snapshots / "run_lock.json"),
         "resource_lock": _raw_sha(snapshots / "resource_lock.json"),
     }
+    if not legacy:
+        expected_hashes["compiler_fixture"] = _raw_sha(snapshots / "compiler_fixture.json")
     if manifest["snapshots"] != expected_hashes:
         raise ValueError("Runtime 0.2 snapshot hash inventory is invalid")
     run_lock = _load_canonical(snapshots / "run_lock.json")
@@ -411,7 +444,7 @@ def _verify_program(directory: Path, request) -> None:
         raise ValueError("Runtime 0.2 program envelope mismatch")
 
 
-def _verify_terminal_schemas(directory: Path, manifest: Mapping[str, Any], report: Mapping[str, Any], receipt: Mapping[str, Any]) -> str:
+def _verify_terminal_schemas(directory: Path, manifest: Mapping[str, Any], report: Mapping[str, Any], receipt: Mapping[str, Any], binding, legacy: bool) -> str:
     manifest_keys = {
         "schema_version", "artifact_type", "run_id", "status", "created_utc", "terminal_utc", "experiment_id",
         "backend_id", "output_root", "claim_envelope", "request_sha256", "point_table_sha256", "events_sha256",
@@ -426,7 +459,12 @@ def _verify_terminal_schemas(directory: Path, manifest: Mapping[str, Any], repor
         "verification_report_sha256", "event_tail_sha256", "elapsed_seconds", "published_relative_path",
         "run_lock_sha256", "resource_lock_sha256", "dataset_hashes",
     }
-    if set(manifest) != manifest_keys or set(report) != report_keys or set(receipt) != receipt_keys:
+    fixture_keys = {
+        "compiler_fixture_version", "compiler_fixture_authority_id", "compiler_fixture_authority_sha256",
+    }
+    if (set(manifest) != manifest_keys | (set() if legacy else fixture_keys)
+            or set(report) != report_keys
+            or set(receipt) != receipt_keys | (set() if legacy else fixture_keys)):
         raise ValueError("Runtime 0.2 terminal artifact keys are invalid")
     if any(row.get("schema_version") != "0.2" for row in (manifest, report, receipt)):
         raise ValueError("Runtime 0.2 terminal artifact version is invalid")
@@ -441,6 +479,11 @@ def _verify_terminal_schemas(directory: Path, manifest: Mapping[str, Any], repor
         raise ValueError("Runtime 0.2 registered pair is invalid")
     if any(row.get("claim_envelope") != CLAIM_ENVELOPE for row in (manifest, report, receipt)):
         raise ValueError("Runtime 0.2 claim envelope is invalid")
+    if not legacy:
+        expected_fixture = _fixture_snapshot_payload(binding)
+        for artifact in (manifest, receipt):
+            if {key: artifact[key] for key in fixture_keys} != {key: value for key, value in expected_fixture.items() if key != "schema_version"}:
+                raise ValueError("Runtime 0.2 terminal fixture binding is invalid")
     manifest_sha = _raw_sha(directory / "manifest.json")
     report_sha = _raw_sha(directory / "verification_report.json")
     if report["manifest_sha256"] != manifest_sha or receipt["manifest_sha256"] != manifest_sha or receipt["verification_report_sha256"] != report_sha:
@@ -470,6 +513,15 @@ def _load_canonical(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict) or raw != canonical_json_bytes(payload):
         raise ValueError(f"Runtime 0.2 artifact is not canonical: {path.name}")
     return payload
+
+
+def _fixture_snapshot_payload(binding) -> dict[str, Any]:
+    return {
+        "schema_version": "0.1",
+        "compiler_fixture_version": binding.version,
+        "compiler_fixture_authority_id": binding.authority_id,
+        "compiler_fixture_authority_sha256": binding.authority_sha256,
+    }
 
 
 def _plain(value: Any) -> Any:

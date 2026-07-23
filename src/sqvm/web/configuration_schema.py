@@ -21,6 +21,13 @@ _SHA256 = re.compile(r"^[0-9A-Fa-f]{64}$")
 _RECORD_ID = re.compile(r"^[a-z][a-z0-9_-]{1,95}$")
 _WAVE_INDEX = {"rectangle": 0, "gaussian": 1, "flattop": 2, "acz": 5}
 _CONTROL = {"clock", "dac", "lane_order", "lanes", "static_mixing", "idle_flux_phi0", "acceptance"}
+_SIMULATION_FIELDS = {
+    "charge_cutoffs",
+    "retained_energy_levels",
+    "convergence_charge_cutoffs",
+    "convergence_retained_energy_levels",
+}
+_SIMULATION_MODES = {"q1", "c", "q2"}
 _LANES = {"q1_xy_i", "q1_xy_q", "q2_xy_i", "q2_xy_q", "q1_z", "q2_z", "c_z", "r1_ro_i", "r1_ro_q", "r2_ro_i", "r2_ro_q"}
 _ACCEPTANCE = {"max_condition_number", "max_xy_area_relative_error", "max_readout_area_relative_error", "max_z_flat_top_error_phi0", "max_phase_proxy_rad", "phase_proxy_window_ns", "max_formal_samples_per_scenario", "analysis_runtime_budget_seconds", "total_runtime_budget_seconds"}
 _MIXING_COORDINATES = {
@@ -175,6 +182,19 @@ def initial_typed_calibration() -> dict[str, Any]:
     }
 
 
+def initial_simulation_configuration() -> dict[str, Any]:
+    """Return the editable local-calibration projection defaults."""
+
+    return {
+        "calibration_model": {
+            "charge_cutoffs": {"q1": 7, "c": 7, "q2": 7},
+            "retained_energy_levels": {"q1": 5, "c": 3, "q2": 5},
+            "convergence_charge_cutoffs": {"q1": 8, "c": 8, "q2": 8},
+            "convergence_retained_energy_levels": {"q1": 6, "c": 4, "q2": 6},
+        }
+    }
+
+
 def draftify_calibration(value: Mapping[str, Any]) -> dict[str, Any]:
     """Turn published records into the generated-field-safe Draft representation."""
 
@@ -212,12 +232,26 @@ def publish_calibration(draft: Mapping[str, Any], base: Mapping[str, Any], *, ma
     for target, row in result["qagents"].items():
         ref = row["reference_frequency_authority"]
         old = base.get("qagents", {}).get(target, {}).get("reference_frequency_authority", {})
-        row["reference_frequency_authority"] = _publish_reference(ref, old, manual_run_id=candidates.get(target, manual_run_id))
+        row["reference_frequency_authority"] = _publish_reference(
+            ref,
+            old,
+            manual_run_id=candidates.get(
+                f"qagent:{target}", candidates.get(target, manual_run_id)
+            ),
+        )
     for section in ("settings", "mappers"):
         rows = result["waveform_registry"][section]
         old_rows = base.get("waveform_registry", {}).get(section, {})
         for record_id, record in list(rows.items()):
-            rows[record_id] = _publish_record(record, old_rows.get(record_id, {}), manual_run_id=manual_run_id)
+            resource_kind = "setting" if section == "settings" else "mapper"
+            rows[record_id] = _publish_record(
+                record,
+                old_rows.get(record_id, {}),
+                manual_run_id=candidates.get(
+                    f"{resource_kind}:{record_id}",
+                    candidates.get(record.get("target"), manual_run_id),
+                ),
+            )
     return result
 
 
@@ -302,9 +336,14 @@ def _validate_readonly(value: Any, path: str, errors: list[dict[str, str]]) -> N
 
 
 def _validate_control(value: Any, path: str, errors: list[dict[str, str]]) -> None:
-    _exact_object(value, _CONTROL, path, errors)
     if not isinstance(value, Mapping):
+        errors.append(field_error(path, "type", "must be an object"))
         return
+    actual = set(value)
+    for name in sorted(_CONTROL - actual):
+        errors.append(field_error(f"{path}.{name}", "required", "field is required"))
+    for name in sorted(actual - (_CONTROL | {"simulation"})):
+        errors.append(field_error(f"{path}.{name}", "additional", "field is not allowed"))
     clock = value.get("clock")
     _exact_object(clock, {"sample_rate_Hz", "dt_ns"}, f"{path}.clock", errors)
     if isinstance(clock, Mapping):
@@ -355,6 +394,53 @@ def _validate_control(value: Any, path: str, errors: list[dict[str, str]]) -> No
             if name == "max_formal_samples_per_scenario":
                 if type(item) is not int or item < 1: errors.append(field_error(f"{path}.acceptance.{name}", "range", "must be a positive integer"))
             else: _positive(item, f"{path}.acceptance.{name}", errors)
+    if "simulation" in value:
+        _validate_simulation(value.get("simulation"), f"{path}.simulation", errors)
+
+
+def _validate_simulation(value: Any, path: str, errors: list[dict[str, str]]) -> None:
+    _exact_object(value, {"calibration_model"}, path, errors)
+    if not isinstance(value, Mapping):
+        return
+    model = value.get("calibration_model")
+    _exact_object(model, _SIMULATION_FIELDS, f"{path}.calibration_model", errors)
+    if not isinstance(model, Mapping):
+        return
+    parsed: dict[str, dict[str, int]] = {}
+    for field in sorted(_SIMULATION_FIELDS):
+        values = model.get(field)
+        field_path = f"{path}.calibration_model.{field}"
+        _exact_object(values, _SIMULATION_MODES, field_path, errors)
+        if not isinstance(values, Mapping):
+            continue
+        parsed[field] = {}
+        for mode in ("q1", "c", "q2"):
+            item = values.get(mode)
+            if type(item) is not int or not 1 <= item <= 16:
+                errors.append(field_error(f"{field_path}.{mode}", "range", "must be an integer in [1,16]"))
+            else:
+                parsed[field][mode] = item
+    if set(parsed) != _SIMULATION_FIELDS or any(set(values) != _SIMULATION_MODES for values in parsed.values()):
+        return
+    baseline_cutoff = parsed["charge_cutoffs"]
+    baseline_levels = parsed["retained_energy_levels"]
+    comparison_cutoff = parsed["convergence_charge_cutoffs"]
+    comparison_levels = parsed["convergence_retained_energy_levels"]
+    for mode in ("q1", "c", "q2"):
+        if baseline_levels[mode] > 2 * baseline_cutoff[mode] + 1:
+            errors.append(field_error(f"{path}.calibration_model.retained_energy_levels.{mode}", "range", "retained levels exceed the charge basis"))
+        if comparison_cutoff[mode] < baseline_cutoff[mode]:
+            errors.append(field_error(f"{path}.calibration_model.convergence_charge_cutoffs.{mode}", "range", "convergence cutoff must not be below baseline"))
+        if comparison_levels[mode] < baseline_levels[mode] or comparison_levels[mode] > 2 * comparison_cutoff[mode] + 1:
+            errors.append(field_error(f"{path}.calibration_model.convergence_retained_energy_levels.{mode}", "range", "convergence levels must cover baseline within its charge basis"))
+    baseline_dimension = math.prod(baseline_levels.values())
+    comparison_dimension = math.prod(comparison_levels.values())
+    if baseline_dimension > 512:
+        errors.append(field_error(f"{path}.calibration_model.retained_energy_levels", "range", "baseline projected dimension exceeds 512"))
+    if comparison_dimension > 512:
+        errors.append(field_error(f"{path}.calibration_model.convergence_retained_energy_levels", "range", "convergence projected dimension exceeds 512"))
+    if baseline_cutoff == comparison_cutoff and baseline_levels == comparison_levels:
+        errors.append(field_error(f"{path}.calibration_model", "convergence", "convergence model must be stricter than baseline"))
 
 
 def _validate_calibration(value: Any, path: str, errors: list[dict[str, str]], *, published: bool) -> None:
@@ -563,4 +649,4 @@ def _sha(value: Any) -> bool:
     return isinstance(value, str) and _SHA256.fullmatch(value) is not None
 
 
-__all__ = ["draftify_calibration", "editor_view", "field_error", "frozen_schema_path", "initial_typed_calibration", "load_frozen_schema", "project_wave_indices", "publish_calibration", "validate_document", "validate_editable"]
+__all__ = ["draftify_calibration", "editor_view", "field_error", "frozen_schema_path", "initial_simulation_configuration", "initial_typed_calibration", "load_frozen_schema", "project_wave_indices", "publish_calibration", "validate_document", "validate_editable"]

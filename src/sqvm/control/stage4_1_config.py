@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+import hashlib
 import math
 from pathlib import Path
 import re
@@ -12,6 +14,7 @@ import numpy as np
 from sqvm.control.registry import CHANNEL_ORDER, load_control_channel_registry
 from sqvm.control.stage4_config import GROUP_CONTRACT, LANE_ORDER, load_control_chain_config
 from sqvm.control.stage4_models import ControlChainConfig
+from sqvm.hamiltonian.provenance import canonical_json_bytes
 
 from .models import ControlChannelRegistry
 from .stage4_1_models import (
@@ -41,8 +44,9 @@ def build_parameterized_control_context(
     compiler_source_snapshot: Mapping[str, Any],
     environment_snapshot: Mapping[str, Any],
     publication_policy: Mapping[str, Any],
+    runtime_idle_flux_phi0: Mapping[str, Any] | None = None,
 ) -> ParameterizedControlContext:
-    """Bind exactly the accepted Stage 4 electronics; experiments cannot override it."""
+    """Bind accepted electronics and an explicitly authorized idle operating point."""
 
     if not isinstance(control_chain_config, ControlChainConfig) or not isinstance(channel_registry, ControlChannelRegistry):
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "typed Stage 4 config and registry are required")
@@ -96,6 +100,19 @@ def build_parameterized_control_context(
     idle = control_chain_config.idle_flux_phi0
     if set(idle) != set(_FLUX_NAMES):
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "idle flux names are not exact")
+    source_control = load_control_chain_config(control_chain_config.source_path)
+    authority_hashes = _hashes(authority_sha256, "control authority")
+    if runtime_idle_flux_phi0 is None:
+        if not _same_control_config(control_chain_config, source_control):
+            _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "control config differs from its admitted source")
+    else:
+        runtime_idle = _runtime_idle_flux(runtime_idle_flux_phi0)
+        if dict(idle) != runtime_idle:
+            _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "runtime idle flux differs from control context")
+        if not _same_control_config_except_idle(control_chain_config, source_control):
+            _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "control electronics differ from their admitted source")
+        if authority_hashes.get("stage4_1_runtime_idle_flux") != _runtime_idle_flux_sha256(runtime_idle):
+            _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "runtime idle flux authority is not bound")
     limits = _limits(device_flux_limits_phi0)
     if not isinstance(device_limit_authority_sha256, str) or _HASH.fullmatch(device_limit_authority_sha256) is None:
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "device limit authority hash is invalid")
@@ -103,8 +120,6 @@ def build_parameterized_control_context(
         idle_value = float(idle[name])
         if not limits[name][0] <= idle_value <= limits[name][1]:
             _fail(ParameterizedControlReasonCode.DEVICE_LIMIT_EXCEEDED, f"idle flux for {name} is outside device bounds")
-    if not _same_control_config(control_chain_config, load_control_chain_config(control_chain_config.source_path)):
-        _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "control config differs from its admitted source")
     if channel_registry != load_control_channel_registry(channel_registry.source_path):
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "channel registry differs from its admitted source")
     return ParameterizedControlContext(
@@ -114,7 +129,7 @@ def build_parameterized_control_context(
         channel_registry=channel_registry,
         device_flux_limits_phi0=freeze_mapping(limits),
         device_limit_authority_sha256=device_limit_authority_sha256,
-        authority_sha256=freeze_mapping(_hashes(authority_sha256, "control authority")),
+        authority_sha256=freeze_mapping(authority_hashes),
         expected_plan_authority_sha256=freeze_mapping(_hashes(expected_plan_authority_sha256, "plan authority")),
         stage4_compatibility_approved=True,
         compiler_source_snapshot=freeze_mapping(compiler_source_snapshot),
@@ -128,6 +143,11 @@ def validate_parameterized_control_context(context: ParameterizedControlContext)
 
     if not isinstance(context, ParameterizedControlContext):
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "typed Stage 4.1 context is required")
+    runtime_idle = (
+        context.control_chain_config.idle_flux_phi0
+        if "stage4_1_runtime_idle_flux" in context.authority_sha256
+        else None
+    )
     build_parameterized_control_context(
         context.control_chain_config,
         context.channel_registry,
@@ -141,6 +161,7 @@ def validate_parameterized_control_context(context: ParameterizedControlContext)
         compiler_source_snapshot=context.compiler_source_snapshot,
         environment_snapshot=context.environment_snapshot,
         publication_policy=context.publication_policy,
+        runtime_idle_flux_phi0=runtime_idle,
     )
 
 
@@ -178,6 +199,61 @@ def _same_control_config(left: ControlChainConfig, right: ControlChainConfig) ->
         if not np.array_equal(left_row["matrix"], right_row["matrix"]):
             return False
     return True
+
+
+def _same_control_config_except_idle(
+    left: ControlChainConfig,
+    right: ControlChainConfig,
+) -> bool:
+    scalar_fields = (
+        "source_path",
+        "profile",
+        "inputs",
+        "sample_rate_Hz",
+        "dt_ns",
+        "dac",
+        "lane_order",
+        "lanes",
+        "acceptance",
+    )
+    if any(getattr(left, name) != getattr(right, name) for name in scalar_fields):
+        return False
+    if set(left.static_mixing) != set(right.static_mixing):
+        return False
+    for group in left.static_mixing:
+        left_row, right_row = left.static_mixing[group], right.static_mixing[group]
+        for name in ("input_lanes", "output_coordinates", "condition_number_2"):
+            if left_row[name] != right_row[name]:
+                return False
+        if not np.array_equal(left_row["matrix"], right_row["matrix"]):
+            return False
+    return True
+
+
+def _runtime_idle_flux(value: Mapping[str, Any]) -> dict[str, Decimal]:
+    if not isinstance(value, Mapping) or set(value) != set(_FLUX_NAMES):
+        _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "runtime idle flux names are not exact")
+    normalized: dict[str, Decimal] = {}
+    for name in _FLUX_NAMES:
+        item = value[name]
+        if isinstance(item, bool) or not isinstance(item, (int, float, Decimal)):
+            _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, f"runtime idle flux for {name} is invalid")
+        try:
+            number = Decimal(str(item))
+        except InvalidOperation:
+            _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, f"runtime idle flux for {name} is invalid")
+        if not number.is_finite():
+            _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, f"runtime idle flux for {name} is invalid")
+        normalized[name] = number
+    return normalized
+
+
+def _runtime_idle_flux_sha256(value: Mapping[str, Any]) -> str:
+    normalized = _runtime_idle_flux(value)
+    payload = {
+        "idle_flux_phi0": {name: float(normalized[name]) for name in _FLUX_NAMES}
+    }
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest().upper()
 
 
 def _hashes(value: Mapping[str, str], label: str) -> dict[str, str]:
