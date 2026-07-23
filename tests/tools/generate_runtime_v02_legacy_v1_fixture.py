@@ -221,7 +221,11 @@ def _write_provenance(target: Path, repository_root: Path) -> None:
         "file_manifest_aggregate_sha256": hashlib.sha256(encoded).hexdigest().upper(),
         "files": files,
     }
-    (target / "provenance.json").write_text(json.dumps(provenance, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    (target / "provenance.json").write_text(
+        json.dumps(provenance, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def _run(repository_root: Path, target: Path) -> None:

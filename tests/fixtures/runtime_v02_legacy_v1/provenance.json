@@ -5,7 +5,7 @@
   "source_compiler_blob": "9735d9c082def0053819a0689f60c14f1d065d66",
   "source_compiler_sha256": "7E94B3B7D24EDA24AA720D532754F4ED564B9D8E700B2B125BC59522E01ACB23",
   "generator_path": "tests/tools/generate_runtime_v02_legacy_v1_fixture.py",
-  "generator_raw_sha256": "DEBA14B54F0387EFC7B189A106026DBEA8FA369F2E0169FD56A0E44C7307AEE4",
+  "generator_raw_sha256": "DD373B9CF3A98AC3AAE84266B70D44ACF5E5D27B6A1D3050029F74DF92666785",
   "prerequisites": {
     "python": "CPython 3.12.10",
     "git": "git executable with required commit available",
