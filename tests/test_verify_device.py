@@ -72,9 +72,14 @@ def test_cli_verify_device_success(tmp_path):
     assert (tmp_path / "verification.ipynb").exists()
 
 
-def test_vscode_stage1_runner_smoke():
+def test_vscode_stage1_runner_smoke(tmp_path):
     result = subprocess.run(
-        [sys.executable, "scripts/run_stage_01_device.py"],
+        [
+            sys.executable,
+            "scripts/run_stage_01_device.py",
+            "--output",
+            str(tmp_path / "stage_01_device_model"),
+        ],
         check=False,
         text=True,
         capture_output=True,

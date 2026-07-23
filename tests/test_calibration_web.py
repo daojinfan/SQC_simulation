@@ -597,8 +597,16 @@ def test_create_server_rejects_linked_startup_root_before_serving_and_releases_p
 def test_create_server_bootstraps_fresh_authority_roots_without_catalog(web_workspace) -> None:
     base, _output, _configuration, _run = web_workspace
     output = base / "fresh-output"; output.mkdir()
-    server = create_calibration_web_server(ROOT, output_root=output, port=0)
+    configuration = base / "fresh-configuration"
+    server = create_calibration_web_server(
+        ROOT,
+        output_root=output,
+        configuration_storage_root=configuration,
+        port=0,
+    )
     try:
+        assert configuration.is_dir()
+        assert server.store.root == configuration.resolve()
         assert (output / "experiments").is_dir()
         assert (output / "experiment-storage" / "lifecycle").is_dir()
         assert not (output / "experiment-storage" / "catalog.sqlite").exists()
