@@ -479,8 +479,8 @@ pytest 的偶然导入顺序。
 
 触发：
 
-- pull request 到 `dev` 或 `master`；
-- push 到 `dev` 或 `master`；
+- pull request 到 `dev` 或 `main`；
+- push 到 `dev` 或 `main`；
 - concurrency 按 PR/ref 分组，`cancel-in-progress: true`；
 - 默认权限仅 `contents: read`。
 
@@ -555,13 +555,13 @@ Jobs：
 
 触发：
 
-- `pull_request` 到 `master`；
+- `pull_request` 到 `main`；
 - `workflow_dispatch`，要求显式 `candidate_sha`；
 - 不使用“最近一次其他 workflow 成功”作为当前候选的替代证据。
 
 `ci-release.yml` 在同一 workflow run 内以 reusable workflow 调用 physics 和 hosted evidence，所有 checkout
 显式使用 PR `head.sha` 或手工输入的 candidate SHA。最终固定汇总 job 名为
-`release-gate-master`，只有所有 `needs` job 对同一 SHA 成功时才返回 0。
+`release-gate-main`，只有所有 `needs` job 对同一 SHA 成功时才返回 0。
 
 依赖：
 
@@ -572,7 +572,7 @@ Jobs：
 - 生成一份只含命令、commit、环境、测试计数和 artifact hash 的 release summary。
 
 手工触发时先验证 `candidate_sha` 是目标分支可达的完整 commit；summary、JUnit 和 environment receipt
-都写入同一 SHA。任何 called workflow 被取消、跳过或返回其他 SHA，`release-gate-master` 必须失败。
+都写入同一 SHA。任何 called workflow 被取消、跳过或返回其他 SHA，`release-gate-main` 必须失败。
 
 ### 6.6 分支保护
 
@@ -583,8 +583,8 @@ Jobs：
 - 分支与目标最新；
 - 所有会话已解决。
 
-`integration-windows` 达到稳定预算后加入 required。`master` Ruleset 额外要求固定状态
-`ci-release / release-gate-master`；该状态由 PR 到 `master` 自动产生，不能由手工、夜间或其他 commit
+`integration-windows` 达到稳定预算后加入 required。`main` Ruleset 额外要求固定状态
+`ci-release / release-gate-main`；该状态由 PR 到 `main` 自动产生，不能由手工、夜间或其他 commit
 的成功记录替代。Linux contract/integration 保持 supplemental，待连续稳定且平台含义明确后再决定
 是否 required。
 
@@ -985,7 +985,7 @@ operation ID 重复应用候选。
 3. 一个 WP 一个小提交，禁止顺手格式化无关文件；
 4. 每次交接必须包含 commit、变更表、执行命令、通过/失败计数、残余风险；
 5. 不建立长期分支或遗留 worktree；需要短分支时合并后立即归档任务并删除分支；
-6. 项目经理在 `dev` 完成串行集成，`master` 只接收通过 release gate 的结果。
+6. 项目经理在 `dev` 完成串行集成，`main` 只接收通过 release gate 的结果。
 
 ## 10. 总体验收矩阵
 
