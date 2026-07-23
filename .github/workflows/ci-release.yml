@@ -2,11 +2,11 @@ name: Release Gate
 
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: Full commit SHA reachable from master.
+        description: Full commit SHA reachable from main.
         required: true
         type: string
 
@@ -38,8 +38,8 @@ jobs:
           actual=$(git rev-parse HEAD)
           test "$actual" = "$sha"
           if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
-            git fetch origin master
-            git merge-base --is-ancestor "$sha" origin/master
+            git fetch origin main
+            git merge-base --is-ancestor "$sha" origin/main
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
@@ -61,8 +61,8 @@ jobs:
     with:
       candidate_sha: ${{ needs.candidate.outputs.sha }}
 
-  release-gate-master:
-    name: release-gate-master
+  release-gate-main:
+    name: release-gate-main
     if: always()
     needs: [candidate, pr-qualification, physics, hosted-evidence]
     runs-on: ubuntu-22.04

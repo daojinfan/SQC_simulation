@@ -2,9 +2,9 @@ name: CI PR Qualification
 
 on:
   pull_request:
-    branches: [dev, master]
+    branches: [dev, main]
   push:
-    branches: [dev, master]
+    branches: [dev, main]
   workflow_call:
     inputs:
       candidate_sha:
