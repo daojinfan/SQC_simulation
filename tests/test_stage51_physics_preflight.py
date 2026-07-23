@@ -6,6 +6,10 @@ can only be accepted against a committed, independently approved authority corpu
 
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.evidence
+
 import hashlib
 import json
 from pathlib import Path

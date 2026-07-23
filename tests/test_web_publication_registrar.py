@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
@@ -16,15 +20,14 @@ from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
 from sqvm.calibration.spectroscopy_workflow import run_qubit_spectroscopy_calibration
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.web import registrar
-from test_qubit_spectroscopy import _context, _result, _single_request
-from test_spectroscopy_calibration_workflow import (
-    _install_synthetic_runner,
-    _request as _workflow_request,
-)
+from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
+from tests.support.calibration_requests import spectroscopy_calibration_request as _request
+from tests.support.synthetic_runners import install_synthetic_spectroscopy_runner as _install_synthetic_runner
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PARENT = ROOT / "configs" / "calibration" / "platform_uncalibrated_v1.json"
+_workflow_request = _request
 EVENT_KEYS = {
     "schema",
     "type",

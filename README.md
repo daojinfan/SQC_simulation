@@ -83,15 +83,50 @@ SQC_simulation/
 cd D:\Codex\SQC_simulation
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install --upgrade pip
-.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python -m pip install --require-hashes -r requirements-test-py312-windows-lock.txt
+.venv\Scripts\python -m pip install -e . --no-deps
 ```
 
 验证安装：
 
 ```powershell
 .venv\Scripts\python -c "import sqvm; print(sqvm.__version__)"
-.venv\Scripts\python -m pytest -q
+.venv\Scripts\python -m pytest -m contract -q
+.venv\Scripts\python -m pytest -m integration -q
+.venv\Scripts\python -m pytest -m physics_slow -q
+.venv\Scripts\python -m pytest -m "evidence and release and not legacy_environment" -q
 ```
+
+`.[dev]` remains a historical minimal entry and does not install the full test or
+Notebook-kernel environment. Windows uses `requirements-test-py312-windows-lock.txt`;
+Linux uses `requirements-test-py312-linux-lock.txt`. Regenerate both only with
+`py -3.12 tools/generate_test_locks.py`, then run `py -3.12 tools/verify_authority_drift.py`.
+Historical Stage 4 v1 Notebook execution is an `evidence`, `notebook`,
+`windows`, `legacy_environment` test and is intentionally excluded from hosted
+runner commands: it fails closed unless the approved interpreter and kernelspec exist.
+
+## CI 与 successor 基线
+
+仓库提供四套 GitHub Actions 工作流：PR 资格、夜间物理、hosted evidence 和 master 发布汇总。
+Windows/CPython 3.12.10 是资格平台，Linux job 是跨平台补充。工作流文件存在不代表仓库规则已经将其
+设为 required；在 GitHub Ruleset 配置完成并取得连续稳定运行记录前，Step 4 仍保持 NO-GO。
+
+旧 Stage 2.1 至 4.0 evidence 的原始字节已经不可恢复。当前 successor fixture 只记录已知旧哈希、
+不可恢复状态和 provisional source closure，不宣称重新完成物理执行。验证开发基线：
+
+```powershell
+py -3.12 tests/tools/verify_successor_rebaseline_fixture.py `
+  tests/fixtures/successor_rebaseline_authority_v1 `
+  --repository-root .
+py -3.12 tools/verify_successor_development_baseline_approval.py `
+  --repository-root .
+py -3.12 -m pytest -q `
+  tests/test_successor_rebaseline_fixture.py `
+  tests/test_successor_rebaseline.py
+```
+
+生产 v2 只有在 Stage 2.1 至 4.0 新证据、独立 approval 和版本化 selector 全部完成后才能激活；
+现有 v1 production validator 与冻结哈希保持不变。
 
 ## 用户 Notebook
 

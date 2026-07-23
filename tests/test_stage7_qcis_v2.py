@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.contract
+
 import hashlib
 
 import numpy as np

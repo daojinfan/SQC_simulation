@@ -1,0 +1,96 @@
+name: Release Gate
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full commit SHA reachable from master.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gate-${{ github.event.pull_request.number || inputs.candidate_sha }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: validate-release-candidate
+    runs-on: ubuntu-22.04
+    outputs:
+      sha: ${{ steps.candidate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || inputs.candidate_sha }}
+          fetch-depth: 0
+      - id: candidate
+        name: Validate exact candidate identity
+        shell: bash
+        run: |
+          sha='${{ github.event.pull_request.head.sha || inputs.candidate_sha }}'
+          [[ "$sha" =~ ^[0-9a-fA-F]{40}$ ]]
+          git cat-file -e "${sha}^{commit}"
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$sha"
+          if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
+            git fetch origin master
+            git merge-base --is-ancestor "$sha" origin/master
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  pr-qualification:
+    needs: candidate
+    uses: ./.github/workflows/ci-pr.yml
+    with:
+      candidate_sha: ${{ needs.candidate.outputs.sha }}
+
+  physics:
+    needs: candidate
+    uses: ./.github/workflows/ci-nightly-physics.yml
+    with:
+      candidate_sha: ${{ needs.candidate.outputs.sha }}
+
+  hosted-evidence:
+    needs: candidate
+    uses: ./.github/workflows/ci-evidence.yml
+    with:
+      candidate_sha: ${{ needs.candidate.outputs.sha }}
+
+  release-gate-master:
+    name: release-gate-master
+    if: always()
+    needs: [candidate, pr-qualification, physics, hosted-evidence]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Require all same-candidate gates to succeed
+        shell: bash
+        run: |
+          test '${{ needs.candidate.result }}' = success
+          test '${{ needs.pr-qualification.result }}' = success
+          test '${{ needs.physics.result }}' = success
+          test '${{ needs.hosted-evidence.result }}' = success
+      - name: Write release summary receipt
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cat > artifacts/release-summary.txt <<'EOF'
+          candidate_sha=${{ needs.candidate.outputs.sha }}
+          qualification=${{ needs.pr-qualification.result }}
+          physics=${{ needs.physics.result }}
+          hosted_evidence=${{ needs.hosted-evidence.result }}
+          linux_pr_and_physics=advisory; per-platform JUnit/log/classification receipts are retained as workflow artifacts
+          legacy_stage4_v1_notebook_execution=not_run_not_a_release_dependency
+          EOF
+      - name: Upload release summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-summary-${{ github.run_id }}
+          path: artifacts/release-summary.txt
+          if-no-files-found: warn
+          retention-days: 90

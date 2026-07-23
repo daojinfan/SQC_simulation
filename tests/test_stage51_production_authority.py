@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.evidence
+
 import json
 from pathlib import Path
 import shutil

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.physics_slow
+
 from types import SimpleNamespace
 from pathlib import Path
 from types import MappingProxyType
@@ -26,7 +30,7 @@ from sqvm.runtime.calibration_scan import (
     run_calibration_scan_point,
     verify_calibration_scan_point,
 )
-from test_run_circuits import _context
+from tests.support.contexts import circuit_execution_context as _context
 
 
 ROOT = Path(__file__).resolve().parents[1]

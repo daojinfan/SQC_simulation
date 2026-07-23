@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.contract
+
 import copy
 from math import cos, pi
 from pathlib import Path
@@ -6,9 +10,10 @@ import pytest
 
 from sqvm.hamiltonian import load_device_artifacts, resolve_effective_junctions
 from sqvm.hamiltonian.junction import effective_ej_GHz
+from tests.support.fixture_loader import fixture_path
 
 
-ARTIFACTS = Path("output/stage_01_device_model/device_artifacts.json")
+ARTIFACTS = fixture_path("device_model_v1") / "output/stage_01_device_model/device_artifacts.json"
 
 
 def test_effective_ej_symmetric_squid_limit():

@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.evidence
+
 import copy
 import json
 from dataclasses import replace

@@ -152,6 +152,7 @@ def _assert_stage51_reject(handle, context, expected: Stage51FailureCode) -> Non
     assert captured.value.code is expected
 
 
+@pytest.mark.integration
 def test_real_stage41_publication_yields_eight_exact_effective_arrays_and_admitted_controls(tmp_path: Path):
     handle, context = _published_handle(tmp_path)
     admitted = _admit(handle, context)
@@ -175,6 +176,7 @@ def test_real_stage41_publication_yields_eight_exact_effective_arrays_and_admitt
     assert admitted.control_binding["control_id"] == handle.control_id
 
 
+@pytest.mark.physics_slow
 def test_real_stage41_handle_runs_through_production_qutip_worker_and_replay():
     workspace = ROOT / "output" / f".stage51-e2e.{uuid.uuid4().hex}"
     workspace.mkdir(parents=True)
@@ -202,6 +204,7 @@ def test_real_stage41_handle_runs_through_production_qutip_worker_and_replay():
 
 
 @pytest.mark.parametrize("kind", ("q1_i", "q1_flux_absolute"))
+@pytest.mark.integration
 def test_copied_handle_with_in_memory_effective_value_tamper_rejects(kind: str, tmp_path: Path):
     handle, context = _published_handle(tmp_path)
     if kind == "q1_i":
@@ -224,6 +227,7 @@ def _flip_first_byte(path: Path) -> None:
     path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
 
 
+@pytest.mark.integration
 def test_post_publication_effective_raw_byte_tamper_rejects_as_control_binding_mismatch(tmp_path: Path):
     handle, context = _published_handle(tmp_path)
     _flip_first_byte(handle.artifact_root / "arrays/effective/q1_i.bin")
@@ -248,6 +252,7 @@ def _mutate_json(path: Path, mutate: Callable[[dict[str, Any]], None]) -> None:
     ],
     ids=("dtype", "shape", "nbytes", "hash", "duplicate_effective_name", "path_traversal"),
 )
+@pytest.mark.integration
 def test_inventory_tampering_rejects_before_stage51_admission(mutate, tmp_path: Path):
     handle, context = _published_handle(tmp_path)
     _mutate_json(handle.artifact_root / "array_inventory.json", mutate)
@@ -262,6 +267,7 @@ def test_inventory_tampering_rejects_before_stage51_admission(mutate, tmp_path: 
         ("receipt.json", Stage51FailureCode.CONTROL_BINDING_MISMATCH),
     ],
 )
+@pytest.mark.integration
 def test_publication_topology_file_tampering_rejects_before_stage51_admission(
     name: str, expected: Stage51FailureCode, tmp_path: Path
 ):
@@ -270,6 +276,7 @@ def test_publication_topology_file_tampering_rejects_before_stage51_admission(
     _assert_stage51_reject(handle, context, expected)
 
 
+@pytest.mark.integration
 def test_effective_symlink_rejects_fail_closed(tmp_path: Path):
     handle, context = _published_handle(tmp_path)
     path = handle.artifact_root / "arrays/effective/q1_i.bin"
@@ -283,6 +290,7 @@ def test_effective_symlink_rejects_fail_closed(tmp_path: Path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="junction is a Windows reparse-point condition")
+@pytest.mark.integration
 def test_effective_junction_rejects_fail_closed(tmp_path: Path):
     handle, context = _published_handle(tmp_path)
     effective = handle.artifact_root / "arrays/effective"

@@ -1,0 +1,86 @@
+{
+  "calibration_subjects": [
+    "Q1",
+    "Q2"
+  ],
+  "candidate_ids": [
+    "Q1.reference_frequency_GHz",
+    "Q2.reference_frequency_GHz"
+  ],
+  "candidate_values_GHz": {
+    "Q1": 5.164368157872802,
+    "Q2": 5.332578223344007
+  },
+  "candidates": [
+    {
+      "calibration_subjects": [
+        "Q1"
+      ],
+      "candidate_id": "Q1.reference_frequency_GHz",
+      "candidate_type": "qubit_reference_frequency",
+      "changes": [
+        {
+          "configuration_resource": {
+            "owner": "Q1",
+            "resource_id": "Q1",
+            "resource_type": "qagent_calibration"
+          },
+          "parameter_path": "calibration_values.qagents.Q1.reference_frequency_authority.reference_frequency_GHz",
+          "proposed_value": 5.164368157872802,
+          "unit": "GHz"
+        }
+      ],
+      "configuration_resources": [
+        {
+          "owner": "Q1",
+          "resource_id": "Q1",
+          "resource_type": "qagent_calibration"
+        }
+      ],
+      "configuration_targets": [
+        "Q1"
+      ],
+      "target": "Q1"
+    },
+    {
+      "calibration_subjects": [
+        "Q2"
+      ],
+      "candidate_id": "Q2.reference_frequency_GHz",
+      "candidate_type": "qubit_reference_frequency",
+      "changes": [
+        {
+          "configuration_resource": {
+            "owner": "Q2",
+            "resource_id": "Q2",
+            "resource_type": "qagent_calibration"
+          },
+          "parameter_path": "calibration_values.qagents.Q2.reference_frequency_authority.reference_frequency_GHz",
+          "proposed_value": 5.332578223344007,
+          "unit": "GHz"
+        }
+      ],
+      "configuration_resources": [
+        {
+          "owner": "Q2",
+          "resource_id": "Q2",
+          "resource_type": "qagent_calibration"
+        }
+      ],
+      "configuration_targets": [
+        "Q2"
+      ],
+      "target": "Q2"
+    }
+  ],
+  "configuration_targets": [
+    "Q1",
+    "Q2"
+  ],
+  "experiment_run_id": "3df4ccf6-6817-481c-82ee-80a02dca3e5c",
+  "recommendation_id": "9f18b0a6-7987-4d4e-af4b-e5349ebed31e",
+  "targets": [
+    "Q1",
+    "Q2"
+  ]
+}

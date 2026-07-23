@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 from dataclasses import replace
 import json
 import math
@@ -27,7 +31,7 @@ from sqvm.calibration import (
     verify_qubit_spectroscopy_calibration_decision,
 )
 from sqvm.qcis.canonical import canonical_json_bytes
-from test_qubit_spectroscopy import _context, _result
+from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result
 
 
 ROOT = Path(__file__).resolve().parents[1]

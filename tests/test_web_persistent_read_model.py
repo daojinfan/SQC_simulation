@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 import json
 from pathlib import Path
 import sqlite3
@@ -12,55 +16,7 @@ from sqvm.web.read_model import (
     PersistentExperimentReadModel,
     ReadModelError,
 )
-
-
-def _projection(
-    index: int,
-    *,
-    run_id: str | None = None,
-    workflow_sha256: str | None = None,
-    target: str = "Q1",
-    eligible: bool = False,
-    applicable: bool = True,
-    state: str = "hot",
-) -> ExperimentProjection:
-    run_id = run_id or f"run-{index:04d}"
-    summary = {
-        "run_id": run_id,
-        "workflow_id": "qubit_spectroscopy_scan_v1",
-        "experiment_kind": "Qubit spectroscopy",
-        "status": "completed",
-        "created_utc": f"2026-07-{(index % 28) + 1:02d}T{index % 24:02d}:00:00Z",
-        "data_origin": "synthetic-test",
-        "verification_status": "verified",
-        "targets": [target],
-        "execution_mode": "simulation",
-        "recommendation_applicable": applicable,
-        "recommendation_eligible": eligible,
-        "parent_calibration": None,
-        "gate_summary": {"passed": 0, "failed": 0, "total": 0},
-        "candidate_summary": [],
-        "relative_path": f"output/experiments/{run_id}",
-        "error": None,
-    }
-    detail = {
-        **summary,
-        "renderer": "test",
-        "datasets": {"scan": {"points": []}},
-        "plot_specs": [{"plot_id": "spectrum", "plot_type": "line"}],
-    }
-    return ExperimentProjection(
-        run_id=run_id,
-        workflow_sha256=workflow_sha256 or f"W{index:063d}",
-        receipt_sha256=f"R{index:063d}",
-        summary=summary,
-        detail=detail,
-        targets=(target,),
-        dataset_bindings=({"name": "scan", "path": "dataset.json", "sha256": "D" * 64},),
-        plot_bindings=({"plot_id": "spectrum", "plot_type": "line"},),
-        carrier_state=state,
-        carrier_alias=summary["relative_path"],
-    )
+from tests.support.web_projection import projection as _projection
 
 
 def test_schema_migration_uses_wal_and_required_tables(tmp_path: Path) -> None:

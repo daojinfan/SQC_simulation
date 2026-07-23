@@ -1,0 +1,196 @@
+name: CI PR Qualification
+
+on:
+  pull_request:
+    branches: [dev, master]
+  push:
+    branches: [dev, master]
+  workflow_call:
+    inputs:
+      candidate_sha:
+        description: Exact commit to qualify when called by the release gate.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-pr-${{ github.workflow }}-${{ github.event.pull_request.number || inputs.candidate_sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualification:
+    name: ${{ matrix.job }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    continue-on-error: ${{ matrix.advisory }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # These workflow jobs are implemented. Repository rulesets must separately
+          # mark fixture-integrity and contract-windows as required checks.
+          - job: fixture-integrity
+            runner: windows-2022
+            lock: requirements-test-py312-windows-lock.txt
+            marker: ''
+            node: false
+            timeout_minutes: 15
+            advisory: false
+          - job: contract-windows
+            runner: windows-2022
+            lock: requirements-test-py312-windows-lock.txt
+            marker: contract
+            node: false
+            timeout_minutes: 15
+            advisory: false
+          - job: integration-windows
+            runner: windows-2022
+            lock: requirements-test-py312-windows-lock.txt
+            marker: integration
+            node: true
+            timeout_minutes: 25
+            advisory: false
+          - job: contract-linux
+            runner: ubuntu-22.04
+            lock: requirements-test-py312-linux-lock.txt
+            marker: contract
+            node: false
+            timeout_minutes: 15
+            advisory: true
+          - job: integration-linux
+            runner: ubuntu-22.04
+            lock: requirements-test-py312-linux-lock.txt
+            marker: integration
+            node: true
+            timeout_minutes: 25
+            advisory: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Prepare controlled artifacts directory
+        shell: bash
+        run: mkdir -p artifacts
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.12.10
+
+      - uses: actions/setup-node@v4
+        if: matrix.node
+        with:
+          node-version: 22
+          check-latest: false
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-cp31210-${{ hashFiles(matrix.lock, 'pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-cp31210-
+
+      - name: Assert clean-checkout data boundary
+        shell: bash
+        run: |
+          test ! -e output
+          test -z "$(git ls-files -- output)"
+
+      - name: Install locked test environment
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r '${{ matrix.lock }}'
+          python -m pip install -e . --no-deps
+          python -m pip check
+
+      - name: Record environment receipt
+        shell: bash
+        run: |
+          python --version > artifacts/python-version.txt
+          python -m pip freeze --all > artifacts/pip-freeze.txt
+          printf 'job=%s\nadvisory=%s\n' '${{ matrix.job }}' '${{ matrix.advisory }}' > artifacts/gate-classification.txt
+          python - <<'PY' > artifacts/environment.json
+          import json, platform, sys
+          print(json.dumps({
+              "python": sys.version,
+              "implementation": platform.python_implementation(),
+              "platform": platform.platform(),
+          }, sort_keys=True))
+          PY
+          if [ '${{ matrix.node }}' = 'true' ]; then node --version > artifacts/node-version.txt; fi
+
+      - name: Compile project and test support
+        shell: bash
+        run: python -m compileall -q src tests/support
+
+      - name: Verify committed fixture manifests
+        shell: bash
+        run: >-
+          python tests/tools/verify_fixture_manifest.py
+          tests/fixtures/device_model_v1
+          tests/fixtures/platform_configuration_reference_v1
+          tests/fixtures/successor_rebaseline_authority_v1
+
+      - name: Verify successor rebaseline closure and development approval
+        shell: bash
+        run: |
+          python tests/tools/verify_successor_rebaseline_fixture.py \
+            tests/fixtures/successor_rebaseline_authority_v1 --repository-root .
+          python tools/verify_successor_development_baseline_approval.py --repository-root .
+
+      - name: Run fixture integrity gate
+        if: matrix.job == 'fixture-integrity'
+        shell: bash
+        run: |
+          set +e
+          python tools/verify_authority_drift.py 2>&1 | tee artifacts/authority-drift.log
+          authority_status=${PIPESTATUS[0]}
+          python -m pytest -p no:cacheprovider -q tests/test_fixture_loader.py \
+            --junitxml=artifacts/junit-fixture-integrity.xml --durations=20 \
+            2>&1 | tee artifacts/pytest-fixture-integrity.log
+          pytest_status=${PIPESTATUS[0]}
+          python -c "import sys, xml.etree.ElementTree as E; p='artifacts/junit-fixture-integrity.xml'; n=sum(1 for _ in E.parse(p).iter('testcase')); print(f'pytest testcases: {n}'); sys.exit(n == 0)"
+          count_status=$?
+          test "$authority_status" -eq 0
+          test "$pytest_status" -eq 0
+          exit "$count_status"
+
+      - name: Require Node for executable frontend contracts
+        if: matrix.node
+        shell: bash
+        run: node --version
+
+      - name: Run marker suite
+        if: matrix.marker != ''
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -p no:cacheprovider -m '${{ matrix.marker }}' \
+            --junitxml=artifacts/junit-${{ matrix.job }}.xml --durations=30 \
+            2>&1 | tee artifacts/pytest-${{ matrix.job }}.log
+          pytest_status=${PIPESTATUS[0]}
+          python -c "import sys, xml.etree.ElementTree as E; p='artifacts/junit-${{ matrix.job }}.xml'; n=sum(1 for _ in E.parse(p).iter('testcase')); print(f'pytest testcases: {n}'); sys.exit(n == 0)"
+          count_status=$?
+          test "$pytest_status" -eq 0
+          exit "$count_status"
+
+      - name: Assert test run preserved data boundary and tracked files
+        if: always()
+        shell: bash
+        run: |
+          test ! -e output
+          test -z "$(git ls-files -- output)"
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+
+      - name: Upload qualification receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-${{ matrix.job }}-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14

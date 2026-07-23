@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.physics_slow
+
 import json
 import subprocess
 import sys

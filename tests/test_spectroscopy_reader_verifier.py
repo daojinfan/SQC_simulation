@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 from dataclasses import replace
 import hashlib
 import json
@@ -32,7 +36,7 @@ from sqvm.storage.workflow_verifiers import (
     workflow_evidence_verifier_registry,
 )
 from sqvm.hamiltonian.provenance import canonical_json_bytes
-from test_qubit_spectroscopy import _context, _result, _single_request
+from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 
 
 ROOT = Path(__file__).resolve().parents[1]

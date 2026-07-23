@@ -1,0 +1,159 @@
+name: Historical Evidence
+
+on:
+  schedule:
+    - cron: '41 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Optional exact commit SHA. Empty uses the scheduled/default commit.
+        required: false
+        type: string
+      run_stage4_v1_notebook:
+        description: Run only on an explicitly approved self-hosted environment.
+        required: false
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      candidate_sha:
+        description: Exact candidate SHA supplied by the release gate.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: historical-evidence-${{ inputs.candidate_sha || github.event.inputs.candidate_sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hosted-evidence:
+    name: ${{ matrix.job }}
+    runs-on: windows-2022
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job: historical-fixture-byte-match
+            command: >-
+              python tools/verify_authority_drift.py && python tests/tools/verify_fixture_manifest.py tests/fixtures/device_model_v1 tests/fixtures/platform_configuration_reference_v1 tests/fixtures/successor_rebaseline_authority_v1 && python tests/tools/verify_successor_rebaseline_fixture.py tests/fixtures/successor_rebaseline_authority_v1 --repository-root . && python tools/verify_successor_development_baseline_approval.py --repository-root .
+            pytest: false
+          - job: stage4-v1-byte-contract
+            command: >-
+              python -m pytest -p no:cacheprovider tests/test_fixture_loader.py tests/test_successor_rebaseline.py
+              -m 'contract or evidence'
+              --junitxml=artifacts/junit-stage4-v1-byte-contract.xml --durations=30
+            pytest: true
+          - job: historical-output-regression
+            command: >-
+              python -m pytest -p no:cacheprovider -m 'evidence and release and not legacy_environment'
+              --junitxml=artifacts/junit-historical-output-regression.xml --durations=30
+            pytest: true
+          - job: authority-drift-check
+            command: python tools/verify_authority_drift.py
+            pytest: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha || github.event.inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+      - name: Prepare controlled artifacts directory
+        shell: bash
+        run: mkdir -p artifacts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.12.10
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-cp31210-${{ hashFiles('requirements-test-py312-windows-lock.txt', 'pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-cp31210-
+      - name: Assert clean-checkout data boundary
+        shell: bash
+        run: |
+          test ! -e output
+          test -z "$(git ls-files -- output)"
+      - name: Install locked test environment
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements-test-py312-windows-lock.txt
+          python -m pip install -e . --no-deps
+          python -m pip check
+          python -m compileall -q src tests/support
+          python tests/tools/verify_fixture_manifest.py tests/fixtures/device_model_v1 tests/fixtures/platform_configuration_reference_v1 tests/fixtures/successor_rebaseline_authority_v1
+          python tests/tools/verify_successor_rebaseline_fixture.py tests/fixtures/successor_rebaseline_authority_v1 --repository-root .
+          python tools/verify_successor_development_baseline_approval.py --repository-root .
+      - name: Record candidate and environment receipt
+        shell: bash
+        run: |
+          git rev-parse HEAD > artifacts/candidate-sha.txt
+          python --version > artifacts/python-version.txt
+          python -m pip freeze --all > artifacts/pip-freeze.txt
+      - name: Execute fail-closed hosted evidence check
+        shell: bash
+        run: |
+          set +e
+          ${{ matrix.command }} 2>&1 | tee artifacts/${{ matrix.job }}.log
+          status=${PIPESTATUS[0]}
+          exit "$status"
+      - name: Require hosted pytest evidence to run at least one test
+        if: always() && matrix.pytest
+        shell: bash
+        run: |
+          python -c "import sys, xml.etree.ElementTree as E; files=list(__import__('pathlib').Path('artifacts').glob('junit-*.xml')); n=sum(1 for p in files for _ in E.parse(p).iter('testcase')); print(f'pytest testcases: {n}'); sys.exit(n == 0)"
+      - name: Assert evidence check preserved data boundary and tracked files
+        if: always()
+        shell: bash
+        run: |
+          test ! -e output
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+      - name: Upload hosted evidence receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ matrix.job }}-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 90
+
+  stage4-v1-notebook-execution:
+    # This job is intentionally absent from normal PR/release qualification.
+    # A missing approved runner is never represented as a successful notebook replay.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_stage4_v1_notebook
+    runs-on: [self-hosted, stage4-v1-approved-environment]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+      - name: Confirm approved historical runtime and run evidence
+        shell: bash
+        run: |
+          test ! -e output
+          mkdir -p artifacts
+          git rev-parse HEAD > artifacts/candidate-sha.txt
+          python --version
+          python -m pip check
+          # This is the only workflow command allowed to execute the historical v1 notebook.
+          # The approved runner supplies its provenance-bound interpreter and kernelspec.
+          set +e
+          python -m pytest -p no:cacheprovider tests/test_control_channel_compatibility.py -m evidence --junitxml=artifacts/junit-stage4-v1-notebook-execution.xml --durations=30 2>&1 | tee artifacts/stage4-v1-notebook-execution.log
+          pytest_status=${PIPESTATUS[0]}
+          python -c "import sys, xml.etree.ElementTree as E; p='artifacts/junit-stage4-v1-notebook-execution.xml'; n=sum(1 for _ in E.parse(p).iter('testcase')); print(f'pytest testcases: {n}'); sys.exit(n == 0)"
+          count_status=$?
+          test "$pytest_status" -eq 0
+          exit "$count_status"
+      - name: Upload approved-environment evidence receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage4-v1-approved-environment-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 90

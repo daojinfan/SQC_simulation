@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.physics_slow
+
 import numpy as np
 
 from sqvm.spectrum import detect_character_exchange

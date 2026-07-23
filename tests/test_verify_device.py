@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.contract
+
 import json
 import subprocess
 import sys

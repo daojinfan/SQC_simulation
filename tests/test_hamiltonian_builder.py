@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.physics_slow
+
 from pathlib import Path
 
 import numpy as np
@@ -12,10 +16,11 @@ from sqvm.hamiltonian import (
     resolve_effective_junctions,
 )
 from sqvm.hamiltonian.checks import charge_basis_convergence, single_transmon_analytic_limit
+from tests.support.fixture_loader import fixture_path
 
 
 CONFIG = Path("configs/hamiltonians/2q1c_charge_basis.yaml")
-ARTIFACTS = Path("output/stage_01_device_model/device_artifacts.json")
+ARTIFACTS = fixture_path("device_model_v1") / "output/stage_01_device_model/device_artifacts.json"
 
 
 def _model():

@@ -1,0 +1,13 @@
+{
+  "schema_version": "0.1",
+  "artifact_type": "development_authority_baseline",
+  "artifact_version": "1",
+  "raw_sha256": {
+    "pyproject.toml": "4A9EEB72E2132C5704207C25908C7D634CD231A8CB50485EF8ABE9CB9E1E5CD1",
+    "requirements-stage5-lock.txt": "F37566AA6BF2BE71D0FC457A9E8CB73758E1B5B27C058CC8121A38D32A159E2E",
+    "requirements-stage6-lock.txt": "B2932270649650F48796F12809A502C583806FE7A13B20ABAD15B6D1EEDCBFE1",
+    "configs/evolution/stage51/source_snapshot_v1.json": "A61531AD7207E7E0A472BC236B0981DDE250550C00ACF26FCAAD508D74B07373",
+    "tests/fixtures/runtime_v02_legacy_v1/provenance.json": "03FB4C7724556CC56CF9D2D9ED61AC8840A2EB8DDB6C889D829C6DE192F67688"
+  },
+  "stage2_model_source_tree_sha256": "EEB158FE8508569C936CC9138530DB7C38F6592E4F476ED2C3BCE61686A8CBC0"
+}

@@ -18,6 +18,12 @@ env/
 output/
 tmp/
 
+# Deterministic test fixtures may model repository-root/output paths.
+!tests/
+!tests/fixtures/
+!tests/fixtures/**/
+!tests/fixtures/**
+
 # OS / editor
 .DS_Store
 Thumbs.db

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 import json
 import shutil
 import hashlib
@@ -11,19 +15,20 @@ import pytest
 from sqvm.storage.references import build_reference_graph
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.calibration import decide_qubit_spectroscopy_calibration, run_qubit_spectroscopy_calibration
-from test_qubit_spectroscopy import _context
-from test_spectroscopy_calibration_workflow import _install_synthetic_runner, _request
-from test_spectroscopy_evidence_closure import _install_runner, _scan_request
+from tests.support.contexts import spectroscopy_context as _context
+from tests.support.calibration_requests import spectroscopy_calibration_request as _request
+from tests.support.synthetic_runners import install_synthetic_spectroscopy_runner as _install_synthetic_runner, install_evidence_runner as _install_runner, scan_spectroscopy_request as _scan_request
 from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
+from tests.support.fixture_loader import copy_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = "781c849f-aa07-4d55-bb4f-591b55e1e0df"
+FIXTURE_ID = "platform_configuration_reference_v1"
 
 
 def _roots(tmp_path: Path) -> tuple[Path, Path]:
-    config = tmp_path / "platform-configurations"
-    shutil.copytree(ROOT / "output" / "platform-configurations", config)
+    fixture = copy_fixture(FIXTURE_ID, tmp_path / "fixture")
+    config = fixture / "platform-configurations"
     experiments = tmp_path / "experiments"
     experiments.mkdir()
     return config, experiments
@@ -34,14 +39,19 @@ def _graph(tmp_path: Path):
     return build_reference_graph(configuration_root=config, experiment_output_root=experiments), config, experiments
 
 
+def _fixture_run(config: Path) -> str:
+    return json.loads((config / "current" / "demo_2q1c2r.json").read_text("utf-8"))["source_candidate"]["experiment_run_id"]
+
+
 def test_real_configuration_copy_contains_permanent_applied_audit(tmp_path):
-    graph, _config, _experiments = _graph(tmp_path)
-    types = {edge.reference_type for edge in graph.for_run(RUN)}
+    graph, config, _experiments = _graph(tmp_path)
+    run = _fixture_run(config)
+    types = {edge.reference_type for edge in graph.for_run(run)}
     assert graph.scan_incomplete is False
     assert {"current_configuration", "applied_audit"} <= types
-    assert graph.permanently_blocked(RUN)
-    assert graph.can_archive(RUN)
-    assert not graph.can_trash(RUN) and not graph.can_purge(RUN)
+    assert graph.permanently_blocked(run)
+    assert graph.can_archive(run)
+    assert not graph.can_trash(run) and not graph.can_purge(run)
 
 
 def test_real_pretty_json_is_accepted_without_canonical_byte_requirement(tmp_path):
@@ -116,7 +126,7 @@ def test_missing_optional_lifecycle_and_pin_roots_are_allowed(tmp_path):
 
 def test_graph_for_run_is_sorted_deduplicated_and_unknown_schema_fails_closed(tmp_path):
     graph, config, experiments = _graph(tmp_path)
-    edges = graph.for_run(RUN)
+    edges = graph.for_run(_fixture_run(config))
     assert edges == tuple(sorted(edges, key=lambda edge: (edge.reference_type, str(edge.source_path))))
     assert len(edges) == len(set(edges))
 
@@ -125,7 +135,7 @@ def test_graph_for_run_is_sorted_deduplicated_and_unknown_schema_fails_closed(tm
     value["schema_version"] = "9.9"
     current.write_text(json.dumps(value), "utf-8")
     failed = build_reference_graph(configuration_root=config, experiment_output_root=experiments)
-    assert failed.scan_incomplete and failed.for_run(RUN) == ()
+    assert failed.scan_incomplete and failed.for_run(_fixture_run(config)) == ()
 
 
 def _run_pin(run_id: str) -> dict:
@@ -151,13 +161,14 @@ def test_explicit_run_pin_creates_manual_keep_edge_and_validates_hash(tmp_path):
 
 def test_active_edge_retains_pointer_and_sidecar_evidence(tmp_path):
     graph, config, experiments = _graph(tmp_path)
-    edge = next(edge for edge in graph.for_run(RUN) if edge.reference_type == "active_snapshot") if any(edge.reference_type == "active_snapshot" for edge in graph.for_run(RUN)) else None
+    run = _fixture_run(config)
+    edge = next(edge for edge in graph.for_run(run) if edge.reference_type == "active_snapshot") if any(edge.reference_type == "active_snapshot" for edge in graph.for_run(run)) else None
     # The checked-in snapshot has no sidecar; inject one by copying current's real source.
     if edge is None:
         source = json.loads((config / "current" / "demo_2q1c2r.json").read_text("utf-8"))["source_candidate"]
         snapshot = next((config / "snapshots").iterdir()); (snapshot / "source_candidate.json").write_text(json.dumps(source), "utf-8")
         graph = build_reference_graph(configuration_root=config, experiment_output_root=experiments)
-        edge = next(item for item in graph.for_run(RUN) if item.reference_type == "active_snapshot")
+        edge = next(item for item in graph.for_run(run) if item.reference_type == "active_snapshot")
     assert len(edge.evidence_paths) == len(edge.evidence_sha256s) == 2
     assert edge.evidence_paths[0].startswith("active/") and "source_candidate.json" in edge.evidence_paths[1]
 
@@ -170,7 +181,8 @@ def test_unknown_or_damaged_workflow_is_scan_incomplete(tmp_path):
 
 def test_authority_root_ancestor_link_fails_closed(tmp_path):
     actual = tmp_path / "actual"; actual.mkdir()
-    shutil.copytree(ROOT / "output" / "platform-configurations", actual / "config")
+    fixture = copy_fixture(FIXTURE_ID, actual / "fixture")
+    shutil.copytree(fixture / "platform-configurations", actual / "config")
     alias = tmp_path / "alias"; alias.symlink_to(actual, target_is_directory=True)
     experiments = tmp_path / "experiments"; experiments.mkdir()
     assert build_reference_graph(configuration_root=alias / "config", experiment_output_root=experiments).scan_incomplete

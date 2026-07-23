@@ -8,6 +8,10 @@ provide the named design artifacts either as mapping keys or attributes.
 
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.evidence
+
 import hashlib
 import importlib
 import json
