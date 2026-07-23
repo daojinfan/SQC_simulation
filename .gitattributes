@@ -7,3 +7,6 @@
 *.pdf binary
 *.npy binary
 *.npz binary
+
+# This historical fixture is bound to its original raw CRLF bytes.
+tests/fixtures/device_model_v1/output/stage_01_device_model/device_artifacts.json binary
