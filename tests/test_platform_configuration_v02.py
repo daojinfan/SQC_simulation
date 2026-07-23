@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def platform_root():
-    root = ROOT / "output" / f".platform-v02.{uuid.uuid4().hex}"
+    root = ROOT / "tmp" / f".platform-v02.{uuid.uuid4().hex}"
     root.mkdir(parents=True)
     try:
         yield root
