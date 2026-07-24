@@ -35,6 +35,8 @@ from tests.support.fixture_loader import _aggregate, verify_fixture_manifest
 FIXTURE_ID = "physics_baseline_v1"
 FIXED_CLOCK_UTC = "2026-07-24T00:00:00.000000Z"
 AUTHORITY = "test_only_non_production"
+FLOAT_SIGNIFICANT_DIGITS = 12
+FLOAT_ZERO_ABS_THRESHOLD = 1e-12
 
 
 def _sha256(raw: bytes) -> str:
@@ -44,6 +46,20 @@ def _sha256(raw: bytes) -> str:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical_json_bytes(payload))
+
+
+def _stable_numeric_payload(value: Any) -> Any:
+    """Normalize non-authoritative fixture numerics across BLAS implementations."""
+
+    if isinstance(value, float):
+        if abs(value) < FLOAT_ZERO_ABS_THRESHOLD:
+            return 0.0
+        return float(format(value, f".{FLOAT_SIGNIFICANT_DIGITS}g"))
+    if isinstance(value, list):
+        return [_stable_numeric_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _stable_numeric_payload(item) for key, item in value.items()}
+    return value
 
 
 def _fixture_relative(repository_root: Path, path: Path) -> str:
@@ -150,6 +166,12 @@ def generate(repository_root: Path, target: Path) -> None:
     candidate = artifacts / "hamiltonian_artifacts.json"
     shutil.move(stage2_output / "hamiltonian_artifacts.json", candidate)
     shutil.rmtree(stage2_output)
+    candidate_payload = json.loads(candidate.read_bytes())
+    candidate_payload["source_device_artifacts"] = _fixture_relative(repository_root, device_artifact)
+    candidate_payload["hamiltonian_config"]["path"] = _fixture_relative(
+        repository_root, hamiltonian_config
+    )
+    _write_json(candidate, _stable_numeric_payload(candidate_payload))
 
     previous = artifacts / "previous_hamiltonian_artifacts.json"
     _write_json(
@@ -274,6 +296,21 @@ def _all_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def _byte_difference_summary(actual: Path, expected: Path) -> str:
+    actual_files = _all_bytes(actual)
+    expected_files = _all_bytes(expected)
+    names = sorted(set(actual_files) | set(expected_files), key=lambda value: value.encode("utf-8"))
+    differences = []
+    for name in names:
+        actual_raw = actual_files.get(name)
+        expected_raw = expected_files.get(name)
+        if actual_raw != expected_raw:
+            actual_hash = "missing" if actual_raw is None else _sha256(actual_raw)
+            expected_hash = "missing" if expected_raw is None else _sha256(expected_raw)
+            differences.append(f"{name} (generated={actual_hash}, committed={expected_hash})")
+    return "; ".join(differences)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository-root", type=Path, default=ROOT)
@@ -292,7 +329,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify_against is not None:
         verify_fixture_manifest(args.verify_against)
         if _all_bytes(args.target.resolve()) != _all_bytes(args.verify_against.resolve()):
-            raise ValueError("generated physics fixture differs from --verify-against")
+            details = _byte_difference_summary(args.target.resolve(), args.verify_against.resolve())
+            raise ValueError(f"generated physics fixture differs from --verify-against: {details}")
     return 0
 
 
