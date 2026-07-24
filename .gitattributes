@@ -10,3 +10,4 @@
 
 # This historical fixture is bound to its original raw CRLF bytes.
 tests/fixtures/device_model_v1/output/stage_01_device_model/device_artifacts.json binary
+tests/fixtures/physics_baseline_v1/artifacts/device_artifacts.json binary

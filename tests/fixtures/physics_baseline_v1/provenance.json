@@ -1,0 +1,66 @@
+{
+  "aggregate_sha256": "48B0EB2E79EA3F93F1435BCAE6A71D0AC7853070662364D7FC313F9B96DED4AA",
+  "files": [
+    {
+      "byte_length": 5487,
+      "path": "artifacts/device_artifacts.json",
+      "raw_sha256": "B771B72ED33FE104E8940730684710B23BB9278451230318D2B52543C77CE86D"
+    },
+    {
+      "byte_length": 11025,
+      "path": "artifacts/hamiltonian_artifacts.json",
+      "raw_sha256": "056E6C60BA0FC6DB255DE3680F651F9E57B47DB8A23A3E3E8C92F25B0301D27C"
+    },
+    {
+      "byte_length": 115,
+      "path": "artifacts/previous_hamiltonian_artifacts.json",
+      "raw_sha256": "393D9799E1E37FC2D8A20A0E57ACE35301CB0280FDBBCD93556AF4525BC4778A"
+    },
+    {
+      "byte_length": 2351,
+      "path": "configs/device.yaml",
+      "raw_sha256": "CA300E0AE08DCBBE7810F92AFDDFD713C6928A2E04E4A853FCE418B181E18D3F"
+    },
+    {
+      "byte_length": 338,
+      "path": "configs/hamiltonian.yaml",
+      "raw_sha256": "825B158EAA57D6642C5BD94B7CA5C3666AEC0F2614EAE604174598C59DA329A7"
+    },
+    {
+      "byte_length": 2415,
+      "path": "configs/spectrum_acceptance.yaml",
+      "raw_sha256": "1474E2ECD6F2DD6E9C11B1CAF3A11D96F66425A3A32822E4B8A69AED0E7A67F1"
+    },
+    {
+      "byte_length": 2411,
+      "path": "configs/spectrum_smoke.yaml",
+      "raw_sha256": "E3C9AD7D81C60F49994F61BF873BDFB916E054A961A9B7BD786E1C0EA1F6E09C"
+    },
+    {
+      "byte_length": 290,
+      "path": "metadata/fixture_authority.json",
+      "raw_sha256": "F2865C60E2AE5D48B6980654A27CE76B913CF9756764ABD2E3552D0E4ADF9753"
+    },
+    {
+      "byte_length": 547,
+      "path": "metadata/legacy_baseline_anchor.json",
+      "raw_sha256": "D59442655B8D66B898BCF0C0F757D4B908E727D5D69190D44E30521C85E963BB"
+    },
+    {
+      "byte_length": 715,
+      "path": "metadata/rebaseline_approval.json",
+      "raw_sha256": "8AF7787B61618A9084DCC18F2D2AEEE49A3F4FC7415BA8A734201490B5B66971"
+    },
+    {
+      "byte_length": 2341,
+      "path": "metadata/rebaseline_manifest.json",
+      "raw_sha256": "1310F38CFF180BC22502127963E43112A6E733FA07DE33F3DAED21BC43887F81"
+    }
+  ],
+  "fixed_clock_utc": "2026-07-24T00:00:00.000000Z",
+  "fixture_id": "physics_baseline_v1",
+  "generator_raw_sha256": "FC6031DF14CDC83ABB67FEE35D763907F10B09D149A43259B97A9C89E8D491DF",
+  "generator_version": "0.1",
+  "schema_version": "0.1",
+  "source_authority": "test_only_non_production"
+}

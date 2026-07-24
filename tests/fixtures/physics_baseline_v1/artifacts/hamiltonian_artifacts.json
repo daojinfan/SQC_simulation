@@ -1,0 +1,520 @@
+{
+  "artifact_type": "stage_02_hamiltonian",
+  "artifact_version": "0.2",
+  "basis": {
+    "charge_cutoffs": {
+      "c": 7,
+      "q1": 7,
+      "q2": 7
+    },
+    "charges": {
+      "c": [
+        -7,
+        -6,
+        -5,
+        -4,
+        -3,
+        -2,
+        -1,
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "q1": [
+        -7,
+        -6,
+        -5,
+        -4,
+        -3,
+        -2,
+        -1,
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "q2": [
+        -7,
+        -6,
+        -5,
+        -4,
+        -3,
+        -2,
+        -1,
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    "dimensions": {
+      "c": 15,
+      "q1": 15,
+      "q2": 15
+    },
+    "mode_order": [
+      "q1",
+      "c",
+      "q2"
+    ]
+  },
+  "charge_basis_convergence": {
+    "rows": [
+      {
+        "charge_cutoff": 7,
+        "drift_GHz": -3.867397584400578e-07,
+        "gap_GHz": 5.193534340730496,
+        "mode": "q1",
+        "refined_charge_cutoff": 9,
+        "refined_gap_GHz": 5.1935339539907375
+      },
+      {
+        "charge_cutoff": 7,
+        "drift_GHz": -9.736532783222174e-05,
+        "gap_GHz": 7.568934715498379,
+        "mode": "c",
+        "refined_charge_cutoff": 9,
+        "refined_gap_GHz": 7.568837350170547
+      },
+      {
+        "charge_cutoff": 7,
+        "drift_GHz": -1.1010292801927335e-06,
+        "gap_GHz": 5.3315967504054385,
+        "mode": "q2",
+        "refined_charge_cutoff": 9,
+        "refined_gap_GHz": 5.331595649376158
+      }
+    ]
+  },
+  "checks": [
+    {
+      "message": "artifact type is stage_01_device_model",
+      "name": "device_artifacts_type",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "node order is ('q1_p', 'q1_m', 'c', 'q2_p', 'q2_m')",
+      "name": "node_order_contract",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "mode order is ('q1', 'c', 'q2')",
+      "name": "mode_order_expected",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "coordinate transform is fixed 5x3",
+      "name": "coordinate_transform_shape",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "C_mode is symmetric",
+      "name": "mode_capacitance_symmetric",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "eigenvalues (75.78927960280176, 77.03165330010528, 80.07906709709296)",
+      "name": "mode_capacitance_positive_definite",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "E_C matrix is symmetric",
+      "name": "ec_matrix_symmetric",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "all EJ_eff values are positive",
+      "name": "effective_ej_positive",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "q1, c, q2 junctions are paired with flux bias",
+      "name": "junction_flux_pairing",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "dimension is 3375",
+      "name": "basis_dimension_matches_cutoff",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "shape is (3375, 3375)",
+      "name": "hamiltonian_shape",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "hermiticity error 0",
+      "name": "hamiltonian_hermitian",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "max abs error 0",
+      "name": "sparse_dense_small_cutoff_equivalent",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "eigenvalues are finite",
+      "name": "eigenvalues_finite",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "eigenvalues are sorted",
+      "name": "eigenvalues_sorted",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "first gap 5.193479909897121 GHz",
+      "name": "ground_state_gap_sane",
+      "passed": true,
+      "severity": "error"
+    },
+    {
+      "message": "max |numeric-analytic| 0.0133 GHz",
+      "name": "single_transmon_analytic_limit",
+      "passed": true,
+      "severity": "warning"
+    },
+    {
+      "message": "max N->N+2 gap drift 9.74e-05 GHz",
+      "name": "charge_basis_convergence",
+      "passed": true,
+      "severity": "warning"
+    },
+    {
+      "message": "mode coupling fF values are recorded",
+      "name": "coupling_magnitude_displayed",
+      "passed": true,
+      "severity": "warning"
+    },
+    {
+      "message": "E_C diagonal [0.25148043141039256, 0.25554478201726066, 0.24190170422355506] GHz",
+      "name": "ec_diagonal_range",
+      "passed": true,
+      "severity": "warning"
+    }
+  ],
+  "coordinate_transform": {
+    "convention": "theta_node = A * theta_mode",
+    "matrix": [
+      [
+        0.5,
+        0.0,
+        0.0
+      ],
+      [
+        -0.5,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.5
+      ],
+      [
+        0.0,
+        0.0,
+        -0.5
+      ]
+    ]
+  },
+  "ec_matrix_GHz": {
+    "matrix_GHz": [
+      [
+        0.25148043141039256,
+        0.00033207966781653026,
+        0.0002359567945371352
+      ],
+      [
+        0.00033207966781653026,
+        0.25554478201726066,
+        0.00031944282456212645
+      ],
+      [
+        0.0002359567945371352,
+        0.00031944282456212645,
+        0.24190170422355506
+      ]
+    ],
+    "modes": [
+      "q1",
+      "c",
+      "q2"
+    ]
+  },
+  "effective_junctions": [
+    {
+      "component": "q1",
+      "ej1_GHz": 7.785450390508698,
+      "ej2_GHz": 7.785450390508698,
+      "ej_effective_GHz": 14.80880665237189,
+      "flux_bias_phi0": 0.1,
+      "formula": "sqrt((EJ1+EJ2)^2*cos(pi*phi)^2 + (EJ1-EJ2)^2*sin(pi*phi)^2)",
+      "mode": "q1"
+    },
+    {
+      "component": "c",
+      "ej1_GHz": 22.694562725274064,
+      "ej2_GHz": 22.694562725274064,
+      "ej_effective_GHz": 30.01636721711122,
+      "flux_bias_phi0": 0.27,
+      "formula": "sqrt((EJ1+EJ2)^2*cos(pi*phi)^2 + (EJ1-EJ2)^2*sin(pi*phi)^2)",
+      "mode": "c"
+    },
+    {
+      "component": "q2",
+      "ej1_GHz": 8.060262534810073,
+      "ej2_GHz": 8.060262534810073,
+      "ej_effective_GHz": 16.120525069620147,
+      "flux_bias_phi0": 0.0,
+      "formula": "sqrt((EJ1+EJ2)^2*cos(pi*phi)^2 + (EJ1-EJ2)^2*sin(pi*phi)^2)",
+      "mode": "q2"
+    }
+  ],
+  "eigenvalue_gaps_GHz": [
+    0.0,
+    5.193479909897121,
+    5.331633051009177,
+    7.568946724643155,
+    10.102003036052537,
+    10.391440519556966,
+    10.525230328298647,
+    12.762423283741853,
+    12.900576056390435,
+    14.694627930588439,
+    14.860988609516,
+    15.1527551787662
+  ],
+  "hamiltonian_config": {
+    "basis": {
+      "c": {
+        "charge_cutoff": 7
+      },
+      "q1": {
+        "charge_cutoff": 7
+      },
+      "q2": {
+        "charge_cutoff": 7
+      }
+    },
+    "name": "demo_2q1c_charge_basis",
+    "path": "tests\\fixtures\\physics_baseline_v1\\configs\\hamiltonian.yaml",
+    "solver": {
+      "method": "eigh",
+      "num_eigenvalues": 12,
+      "tolerance": 1e-10
+    }
+  },
+  "hamiltonian_summary": {
+    "hermiticity_error": 0.0,
+    "nnz": 22274,
+    "representation": "sparse",
+    "shape": [
+      3375,
+      3375
+    ],
+    "solver_method": "eigh"
+  },
+  "hilbert_dimension": 3375,
+  "lowest_eigenvalues_GHz": [
+    -51.69837774205709,
+    -46.50489783215997,
+    -46.36674469104791,
+    -44.129431017413935,
+    -41.59637470600455,
+    -41.306937222500125,
+    -41.17314741375844,
+    -38.93595445831524,
+    -38.797801685666656,
+    -37.00374981146865,
+    -36.83738913254109,
+    -36.54562256329089
+  ],
+  "mode_capacitance_matrix_fF": {
+    "eigenvalues_fF": [
+      75.78927960280176,
+      77.03165330010528,
+      80.07906709709296
+    ],
+    "matrix_fF": [
+      [
+        77.025,
+        -0.10000000000000009,
+        -0.075
+      ],
+      [
+        -0.10000000000000009,
+        75.8,
+        -0.09999999999999987
+      ],
+      [
+        -0.075,
+        -0.09999999999999987,
+        80.07499999999999
+      ]
+    ],
+    "modes": [
+      "q1",
+      "c",
+      "q2"
+    ]
+  },
+  "mode_coupling_fF": {
+    "c-q2": -0.09999999999999987,
+    "q1-c": -0.10000000000000009,
+    "q1-q2": -0.075
+  },
+  "mode_order": [
+    "q1",
+    "c",
+    "q2"
+  ],
+  "node_capacitance_matrix_fF": {
+    "matrix_fF": [
+      [
+        79.3,
+        -75.0,
+        -4.0,
+        -0.3,
+        0.0
+      ],
+      [
+        -75.0,
+        78.8,
+        -3.8,
+        0.0,
+        0.0
+      ],
+      [
+        -4.0,
+        -3.8,
+        75.8,
+        -4.1,
+        -3.9
+      ],
+      [
+        -0.3,
+        0.0,
+        -4.1,
+        82.39999999999999,
+        -78.0
+      ],
+      [
+        0.0,
+        0.0,
+        -3.9,
+        -78.0,
+        81.9
+      ]
+    ],
+    "nodes": [
+      "q1_p",
+      "q1_m",
+      "c",
+      "q2_p",
+      "q2_m"
+    ]
+  },
+  "node_order": [
+    "q1_p",
+    "q1_m",
+    "c",
+    "q2_p",
+    "q2_m"
+  ],
+  "offset_charge_ng": {
+    "c": 0.0,
+    "q1": 0.0,
+    "q2": 0.0
+  },
+  "provenance": {
+    "device_artifacts_sha256": "B771B72ED33FE104E8940730684710B23BB9278451230318D2B52543C77CE86D",
+    "hamiltonian_config_sha256": "825B158EAA57D6642C5BD94B7CA5C3666AEC0F2614EAE604174598C59DA329A7",
+    "stage2_model_source_tree_sha256": "EEB158FE8508569C936CC9138530DB7C38F6592E4F476ED2C3BCE61686A8CBC0"
+  },
+  "reference_priors": {
+    "c": {
+      "prior_f01_GHz": 7.5
+    },
+    "q1": {
+      "prior_f01_GHz": 5.1
+    },
+    "q2": {
+      "prior_f01_GHz": 5.3
+    }
+  },
+  "schema_version": "0.2",
+  "single_transmon_analytic_limit": {
+    "rows": [
+      {
+        "analytic_f01_GHz": 5.206816068862618,
+        "ec_GHz": 0.25148043141039256,
+        "ej_effective_GHz": 14.80880665237189,
+        "mode": "q1",
+        "numeric_f01_GHz": 5.193534340730496,
+        "numeric_minus_analytic_GHz": -0.013281728132121806,
+        "numeric_minus_prior_GHz": 0.09353434073049627,
+        "prior_f01_GHz": 5.1
+      },
+      {
+        "analytic_f01_GHz": 7.5779862314896045,
+        "ec_GHz": 0.25554478201726066,
+        "ej_effective_GHz": 30.01636721711122,
+        "mode": "c",
+        "numeric_f01_GHz": 7.568934715498379,
+        "numeric_minus_analytic_GHz": -0.009051515991225223,
+        "numeric_minus_prior_GHz": 0.06893471549837926,
+        "prior_f01_GHz": 7.5
+      },
+      {
+        "analytic_f01_GHz": 5.34349531824112,
+        "ec_GHz": 0.24190170422355506,
+        "ej_effective_GHz": 16.120525069620147,
+        "mode": "q2",
+        "numeric_f01_GHz": 5.3315967504054385,
+        "numeric_minus_analytic_GHz": -0.011898567835681106,
+        "numeric_minus_prior_GHz": 0.031596750405438634,
+        "prior_f01_GHz": 5.3
+      }
+    ]
+  },
+  "solver": {
+    "method": "eigh",
+    "num_eigenvalues": 12,
+    "tolerance": 1e-10
+  },
+  "source_device_artifacts": "tests\\fixtures\\physics_baseline_v1\\artifacts\\device_artifacts.json"
+}

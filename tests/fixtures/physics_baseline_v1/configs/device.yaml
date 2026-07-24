@@ -1,0 +1,117 @@
+schema_version: "0.1"
+
+device:
+  name: demo_2q1c2r
+  topology: 2q1c2r
+
+  components:
+    q1:
+      kind: tunable_transmon
+      role: qubit
+      floating: true
+      nodes: [q1_p, q1_m]
+      capacitance_fF: 75.0
+      squid:
+        rn1_ohm: 18038.0
+        rn2_ohm: 18038.0
+        flux_bias_phi0: 0.10
+        asymmetry: 0.0
+
+    q2:
+      kind: tunable_transmon
+      role: qubit
+      floating: true
+      nodes: [q2_p, q2_m]
+      capacitance_fF: 78.0
+      squid:
+        rn1_ohm: 17423.0
+        rn2_ohm: 17423.0
+        flux_bias_phi0: 0.00
+        asymmetry: 0.0
+
+    c:
+      kind: tunable_coupler
+      role: coupler
+      floating: false
+      nodes: [c]
+      capacitance_fF: 60.0
+      squid:
+        rn1_ohm: 6188.0
+        rn2_ohm: 6188.0
+        flux_bias_phi0: 0.27
+        asymmetry: 0.0
+
+    r1:
+      kind: readout_resonator
+      role: readout
+      coupled_to: q1
+      coupling_node: q1_p
+      frequency_GHz: 6.4
+      coupling_capacitance_fF: 4.0
+      kappa_MHz: 2.0
+
+    r2:
+      kind: readout_resonator
+      role: readout
+      coupled_to: q2
+      coupling_node: q2_p
+      frequency_GHz: 6.45
+      coupling_capacitance_fF: 4.0
+      kappa_MHz: 2.0
+
+  capacitors:
+    - name: C_q1p_c
+      between: [q1_p, c]
+      capacitance_fF: 4.0
+    - name: C_q1m_c
+      between: [q1_m, c]
+      capacitance_fF: 3.8
+    - name: C_q2p_c
+      between: [q2_p, c]
+      capacitance_fF: 4.1
+    - name: C_q2m_c
+      between: [q2_m, c]
+      capacitance_fF: 3.9
+    - name: C_q1p_q2p
+      between: [q1_p, q2_p]
+      capacitance_fF: 0.3
+
+  channels:
+    q1_xy:
+      kind: xy
+      target: q1
+      port: q1_xy
+    q2_xy:
+      kind: xy
+      target: q2
+      port: q2_xy
+    c_z:
+      kind: z
+      target: c
+      port: c_z
+    r1_ro:
+      kind: readout
+      target: r1
+      port: r1_ro
+    r2_ro:
+      kind: readout
+      target: r2
+      port: r2_ro
+
+  priors:
+    q1:
+      estimated_f01_GHz: 5.10
+      estimated_anharmonicity_GHz: -0.25
+      note: "example qubit prior"
+    q2:
+      estimated_f01_GHz: 5.30
+      estimated_anharmonicity_GHz: -0.25
+      note: "example qubit prior"
+    c:
+      estimated_idle_frequency_GHz: 7.50
+      estimated_flux_sweet_spot_phi0: 0.0
+      note: "example coupler prior"
+    readout:
+      r1_frequency_GHz: 6.40
+      r2_frequency_GHz: 6.45
+      note: "example readout prior"

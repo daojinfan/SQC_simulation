@@ -1,0 +1,13 @@
+{
+  "artifact_type": "stage_02_1_hamiltonian_rebaseline_approval",
+  "artifact_version": "0.1",
+  "blocking_findings": [],
+  "decision": "approved",
+  "legacy_baseline_anchor_sha256": "D59442655B8D66B898BCF0C0F757D4B908E727D5D69190D44E30521C85E963BB",
+  "manifest_sha256": "1310F38CFF180BC22502127963E43112A6E733FA07DE33F3DAED21BC43887F81",
+  "previous_stage2_artifacts_sha256": "393D9799E1E37FC2D8A20A0E57ACE35301CB0280FDBBCD93556AF4525BC4778A",
+  "review_record_path": "tests/fixtures/physics_baseline_v1/metadata/fixture_authority.json",
+  "reviewer_role": "independent_test_review_ai",
+  "schema_version": "0.1",
+  "stage2_artifacts_sha256": "056E6C60BA0FC6DB255DE3680F651F9E57B47DB8A23A3E3E8C92F25B0301D27C"
+}

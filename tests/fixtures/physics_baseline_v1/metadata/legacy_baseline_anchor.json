@@ -1,0 +1,12 @@
+{
+  "acceptance_scope": "test_only_non_production",
+  "approved_by": "user",
+  "artifact_type": "stage_02_legacy_baseline_anchor",
+  "artifact_version": "0.1",
+  "decision": "accepted",
+  "expected_sha256": "393D9799E1E37FC2D8A20A0E57ACE35301CB0280FDBBCD93556AF4525BC4778A",
+  "historical_review_path": "tests/fixtures/physics_baseline_v1/metadata/fixture_authority.json",
+  "previous_stage2_artifacts_sha256": "393D9799E1E37FC2D8A20A0E57ACE35301CB0280FDBBCD93556AF4525BC4778A",
+  "production_evidence_claimed": false,
+  "schema_version": "0.1"
+}

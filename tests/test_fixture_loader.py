@@ -6,6 +6,9 @@ pytestmark = _pytest.mark.contract
 
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -48,3 +51,39 @@ def test_fixture_manifest_rejects_hardlinked_payload(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="is linked"):
         verify_fixture_manifest(target)
+
+
+def test_physics_fixture_is_explicitly_non_production() -> None:
+    manifest = verify_fixture_manifest(fixture_path("physics_baseline_v1"))
+    assert manifest["source_authority"] == "test_only_non_production"
+
+
+def test_physics_fixture_regenerates_byte_exact(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    shutil.copy2("pyproject.toml", repository / "pyproject.toml")
+    shutil.copytree("src", repository / "src")
+    shutil.copytree("configs", repository / "configs")
+    device_fixture = repository / "tests/fixtures/device_model_v1"
+    device_fixture.parent.mkdir(parents=True)
+    shutil.copytree(fixture_path("device_model_v1"), device_fixture)
+    generated = repository / "tests/fixtures/physics_baseline_v1"
+    committed = fixture_path("physics_baseline_v1")
+    generator = Path("tests/tools/generate_physics_baseline_fixture.py").resolve()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(generator),
+            "--repository-root",
+            str(repository),
+            "--target",
+            str(generated),
+            "--verify-against",
+            str(committed),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=repository,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

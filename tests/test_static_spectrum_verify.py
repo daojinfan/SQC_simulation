@@ -13,6 +13,7 @@ import nbformat
 import numpy as np
 import pytest
 
+from sqvm.hamiltonian import load_hamiltonian_config
 from sqvm.hamiltonian.provenance import canonical_json_bytes, raw_file_sha256
 from sqvm.spectrum import (
     CrossingConvergenceReport,
@@ -40,10 +41,11 @@ from sqvm.spectrum import (
     write_static_spectrum_artifacts,
 )
 from sqvm.spectrum.models import RuntimeReport
+from tests.support.physics_fixture import physics_acceptance_config, physics_smoke_config
 
 
-SMOKE = Path("configs/spectra/2q1c_static_smoke.yaml")
-ACCEPTANCE = Path("configs/spectra/2q1c_static.yaml")
+SMOKE = physics_smoke_config()
+ACCEPTANCE = physics_acceptance_config()
 
 
 def test_verify_static_spectrum_writes_artifacts(tmp_path):
@@ -62,9 +64,16 @@ def test_verification_notebook_reads_static_spectrum_artifacts(tmp_path):
     assert all(cell.execution_count == 1 for cell in notebook.cells if cell.cell_type == "code")
 
 
-def test_vscode_runner_smoke():
+def test_vscode_runner_smoke(tmp_path):
     result = subprocess.run(
-        [sys.executable, "scripts/run_stage_03_static_spectrum_smoke.py"],
+        [
+            sys.executable,
+            "scripts/run_stage_03_static_spectrum_smoke.py",
+            "--config",
+            str(SMOKE),
+            "--output",
+            str(tmp_path / "runner"),
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -126,6 +135,19 @@ def test_smoke_profile_is_not_acceptance_eligible():
 
 def test_acceptance_rejects_missing_or_stale_solver_validation(monkeypatch, tmp_path):
     verify_module = importlib.import_module("sqvm.spectrum.verify")
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    validation = inputs / "validation.json"
+    validation.write_bytes(canonical_json_bytes({}))
+    config = load_spectrum_config(ACCEPTANCE)
+    config = replace(
+        config,
+        runtime=replace(
+            config.runtime,
+            solver_validation_artifact=validation,
+            solver_validation_approval=inputs / "missing-approval.json",
+        ),
+    )
 
     def missing_approval(_):
         raise ValueError("solver validation approval is missing")
@@ -135,9 +157,11 @@ def test_acceptance_rejects_missing_or_stale_solver_validation(monkeypatch, tmp_
 
     monkeypatch.setattr(verify_module, "load_solver_backend_validation_approval", missing_approval)
     monkeypatch.setattr(verify_module, "analyze_static_point", unexpected_analysis)
+    monkeypatch.setattr(verify_module, "load_spectrum_config", lambda _: config)
+    output = tmp_path / "output"
     with pytest.raises(ValueError, match="solver validation approval is missing"):
-        verify_static_spectrum(ACCEPTANCE, tmp_path)
-    assert not any(tmp_path.iterdir())
+        verify_static_spectrum(ACCEPTANCE, output)
+    assert not output.exists()
 
 
 def test_solver_validation_approval_binds_artifact_hash(tmp_path, spectrum_session):
@@ -287,9 +311,154 @@ def test_nested_nonfinite_is_rejected_with_json_path_and_no_partial_artifact(tmp
 
 def _solver_validation_fixture(tmp_path, spectrum_session):
     config = load_spectrum_config(ACCEPTANCE)
+    pilot_path = tmp_path / "dense_pilot.json"
+    flux_keys = (
+        "0.200000000000",
+        "0.240000000000",
+        "0.260000000000",
+        "0.270000000000",
+        "0.280000000000",
+        "0.360000000000",
+        "0.450000000000",
+    )
+    provenance = spectrum_session["provenance"]
+    pilot_payload = {
+        "schema_version": "0.1",
+        "artifact_type": "stage_03_dense_pilot",
+        "artifact_version": "0.1",
+        "profile": "dense_pilot",
+        "acceptance_eligible": False,
+        "num_states": 12,
+        "solver_backend": "dense_eigh",
+        "spectrum_config_path": config.source_path.as_posix(),
+        "spectrum_config_sha256": raw_file_sha256(config.source_path),
+        "stage2_artifacts_sha256": provenance.stage2_artifacts_sha256,
+        "stage2_dense_gap_consistency": {
+            "ok": True,
+            "compared_gap_count": 12,
+            "max_abs_difference_GHz": 0.0,
+        },
+        "start_key": flux_keys[0],
+        "stop_key": flux_keys[-1],
+        "idle_flux_key": flux_keys[3],
+        "points": [{"flux_key": key} for key in flux_keys],
+        "candidates": [
+            {
+                "name": "q1-c",
+                "evidence_left_key": flux_keys[0],
+                "minimum_key": flux_keys[1],
+                "evidence_right_key": flux_keys[2],
+            },
+            {
+                "name": "c-q2",
+                "evidence_left_key": flux_keys[4],
+                "minimum_key": flux_keys[5],
+                "evidence_right_key": flux_keys[6],
+            },
+        ],
+        "fixture_authority": "test_only_non_production",
+    }
+    pilot_path.write_bytes(canonical_json_bytes(pilot_payload))
+
     validation_path = tmp_path / "validation.json"
-    payload = json.loads(Path("output/stage_03_solver_validation/eigsh_validation.json").read_text(encoding="utf-8"))
-    payload["stage3_solver_source_tree_sha256"] = stage3_solver_source_tree_sha256(".")
+    hamiltonian = load_hamiltonian_config(config.source_hamiltonian_config)
+    base = tuple(hamiltonian.basis.charge_cutoffs[mode] for mode in ("q1", "c", "q2"))
+    signatures = []
+    for name, index in (("baseline", None), ("refined_q1", 0), ("refined_c", 1), ("refined_q2", 2)):
+        cutoffs = list(base)
+        if index is not None:
+            cutoffs[index] += config.convergence.cutoff_increment
+        dimension = int(np.prod([2 * value + 1 for value in cutoffs]))
+        signatures.append((name, cutoffs, dimension))
+    gaps = [float(index) for index in range(config.eigen.num_states)]
+    blocks = [[index, index] for index in range(config.eigen.num_states)]
+    zeros = [0.0] * config.eigen.num_states
+    cases = []
+    for name, cutoffs, dimension in signatures:
+        for flux_key in flux_keys:
+            assignments = {"000": 0}
+            cases.append(
+                {
+                    "case_id": f"{name}@{flux_key}",
+                    "cutoff_signature": cutoffs,
+                    "dimension": dimension,
+                    "flux_key": flux_key,
+                    "dense_gaps_GHz": gaps,
+                    "eigsh_gaps_GHz": gaps,
+                    "gap_dense_max_error_GHz": 0.0,
+                    "gap_repeat_max_error_GHz": 0.0,
+                    "dense_block_index_ranges": blocks,
+                    "boundary_gaps_GHz": [1.0] * config.eigen.num_states,
+                    "projector_dense_errors_spectral_2": zeros,
+                    "projector_repeat_errors_spectral_2": zeros,
+                    "truncation_status": "not_truncated",
+                    "physics_comparison": {
+                        "assignments_dense": assignments,
+                        "assignments_eigsh_run1": assignments,
+                        "assignments_eigsh_run2": assignments,
+                        "participation_dense_max_error": 0.0,
+                        "participation_repeat_max_error": 0.0,
+                        "metric_dense_max_error_GHz": 0.0,
+                        "passed": True,
+                    },
+                    "passed": True,
+                }
+            )
+    environment, environment_hash = environment_fingerprint()
+    payload = {
+        "schema_version": "0.1",
+        "artifact_type": "stage_03_solver_backend_validation",
+        "artifact_version": "0.1",
+        "profile": "solver_validation",
+        "validation_passed": True,
+        "acceptance_eligible": False,
+        "spectrum_config_path": config.source_path.as_posix(),
+        "spectrum_config_sha256": raw_file_sha256(config.source_path),
+        "stage2_rebaseline_manifest_sha256": provenance.rebaseline_manifest_sha256,
+        "stage2_rebaseline_approval_sha256": provenance.rebaseline_approval_sha256,
+        "stage2_artifacts_sha256": provenance.stage2_artifacts_sha256,
+        "hamiltonian_config_sha256": provenance.hamiltonian_config_sha256,
+        "stage2_model_source_tree_sha256": provenance.stage2_model_source_tree_sha256,
+        "stage3_solver_source_tree_sha256": stage3_solver_source_tree_sha256("."),
+        "environment_fingerprint_sha256": environment_hash,
+        "environment_fingerprint": environment,
+        "eigsh_spec": {
+            "which": config.eigen.eigsh.which,
+            "tolerance": config.eigen.eigsh.tolerance,
+            "maxiter": config.eigen.eigsh.maxiter,
+            "ncv": config.eigen.eigsh.ncv,
+            "v0_rule": config.eigen.eigsh.v0_rule,
+            "num_states": config.eigen.num_states,
+        },
+        "dense_config": {"solver": "scipy.linalg.eigh", "num_states_plus_one": 49},
+        "near_degenerate_gap_threshold_GHz": config.eigen.solver_validation.near_degenerate_gap_threshold_GHz,
+        "partition_boundary_margin_GHz": config.eigen.solver_validation.partition_boundary_margin_GHz,
+        "projector_error_norm": config.eigen.solver_validation.projector_error_norm,
+        "projector_dense_tolerance": config.eigen.solver_validation.projector_dense_tolerance,
+        "projector_repeat_tolerance": config.eigen.solver_validation.projector_repeat_tolerance,
+        "v0_canonical_encoding_version": "sha256_counter_v1",
+        "normative_test_vector": {
+            "seed_length": 166,
+            "seed_sha256": "ED780C6FA5C04949197BEE6D43156B10391B1E6E3596F9CFA41D80D455FBF1A7",
+            "block0_sha256": "2601A3794F3CD9A73B4B6B2D4DDDB15E3FC890D8593B2752672D366E83EA2950",
+        },
+        "normative_test_vector_passed": True,
+        "dense_pilot_path": pilot_path.as_posix(),
+        "dense_pilot_sha256": raw_file_sha256(pilot_path),
+        "validation_cases": cases,
+        "failed_cases": [],
+        "coverage_complete": True,
+        "max_gap_error_GHz": 0.0,
+        "max_repeat_gap_error_GHz": 0.0,
+        "max_projector_dense_error": 0.0,
+        "max_projector_repeat_error": 0.0,
+        "max_participation_dense_error": 0.0,
+        "max_participation_repeat_error": 0.0,
+        "max_metric_dense_error_GHz": 0.0,
+        "p50_seconds_by_signature": {"3375": 1.0, "4275": 2.0},
+        "p95_seconds_by_signature": {"3375": 1.0, "4275": 2.0},
+        "fixture_authority": "test_only_non_production",
+    }
     validation_path.write_bytes(canonical_json_bytes(payload))
     approval_path = tmp_path / "approval.json"
     approval_payload = {

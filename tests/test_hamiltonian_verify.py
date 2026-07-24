@@ -10,9 +10,10 @@ from pathlib import Path
 import nbformat
 
 from sqvm.hamiltonian import verify_hamiltonian
+from tests.support.physics_fixture import physics_hamiltonian_config
 
 
-CONFIG = Path("configs/hamiltonians/2q1c_charge_basis.yaml")
+CONFIG = physics_hamiltonian_config()
 
 
 def test_verify_hamiltonian_writes_artifacts(tmp_path):
@@ -81,9 +82,16 @@ def test_cli_verify_hamiltonian_success(tmp_path):
     assert (tmp_path / "hamiltonian_artifacts.json").exists()
 
 
-def test_vscode_runner_smoke():
+def test_vscode_runner_smoke(tmp_path):
     result = subprocess.run(
-        [sys.executable, "scripts/run_stage_02_hamiltonian.py"],
+        [
+            sys.executable,
+            "scripts/run_stage_02_hamiltonian.py",
+            "--config",
+            str(CONFIG),
+            "--output",
+            str(tmp_path / "runner"),
+        ],
         check=False,
         text=True,
         capture_output=True,

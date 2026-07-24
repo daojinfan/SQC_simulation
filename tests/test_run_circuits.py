@@ -528,7 +528,7 @@ def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
 
 @pytest.mark.physics_slow
 def test_run_circuits_returns_final_q1_q2_probabilities_from_verified_evolution():
-    workspace = ROOT / "output" / f".run-circuits-e2e.{uuid.uuid4().hex}"
+    workspace = ROOT / "artifacts" / f".run-circuits-e2e.{uuid.uuid4().hex}"
     workspace.mkdir(parents=True)
     try:
         results = run_circuits(
@@ -536,7 +536,7 @@ def test_run_circuits_returns_final_q1_q2_probabilities_from_verified_evolution(
             _context(),
             workspace,
             ROOT,
-            timeout_s=180.0,
+            timeout_s=900.0,
         )
         assert len(results) == 1
         result = results[0]

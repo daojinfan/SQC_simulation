@@ -2,9 +2,9 @@ name: CI PR Qualification
 
 on:
   pull_request:
-    branches: [dev, master]
+    branches: [dev, main]
   push:
-    branches: [dev, master]
+    branches: [dev, main]
   workflow_call:
     inputs:
       candidate_sha:
@@ -131,12 +131,15 @@ jobs:
         run: >-
           python tests/tools/verify_fixture_manifest.py
           tests/fixtures/device_model_v1
+          tests/fixtures/physics_baseline_v1
           tests/fixtures/platform_configuration_reference_v1
           tests/fixtures/successor_rebaseline_authority_v1
 
       - name: Verify successor rebaseline closure and development approval
         shell: bash
         run: |
+          python tests/tools/generate_physics_baseline_fixture.py \
+            --verify tests/fixtures/physics_baseline_v1
           python tests/tools/verify_successor_rebaseline_fixture.py \
             tests/fixtures/successor_rebaseline_authority_v1 --repository-root .
           python tools/verify_successor_development_baseline_approval.py --repository-root .
@@ -154,8 +157,12 @@ jobs:
           pytest_status=${PIPESTATUS[0]}
           python -c "import sys, xml.etree.ElementTree as E; p='artifacts/junit-fixture-integrity.xml'; n=sum(1 for _ in E.parse(p).iter('testcase')); print(f'pytest testcases: {n}'); sys.exit(n == 0)"
           count_status=$?
-          test "$authority_status" -eq 0
-          test "$pytest_status" -eq 0
+          if [ "$authority_status" -ne 0 ]; then
+            exit "$authority_status"
+          fi
+          if [ "$pytest_status" -ne 0 ]; then
+            exit "$pytest_status"
+          fi
           exit "$count_status"
 
       - name: Require Node for executable frontend contracts
@@ -174,7 +181,9 @@ jobs:
           pytest_status=${PIPESTATUS[0]}
           python -c "import sys, xml.etree.ElementTree as E; p='artifacts/junit-${{ matrix.job }}.xml'; n=sum(1 for _ in E.parse(p).iter('testcase')); print(f'pytest testcases: {n}'); sys.exit(n == 0)"
           count_status=$?
-          test "$pytest_status" -eq 0
+          if [ "$pytest_status" -ne 0 ]; then
+            exit "$pytest_status"
+          fi
           exit "$count_status"
 
       - name: Assert test run preserved data boundary and tracked files

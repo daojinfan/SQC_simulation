@@ -1,0 +1,262 @@
+{
+  "schema_version": "0.1",
+  "artifact_type": "stage_01_device_model",
+  "artifact_version": "0.1",
+  "source_config": "configs\\devices\\2q1c2r.yaml",
+  "device_summary": {
+    "name": "demo_2q1c2r",
+    "topology": "2q1c2r"
+  },
+  "components": {
+    "q1": {
+      "kind": "tunable_transmon",
+      "role": "qubit",
+      "floating": true,
+      "nodes": [
+        "q1_p",
+        "q1_m"
+      ],
+      "capacitance_fF": 75.0,
+      "squid": {
+        "rn1_ohm": 18038.0,
+        "rn2_ohm": 18038.0,
+        "flux_bias_phi0": 0.1,
+        "asymmetry": 0.0
+      }
+    },
+    "q2": {
+      "kind": "tunable_transmon",
+      "role": "qubit",
+      "floating": true,
+      "nodes": [
+        "q2_p",
+        "q2_m"
+      ],
+      "capacitance_fF": 78.0,
+      "squid": {
+        "rn1_ohm": 17423.0,
+        "rn2_ohm": 17423.0,
+        "flux_bias_phi0": 0.0,
+        "asymmetry": 0.0
+      }
+    },
+    "c": {
+      "kind": "tunable_coupler",
+      "role": "coupler",
+      "floating": false,
+      "nodes": [
+        "c"
+      ],
+      "capacitance_fF": 60.0,
+      "squid": {
+        "rn1_ohm": 6188.0,
+        "rn2_ohm": 6188.0,
+        "flux_bias_phi0": 0.27,
+        "asymmetry": 0.0
+      }
+    },
+    "r1": {
+      "kind": "readout_resonator",
+      "role": "readout",
+      "floating": null,
+      "nodes": [],
+      "coupled_to": "q1",
+      "coupling_node": "q1_p",
+      "frequency_GHz": 6.4,
+      "coupling_capacitance_fF": 4.0,
+      "kappa_MHz": 2.0
+    },
+    "r2": {
+      "kind": "readout_resonator",
+      "role": "readout",
+      "floating": null,
+      "nodes": [],
+      "coupled_to": "q2",
+      "coupling_node": "q2_p",
+      "frequency_GHz": 6.45,
+      "coupling_capacitance_fF": 4.0,
+      "kappa_MHz": 2.0
+    }
+  },
+  "channels": {
+    "q1_xy": {
+      "kind": "xy",
+      "target": "q1",
+      "port": "q1_xy"
+    },
+    "q2_xy": {
+      "kind": "xy",
+      "target": "q2",
+      "port": "q2_xy"
+    },
+    "c_z": {
+      "kind": "z",
+      "target": "c",
+      "port": "c_z"
+    },
+    "r1_ro": {
+      "kind": "readout",
+      "target": "r1",
+      "port": "r1_ro"
+    },
+    "r2_ro": {
+      "kind": "readout",
+      "target": "r2",
+      "port": "r2_ro"
+    }
+  },
+  "priors": {
+    "q1": {
+      "estimated_f01_GHz": 5.1,
+      "estimated_anharmonicity_GHz": -0.25,
+      "note": "example qubit prior"
+    },
+    "q2": {
+      "estimated_f01_GHz": 5.3,
+      "estimated_anharmonicity_GHz": -0.25,
+      "note": "example qubit prior"
+    },
+    "c": {
+      "estimated_idle_frequency_GHz": 7.5,
+      "estimated_flux_sweet_spot_phi0": 0.0,
+      "note": "example coupler prior"
+    },
+    "readout": {
+      "r1_frequency_GHz": 6.4,
+      "r2_frequency_GHz": 6.45,
+      "note": "example readout prior"
+    }
+  },
+  "capacitance_matrix": {
+    "nodes": [
+      "q1_p",
+      "q1_m",
+      "c",
+      "q2_p",
+      "q2_m"
+    ],
+    "matrix_fF": [
+      [
+        79.3,
+        -75.0,
+        -4.0,
+        -0.3,
+        0.0
+      ],
+      [
+        -75.0,
+        78.8,
+        -3.8,
+        0.0,
+        0.0
+      ],
+      [
+        -4.0,
+        -3.8,
+        75.8,
+        -4.1,
+        -3.9
+      ],
+      [
+        -0.3,
+        0.0,
+        -4.1,
+        82.39999999999999,
+        -78.0
+      ],
+      [
+        0.0,
+        0.0,
+        -3.9,
+        -78.0,
+        81.9
+      ]
+    ]
+  },
+  "junction_parameters": [
+    {
+      "component": "q1",
+      "junction": "j1",
+      "rn_ohm": 18038.0,
+      "ej_GHz": 7.785450390508698,
+      "source": "rn"
+    },
+    {
+      "component": "q1",
+      "junction": "j2",
+      "rn_ohm": 18038.0,
+      "ej_GHz": 7.785450390508698,
+      "source": "rn"
+    },
+    {
+      "component": "q2",
+      "junction": "j1",
+      "rn_ohm": 17423.0,
+      "ej_GHz": 8.060262534810073,
+      "source": "rn"
+    },
+    {
+      "component": "q2",
+      "junction": "j2",
+      "rn_ohm": 17423.0,
+      "ej_GHz": 8.060262534810073,
+      "source": "rn"
+    },
+    {
+      "component": "c",
+      "junction": "j1",
+      "rn_ohm": 6188.0,
+      "ej_GHz": 22.694562725274064,
+      "source": "rn"
+    },
+    {
+      "component": "c",
+      "junction": "j2",
+      "rn_ohm": 6188.0,
+      "ej_GHz": 22.694562725274064,
+      "source": "rn"
+    }
+  ],
+  "validation": {
+    "ok": true,
+    "errors": [],
+    "warnings": []
+  },
+  "checks": [
+    {
+      "name": "validation_has_no_errors",
+      "passed": true,
+      "message": "validation has no errors"
+    },
+    {
+      "name": "capacitance_matrix_shape",
+      "passed": true,
+      "message": "shape is (5, 5)"
+    },
+    {
+      "name": "capacitance_matrix_symmetric",
+      "passed": true,
+      "message": "matrix is symmetric"
+    },
+    {
+      "name": "capacitance_matrix_nonnegative_diagonal",
+      "passed": true,
+      "message": "diagonal entries are nonnegative"
+    },
+    {
+      "name": "junction_ej_positive",
+      "passed": true,
+      "message": "resolved EJ values are positive"
+    },
+    {
+      "name": "required_tunable_components_have_junctions",
+      "passed": true,
+      "message": "q1, q2, and c have resolved junction parameters"
+    },
+    {
+      "name": "explicit_capacitors_present",
+      "passed": true,
+      "message": "explicit capacitors configured"
+    }
+  ]
+}

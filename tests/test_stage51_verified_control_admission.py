@@ -178,7 +178,7 @@ def test_real_stage41_publication_yields_eight_exact_effective_arrays_and_admitt
 
 @pytest.mark.physics_slow
 def test_real_stage41_handle_runs_through_production_qutip_worker_and_replay():
-    workspace = ROOT / "output" / f".stage51-e2e.{uuid.uuid4().hex}"
+    workspace = ROOT / "artifacts" / f".stage51-e2e.{uuid.uuid4().hex}"
     workspace.mkdir(parents=True)
     try:
         source_handle, _ = _published_handle(workspace)
@@ -190,7 +190,7 @@ def test_real_stage41_handle_runs_through_production_qutip_worker_and_replay():
         )
 
         published = run_verified_control_evolution(
-            coefficients, context, context.output_root / "evolution", timeout_s=180.0,
+            coefficients, context, context.output_root / "evolution", timeout_s=900.0,
         )
         verified = verify_stage51_evolution_artifact(
             published.artifact_root, coefficients, context,

@@ -107,7 +107,7 @@ runner commands: it fails closed unless the approved interpreter and kernelspec 
 
 ## CI 与 successor 基线
 
-仓库提供四套 GitHub Actions 工作流：PR 资格、夜间物理、hosted evidence 和 master 发布汇总。
+仓库提供四套 GitHub Actions 工作流：PR 资格、夜间物理、hosted evidence 和 main 发布汇总。
 Windows/CPython 3.12.10 是资格平台，Linux job 是跨平台补充。工作流文件存在不代表仓库规则已经将其
 设为 required；在 GitHub Ruleset 配置完成并取得连续稳定运行记录前，Step 4 仍保持 NO-GO。
 
