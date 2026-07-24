@@ -1,0 +1,10 @@
+{
+  "activated_utc": "2026-07-23T05:05:36.519693Z",
+  "actor_id": "project.manager",
+  "artifact_type": "platform_configuration_active_pointer",
+  "artifact_version": "0.2",
+  "device_id": "demo_2q1c2r",
+  "schema_version": "0.2",
+  "snapshot_content_sha256": "8DEBF9A8046BAFFF3DB78047B1EA8ED1B86CA24A3B0E0E44B29A2E3EECAC12B7",
+  "snapshot_id": "96c5f8bb-5663-41c1-9ce1-ab4dd922fd21"
+}

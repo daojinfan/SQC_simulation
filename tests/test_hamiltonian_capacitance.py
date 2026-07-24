@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.contract
+
 from pathlib import Path
 
 import numpy as np
@@ -11,9 +15,10 @@ from sqvm.hamiltonian import (
     load_device_artifacts,
 )
 from sqvm.hamiltonian.artifacts import DeviceArtifacts
+from tests.support.fixture_loader import fixture_path
 
 
-ARTIFACTS = Path("output/stage_01_device_model/device_artifacts.json")
+ARTIFACTS = fixture_path("device_model_v1") / "output/stage_01_device_model/device_artifacts.json"
 
 
 def test_mode_order_and_transform_values():

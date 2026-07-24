@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 import ctypes
 import os
 from pathlib import Path
@@ -57,6 +61,7 @@ def test_inventory_prefers_windows_actual_allocation(tmp_path: Path, monkeypatch
     (tmp_path / "item.bin").write_bytes(b"x")
     monkeypatch.setattr("sqvm.storage.inventory._is_windows", lambda: True)
     monkeypatch.setattr("sqvm.storage.inventory._windows_allocated_bytes", lambda path: 8192)
+    monkeypatch.setattr("sqvm.storage.inventory._windows_cluster_size", lambda path: None)
 
     report = inventory_tree(tmp_path, confinement_root=tmp_path)
 
@@ -303,9 +308,9 @@ def test_platform_allocation_adapters_cover_success_and_error_boundaries(
         )[-1]),
     )
     monkeypatch.setattr(inventory_module, "_is_windows", lambda: True)
-    monkeypatch.setattr(inventory_module.ctypes, "windll", SimpleNamespace(kernel32=kernel32))
-    monkeypatch.setattr(ctypes, "set_last_error", lambda _value: None)
-    monkeypatch.setattr(ctypes, "get_last_error", lambda: 0)
+    monkeypatch.setattr(inventory_module.ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False)
+    monkeypatch.setattr(ctypes, "set_last_error", lambda _value: None, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
     assert inventory_module._windows_allocated_bytes(tmp_path / "item.bin") == (2 << 32) | 3
     assert inventory_module._windows_cluster_size(tmp_path) == 4096
 

@@ -600,9 +600,19 @@ def _assert_database_carriers(path: Path) -> None:
         if (
             _is_link_or_reparse(carrier, info)
             or not stat.S_ISREG(info.st_mode)
-            or info.st_nlink != 1
+            or not _database_carrier_link_count_is_safe(carrier, path, info)
         ):
             raise ReadModelError("Web read-model carrier is linked or unsafe")
+
+
+def _database_carrier_link_count_is_safe(
+    carrier: Path, database: Path, info: os.stat_result
+) -> bool:
+    if info.st_nlink == 1:
+        return True
+    # A concurrent SQLite close can expose a deletion-pending sidecar with nlink=0.
+    # It has no remaining directory link and cannot be an admitted hardlink.
+    return carrier != database and info.st_nlink == 0
 
 
 def _is_link_or_reparse(path: Path, info: os.stat_result) -> bool:

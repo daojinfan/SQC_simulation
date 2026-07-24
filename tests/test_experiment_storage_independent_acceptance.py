@@ -7,6 +7,10 @@ validated against these independently recomputed contracts.
 
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.evidence
+
 import ctypes
 from ctypes import wintypes
 import hashlib

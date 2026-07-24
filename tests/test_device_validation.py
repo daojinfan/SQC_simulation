@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.contract
+
 from dataclasses import replace
 from pathlib import Path
 

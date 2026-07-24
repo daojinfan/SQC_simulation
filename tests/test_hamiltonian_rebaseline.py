@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.evidence
+
 import ast
 import json
 from pathlib import Path
@@ -15,9 +19,10 @@ from sqvm.hamiltonian import (
     validate_rebaseline_manifest,
     verify_hamiltonian,
 )
+from tests.support.fixture_loader import fixture_path
 
 
-DEVICE_ARTIFACT = Path("output/stage_01_device_model/device_artifacts.json").resolve()
+DEVICE_ARTIFACT = (fixture_path("device_model_v1") / "output/stage_01_device_model/device_artifacts.json").resolve()
 DEVICE_CONFIG = Path("configs/devices/2q1c2r.yaml").resolve()
 STAGE2_CLI = Path("src/sqvm/__main__.py").resolve()
 

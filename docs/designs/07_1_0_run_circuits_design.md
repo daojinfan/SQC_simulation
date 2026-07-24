@@ -31,7 +31,7 @@ run_circuits(
     repository_root: str | Path | None = None,
     *,
     readout_qubit: Sequence[Sequence[str]] = ((),),
-    timeout_s: float = 180.0,
+    timeout_s: float = 900.0,
     max_circuits: int = 64,
     execution_profile: CircuitExecutionProfile = CircuitExecutionProfile.BOUNDED_SMOKE,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,

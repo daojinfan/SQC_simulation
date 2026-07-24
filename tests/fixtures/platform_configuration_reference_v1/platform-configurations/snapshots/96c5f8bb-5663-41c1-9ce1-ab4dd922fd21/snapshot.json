@@ -1,0 +1,576 @@
+{
+  "actor_id": "project.manager",
+  "artifact_type": "platform_configuration_snapshot",
+  "artifact_version": "0.2",
+  "content_sha256": "8DEBF9A8046BAFFF3DB78047B1EA8ED1B86CA24A3B0E0E44B29A2E3EECAC12B7",
+  "device_id": "demo_2q1c2r",
+  "editable": {
+    "calibration_values": {
+      "fsim_characterizations": {},
+      "gate_configuration": {
+        "C": {
+          "active_cz_setting": "c_cz",
+          "active_fsim_setting": "c_fsim",
+          "active_g2zbias_mapper": "c_g2"
+        },
+        "Q1": {
+          "active_detune_setting": "q1_dtn",
+          "active_f012zbias_mapper": "q1_f012",
+          "active_xy12_setting": "q1_xy12",
+          "active_xy2_setting": "q1_xy2",
+          "active_xy_setting": "q1_xy",
+          "xy_pi_impl": false,
+          "z_gate_impl": "VIRTUAL"
+        },
+        "Q2": {
+          "active_detune_setting": "q2_dtn",
+          "active_f012zbias_mapper": "q2_f012",
+          "active_xy12_setting": "q2_xy12",
+          "active_xy2_setting": "q2_xy2",
+          "active_xy_setting": "q2_xy",
+          "xy_pi_impl": false,
+          "z_gate_impl": "VIRTUAL"
+        }
+      },
+      "qagents": {
+        "Q1": {
+          "reference_frequency_authority": {
+            "calibration_run_id": "3df4ccf6-6817-481c-82ee-80a02dca3e5c",
+            "frequency_source": "accepted_simulation",
+            "reference_frequency_GHz": 5.164368157872802,
+            "revision": 3,
+            "setting_hash": "EC3663DCF1F97C86B077C3F9076448C65BF621D9CC3BEEABAE34944365EE2FE5"
+          }
+        },
+        "Q2": {
+          "reference_frequency_authority": {
+            "calibration_run_id": "3df4ccf6-6817-481c-82ee-80a02dca3e5c",
+            "frequency_source": "accepted_simulation",
+            "reference_frequency_GHz": 5.332578223344007,
+            "revision": 3,
+            "setting_hash": "2ADD47F1B734F21F4ADD356DEF759CFEDF9C7FA562E8FA510E8282E29A3F5B8F"
+          }
+        }
+      },
+      "waveform_registry": {
+        "mappers": {
+          "c_g2": {
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "coupling_detune_GHz": [
+              -0.1,
+              0.0,
+              0.1
+            ],
+            "extrapolation": "reject",
+            "interpolation": "piecewise_linear",
+            "mapper_id": "c_g2",
+            "mapper_type": "G2ZBIAS_MAPPER",
+            "revision": 1,
+            "setting_hash": "40B2BB229728E988DCD9453F28BCC0343252C2271E668305A7B2E9F7D266E4A0",
+            "status": "accepted",
+            "target": "C",
+            "zbias_offset_phi0": [
+              -0.1,
+              0.0,
+              0.1
+            ]
+          },
+          "q1_f012": {
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "f01max_GHz": 6.0,
+            "idle_flux_offset_phi0": 0.0,
+            "k_rad_per_phi0": 1.0,
+            "mapper_id": "q1_f012",
+            "mapper_type": "F012ZBIAS_MAPPER",
+            "revision": 1,
+            "setting_hash": "89F7E3523E0D614E391D0E9E0C765FD01474FA17C4932A385A53EEDD9B1D8117",
+            "status": "accepted",
+            "target": "Q1"
+          },
+          "q2_f012": {
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "f01max_GHz": 6.0,
+            "idle_flux_offset_phi0": 0.0,
+            "k_rad_per_phi0": 1.0,
+            "mapper_id": "q2_f012",
+            "mapper_type": "F012ZBIAS_MAPPER",
+            "revision": 1,
+            "setting_hash": "DB5A1E64999BE4E03643A1F24F0ED3FCC6025AC59CC6DB23416453708E2E06C8",
+            "status": "accepted",
+            "target": "Q2"
+          }
+        },
+        "settings": {
+          "c_cz": {
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "duration_samples": 2,
+            "gate_type": "CZ",
+            "q0_calibrated_dynamic_phase_rad": 0.0,
+            "q1_calibrated_dynamic_phase_rad": 0.0,
+            "revision": 1,
+            "setting_hash": "0710D7D747C16A0FC8C1E8634C962C2AB413FC9587670BEC2F344A2874EED7FB",
+            "setting_id": "c_cz",
+            "status": "accepted",
+            "target": "C",
+            "use_f012zbias_mapper": false,
+            "use_g2zbias_mapper": false,
+            "waveforms": {
+              "coupler": {
+                "flux_offset_phi0": 0.0,
+                "waveform_class": "rectangle",
+                "width_samples": 2
+              },
+              "q0": {
+                "flux_offset_phi0": 0.0,
+                "waveform_class": "rectangle",
+                "width_samples": 2
+              },
+              "q1": {
+                "flux_offset_phi0": 0.0,
+                "waveform_class": "rectangle",
+                "width_samples": 2
+              }
+            }
+          },
+          "c_fsim": {
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "duration_samples": 2,
+            "gate_type": "FSIM",
+            "q0_calibrated_dynamic_phase_rad": 0.0,
+            "q1_calibrated_dynamic_phase_rad": 0.0,
+            "revision": 1,
+            "setting_hash": "D89CF8DEA5E09B3CA09E20BE08A3DE8D80D766BA945A49BBA74C38674BAEFF46",
+            "setting_id": "c_fsim",
+            "status": "accepted",
+            "target": "C",
+            "use_f012zbias_mapper": false,
+            "use_g2zbias_mapper": false,
+            "waveforms": {
+              "coupler": {
+                "flux_offset_phi0": 0.0,
+                "waveform_class": "rectangle",
+                "width_samples": 2
+              },
+              "q0": {
+                "flux_offset_phi0": 0.0,
+                "waveform_class": "rectangle",
+                "width_samples": 2
+              },
+              "q1": {
+                "flux_offset_phi0": 0.0,
+                "waveform_class": "rectangle",
+                "width_samples": 2
+              }
+            }
+          },
+          "q1_dtn": {
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "control_role": "z",
+            "envelope_class": "rect",
+            "gate_type": "DTN",
+            "input_unit": "phi_over_phi0",
+            "revision": 1,
+            "setting_hash": "B46AF869B80B265C217AA736B63529F878EF4539B5A3FB04519708FC7CA6F2DE",
+            "setting_id": "q1_dtn",
+            "status": "accepted",
+            "target": "Q1"
+          },
+          "q1_xy": {
+            "amplitude_GHz": 0.1,
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "dragAlpha_samples": 0.0,
+            "gate_type": "XY",
+            "length_samples": 2,
+            "phase_offset_rad": 0.0,
+            "revision": 1,
+            "setting_hash": "AC7F2C234F6D8F2692671F05E4AA4E9FA557C00BD87BCA735F944E4054A5C71C",
+            "setting_id": "q1_xy",
+            "status": "accepted",
+            "target": "Q1",
+            "transition": "01",
+            "waveform_class": "rectangle",
+            "width_samples": 2
+          },
+          "q1_xy12": {
+            "amplitude_GHz": 0.05,
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "dragAlpha_samples": 0.0,
+            "gate_type": "X12",
+            "length_samples": 2,
+            "phase_offset_rad": 0.0,
+            "revision": 1,
+            "setting_hash": "51A626EC6A210A4EB79D304C9F2E37E660B8E49347D252683359D889A9E92DC6",
+            "setting_id": "q1_xy12",
+            "status": "accepted",
+            "target": "Q1",
+            "transition": "12",
+            "waveform_class": "rectangle",
+            "width_samples": 2
+          },
+          "q1_xy2": {
+            "amplitude_GHz": 0.1,
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "dragAlpha_samples": 0.0,
+            "gate_type": "XY2",
+            "length_samples": 2,
+            "phase_offset_rad": 0.0,
+            "revision": 1,
+            "setting_hash": "CFB0DAA9AB76BD9439A681AB4DA95D6A3AA297B281103A9DC4FDB3B9E7810565",
+            "setting_id": "q1_xy2",
+            "status": "accepted",
+            "target": "Q1",
+            "transition": "01",
+            "waveform_class": "rectangle",
+            "width_samples": 2
+          },
+          "q2_dtn": {
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "control_role": "z",
+            "envelope_class": "rect",
+            "gate_type": "DTN",
+            "input_unit": "phi_over_phi0",
+            "revision": 1,
+            "setting_hash": "AA15CA7BE6BAD645A96F90C7FF742387A80BF0B7EA6A0328AC258F2204578BB6",
+            "setting_id": "q2_dtn",
+            "status": "accepted",
+            "target": "Q2"
+          },
+          "q2_xy": {
+            "amplitude_GHz": 0.1,
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "dragAlpha_samples": 0.0,
+            "gate_type": "XY",
+            "length_samples": 2,
+            "phase_offset_rad": 0.0,
+            "revision": 1,
+            "setting_hash": "CD6E5518E25B9BD00BC3E88C93F922B93639706BAD3877C50E8AF63E43AE9749",
+            "setting_id": "q2_xy",
+            "status": "accepted",
+            "target": "Q2",
+            "transition": "01",
+            "waveform_class": "rectangle",
+            "width_samples": 2
+          },
+          "q2_xy12": {
+            "amplitude_GHz": 0.05,
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "dragAlpha_samples": 0.0,
+            "gate_type": "X12",
+            "length_samples": 2,
+            "phase_offset_rad": 0.0,
+            "revision": 1,
+            "setting_hash": "20855BFED0DEC778E4E87C35CC56C831A5EE5C71A37C230063E7A3EF155A5430",
+            "setting_id": "q2_xy12",
+            "status": "accepted",
+            "target": "Q2",
+            "transition": "12",
+            "waveform_class": "rectangle",
+            "width_samples": 2
+          },
+          "q2_xy2": {
+            "amplitude_GHz": 0.1,
+            "calibration_run_id": "manual_f60d0a3c-2f79-4155-9759-cfa5a9c47573",
+            "dragAlpha_samples": 0.0,
+            "gate_type": "XY2",
+            "length_samples": 2,
+            "phase_offset_rad": 0.0,
+            "revision": 1,
+            "setting_hash": "2C52BF4C9E50027AD9D3B09383824240395F51C9E3F08A9171A53ED8DB07BC49",
+            "setting_id": "q2_xy2",
+            "status": "accepted",
+            "target": "Q2",
+            "transition": "01",
+            "waveform_class": "rectangle",
+            "width_samples": 2
+          }
+        }
+      }
+    },
+    "control_values": {
+      "acceptance": {
+        "analysis_runtime_budget_seconds": 10,
+        "max_condition_number": 100,
+        "max_formal_samples_per_scenario": 10000,
+        "max_phase_proxy_rad": 0.1,
+        "max_readout_area_relative_error": 0.005,
+        "max_xy_area_relative_error": 0.005,
+        "max_z_flat_top_error_phi0": 2e-05,
+        "phase_proxy_window_ns": 32,
+        "total_runtime_budget_seconds": 60
+      },
+      "clock": {
+        "dt_ns": 0.5,
+        "sample_rate_Hz": 2000000000
+      },
+      "dac": {
+        "bits": 16,
+        "full_scale_max_exclusive_V": 0.33,
+        "full_scale_min_V": -0.33,
+        "rounding": "half_even"
+      },
+      "idle_flux_phi0": {
+        "c": 0.27,
+        "q1": 0.11,
+        "q2": 0
+      },
+      "lane_order": [
+        "q1_xy_i",
+        "q1_xy_q",
+        "q2_xy_i",
+        "q2_xy_q",
+        "q1_z",
+        "q2_z",
+        "c_z",
+        "r1_ro_i",
+        "r1_ro_q",
+        "r2_ro_i",
+        "r2_ro_q"
+      ],
+      "lanes": {
+        "c_z": {
+          "fir": [
+            0.7,
+            0.2,
+            0.1
+          ],
+          "latency_samples": 8
+        },
+        "q1_xy_i": {
+          "fir": [
+            0.8,
+            0.2
+          ],
+          "latency_samples": 24
+        },
+        "q1_xy_q": {
+          "fir": [
+            0.8,
+            0.2
+          ],
+          "latency_samples": 24
+        },
+        "q1_z": {
+          "fir": [
+            0.7,
+            0.2,
+            0.1
+          ],
+          "latency_samples": 10
+        },
+        "q2_xy_i": {
+          "fir": [
+            0.8,
+            0.2
+          ],
+          "latency_samples": 26
+        },
+        "q2_xy_q": {
+          "fir": [
+            0.8,
+            0.2
+          ],
+          "latency_samples": 26
+        },
+        "q2_z": {
+          "fir": [
+            0.7,
+            0.2,
+            0.1
+          ],
+          "latency_samples": 12
+        },
+        "r1_ro_i": {
+          "fir": [
+            0.85,
+            0.15
+          ],
+          "latency_samples": 20
+        },
+        "r1_ro_q": {
+          "fir": [
+            0.85,
+            0.15
+          ],
+          "latency_samples": 20
+        },
+        "r2_ro_i": {
+          "fir": [
+            0.85,
+            0.15
+          ],
+          "latency_samples": 22
+        },
+        "r2_ro_q": {
+          "fir": [
+            0.85,
+            0.15
+          ],
+          "latency_samples": 22
+        }
+      },
+      "simulation": {
+        "calibration_model": {
+          "charge_cutoffs": {
+            "c": 7,
+            "q1": 7,
+            "q2": 7
+          },
+          "convergence_charge_cutoffs": {
+            "c": 8,
+            "q1": 8,
+            "q2": 8
+          },
+          "convergence_retained_energy_levels": {
+            "c": 4,
+            "q1": 6,
+            "q2": 6
+          },
+          "retained_energy_levels": {
+            "c": 3,
+            "q1": 5,
+            "q2": 5
+          }
+        }
+      },
+      "static_mixing": {
+        "readout": {
+          "input_lanes": [
+            "r1_ro_i",
+            "r1_ro_q",
+            "r2_ro_i",
+            "r2_ro_q"
+          ],
+          "matrix": [
+            [
+              0.001,
+              1e-05,
+              0,
+              0
+            ],
+            [
+              -1e-05,
+              0.001,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0.00102,
+              1e-05
+            ],
+            [
+              0,
+              0,
+              -1e-05,
+              0.00102
+            ]
+          ],
+          "output_coordinates": [
+            "r1_device_i_V",
+            "r1_device_q_V",
+            "r2_device_i_V",
+            "r2_device_q_V"
+          ]
+        },
+        "xy": {
+          "input_lanes": [
+            "q1_xy_i",
+            "q1_xy_q",
+            "q2_xy_i",
+            "q2_xy_q"
+          ],
+          "matrix": [
+            [
+              0.1,
+              0.002,
+              0.001,
+              0
+            ],
+            [
+              -0.001,
+              0.098,
+              0,
+              0.001
+            ],
+            [
+              0.0005,
+              0,
+              0.102,
+              -0.0015
+            ],
+            [
+              0,
+              0.0007,
+              0.001,
+              0.099
+            ]
+          ],
+          "output_coordinates": [
+            "q1_drive_i_GHz",
+            "q1_drive_q_GHz",
+            "q2_drive_i_GHz",
+            "q2_drive_q_GHz"
+          ]
+        },
+        "z": {
+          "input_lanes": [
+            "q1_z",
+            "q2_z",
+            "c_z"
+          ],
+          "matrix": [
+            [
+              0.5,
+              0.005,
+              0.01
+            ],
+            [
+              0.004,
+              0.5,
+              0.012
+            ],
+            [
+              0.008,
+              0.006,
+              0.5
+            ]
+          ],
+          "output_coordinates": [
+            "q1_delta_flux_phi0",
+            "q2_delta_flux_phi0",
+            "c_delta_flux_phi0"
+          ]
+        }
+      }
+    }
+  },
+  "experiment_eligible": true,
+  "keep": false,
+  "name": "SQVM 演示配置（重建）",
+  "parent": {
+    "calibration_values_sha256": "6D98FF134384E91AAAF7BF8EE4ADE4294381AA3D139672081809D0C274637515",
+    "configuration_id": "d9ed2674-39bf-47ee-be12-7ad1f835426d",
+    "content_sha256": "459638A1BCB67A77E54063851C72AD67017680BC6047F780944E434BAAEF8031",
+    "control_values_sha256": "EB729C7CD0B1459C28F5EF80614E096D199914A4C9E364E9790038AC0883896D",
+    "state_id": "d9ed2674-39bf-47ee-be12-7ad1f835426d"
+  },
+  "published_utc": "2026-07-23T05:05:36.512693Z",
+  "readonly": {
+    "authority_refs": {
+      "compiler_snapshot_sha256": "F0440915C2CDCC46233979BA50EFA2AC33D72AC8343197CAF9BA6374FD0416DD",
+      "device_sha256": "CA300E0AE08DCBBE7810F92AFDDFD713C6928A2E04E4A853FCE418B181E18D3F",
+      "instruction_profile_sha256": "33635291E46120A7EA33D97F545D1DE943A26425E899852726469F9BC8A6202D"
+    },
+    "device_ref": {
+      "path": "configs/devices/2q1c2r.yaml",
+      "sha256": "CA300E0AE08DCBBE7810F92AFDDFD713C6928A2E04E4A853FCE418B181E18D3F"
+    }
+  },
+  "reason": "实验 3df4ccf6-6817-481c-82ee-80a02dca3e5c 的校准候选保存后自动生效",
+  "requires_requalification": false,
+  "schema_version": "0.2",
+  "snapshot_id": "96c5f8bb-5663-41c1-9ce1-ab4dd922fd21",
+  "state_id": "96c5f8bb-5663-41c1-9ce1-ab4dd922fd21",
+  "status": "published"
+}

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 from dataclasses import replace
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -14,7 +18,8 @@ import sqvm.storage.operations as operations
 from sqvm.calibration.api import run_spectroscopy
 from sqvm.storage.operations import ExperimentStorageOperations, StorageMutationRequest, StorageOperationError
 from sqvm.storage.catalog import CatalogRoots, rebuild_catalog, query_catalog
-from test_qubit_spectroscopy import _context, _result, _single_request
+from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
+from tests.support.fixture_loader import copy_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +46,8 @@ def service(monkeypatch, tmp_path):
     shutil.copy2(ROOT / "docs" / "designs" / schema.name, schema)
     shutil.copytree(ROOT / "configs", repository / "configs")
     config = repository / "output" / "platform-configurations"; config.parent.mkdir(parents=True)
-    shutil.copytree(ROOT / "output" / "platform-configurations", config)
+    fixture = copy_fixture("platform_configuration_reference_v1", tmp_path / "fixture")
+    shutil.copytree(fixture / "platform-configurations", config)
     hot = repository / "experiments"
     run = run_spectroscopy({"Q1": (4.8, 4.82)}, frequency_step_GHz=.01, output_root=hot, configuration_storage_root=config, repository_root=repository, timeout_s=10)
     target = run.root

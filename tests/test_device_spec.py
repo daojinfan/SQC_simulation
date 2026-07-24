@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.contract
+
 from pathlib import Path
 
 import pytest

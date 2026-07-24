@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.physics_slow
+
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace

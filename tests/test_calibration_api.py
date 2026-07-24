@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 import copy
 import hashlib
 import json
@@ -23,7 +27,8 @@ from sqvm.calibration.spectroscopy_run import (
 )
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.web import CalibrationWebIndex, PlatformConfigurationStore
-from test_spectroscopy_calibration_workflow import _install_synthetic_runner, _request
+from tests.support.calibration_requests import spectroscopy_calibration_request as _request
+from tests.support.synthetic_runners import install_synthetic_spectroscopy_runner as _install_synthetic_runner
 
 
 ROOT = Path(__file__).resolve().parents[1]

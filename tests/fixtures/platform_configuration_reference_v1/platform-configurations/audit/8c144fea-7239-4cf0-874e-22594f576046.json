@@ -1,0 +1,21 @@
+{
+  "actor_id": "project.manager",
+  "created_utc": "2026-07-23T05:05:36.509693Z",
+  "details": {
+    "candidate_ids": [
+      "Q1.reference_frequency_GHz",
+      "Q2.reference_frequency_GHz"
+    ],
+    "content_sha256": "1D7C4AA14CD359CC78428D8E8AF5946B8678F475D5D78134F4C050DE348A345D",
+    "device_id": "demo_2q1c2r",
+    "experiment_run_id": "3df4ccf6-6817-481c-82ee-80a02dca3e5c",
+    "recommendation_id": "9f18b0a6-7987-4d4e-af4b-e5349ebed31e",
+    "targets": [
+      "Q1",
+      "Q2"
+    ]
+  },
+  "event": "experiment_candidates_applied_to_current",
+  "event_id": "8c144fea-7239-4cf0-874e-22594f576046",
+  "schema_version": "0.1"
+}

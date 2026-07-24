@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json

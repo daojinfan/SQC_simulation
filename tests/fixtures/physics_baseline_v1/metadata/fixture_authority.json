@@ -1,0 +1,9 @@
+{
+  "artifact_type": "physics_test_fixture_authority",
+  "artifact_version": "1",
+  "authority": "test_only_non_production",
+  "historical_replay_claimed": false,
+  "production_evidence_claimed": false,
+  "purpose": "deterministic_clean_checkout_physics_tests",
+  "schema_version": "0.1"
+}

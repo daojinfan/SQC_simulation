@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.evidence
+
 import asyncio
 import json
 import os
@@ -16,7 +20,7 @@ from sqvm.calibration.spectroscopy_run import (
     run_qubit_spectroscopy_scan,
     verify_qubit_spectroscopy_scan,
 )
-from test_qubit_spectroscopy import _context, _result, _single_request
+from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 
 
 ROOT = Path(__file__).resolve().parents[1]

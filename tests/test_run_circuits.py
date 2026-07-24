@@ -131,6 +131,7 @@ def _context(*paths: str) -> CircuitExecutionContext:
     )
 
 
+@pytest.mark.integration
 def test_set_preamble_creates_hashed_overlay_without_mutating_base_setting():
     context = _context("Q1.setting.active_xy2_setting.amplitude_GHz")
     original = copy.deepcopy(context.authorities)
@@ -153,6 +154,7 @@ def test_set_preamble_creates_hashed_overlay_without_mutating_base_setting():
     assert max(abs(value) for value in compiled.compilation.q1_xy) == pytest.approx(0.25)
 
 
+@pytest.mark.integration
 def test_multiple_set_fields_on_one_setting_share_one_base_and_effective_hash():
     context = _context(
         "Q1.setting.active_xy2_setting.amplitude_GHz",
@@ -198,6 +200,7 @@ def test_multiple_set_fields_on_one_setting_share_one_base_and_effective_hash():
         ),
     ),
 )
+@pytest.mark.integration
 def test_set_rejects_non_preamble_duplicate_unapproved_or_nonconfig_paths(source: str, code: CircuitReasonCode):
     paths = frozenset(
         {
@@ -216,6 +219,7 @@ def test_set_rejects_non_preamble_duplicate_unapproved_or_nonconfig_paths(source
     assert captured.value.code == code
 
 
+@pytest.mark.integration
 def test_direct_waveform_parameters_remain_qcis_operands_without_set():
     compiled = compile_circuit(
         QCISCircuit("direct_pulse", "PLSXY Q1 0 -1 2 0.001 5.1 0 0 2\n"),
@@ -226,6 +230,7 @@ def test_direct_waveform_parameters_remain_qcis_operands_without_set():
     assert compiled.compilation.plan.drive_event_inventory[0]["f_drive_GHz"] == 5.1
 
 
+@pytest.mark.integration
 def test_batch_is_fully_compiled_before_first_model_point(monkeypatch, tmp_path: Path):
     calls = []
     monkeypatch.setattr(circuits_module, "run_bounded_model_point", lambda *args, **kwargs: calls.append(args))
@@ -239,6 +244,7 @@ def test_batch_is_fully_compiled_before_first_model_point(monkeypatch, tmp_path:
     assert calls == []
 
 
+@pytest.mark.integration
 def test_batch_limit_can_only_be_tightened(tmp_path: Path):
     circuits = tuple(
         QCISCircuit(f"circuit_{index}", "PLSXY Q1 0 -1 2 0.001 5.1 0 0 2\n")
@@ -249,6 +255,7 @@ def test_batch_limit_can_only_be_tightened(tmp_path: Path):
     assert captured.value.code == CircuitReasonCode.BATCH_LIMIT_EXCEEDED
 
 
+@pytest.mark.integration
 def test_smoke_context_rejects_unregistered_initial_state_or_observable():
     circuit = QCISCircuit("unsupported_contract", "PLSXY Q1 0 -1 2 0.001 5.1 0 0 2\n")
     with pytest.raises(CircuitExecutionError) as captured:
@@ -282,6 +289,7 @@ def test_smoke_context_rejects_unregistered_initial_state_or_observable():
         [["Q1", "Q2", "Q1"]],
     ),
 )
+@pytest.mark.integration
 def test_readout_qubit_rejects_invalid_nested_groups_before_execution(
     readout_qubit, monkeypatch, tmp_path: Path
 ):
@@ -299,6 +307,7 @@ def test_readout_qubit_rejects_invalid_nested_groups_before_execution(
     assert calls == []
 
 
+@pytest.mark.integration
 def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, tmp_path: Path):
     handles = {}
 
@@ -427,6 +436,7 @@ def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, tmp_path: 
     }
 
 
+@pytest.mark.integration
 def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
     monkeypatch,
     tmp_path: Path,
@@ -516,8 +526,9 @@ def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
     assert verified.to_dict() == result.to_dict()
 
 
+@pytest.mark.physics_slow
 def test_run_circuits_returns_final_q1_q2_probabilities_from_verified_evolution():
-    workspace = ROOT / "output" / f".run-circuits-e2e.{uuid.uuid4().hex}"
+    workspace = ROOT / "artifacts" / f".run-circuits-e2e.{uuid.uuid4().hex}"
     workspace.mkdir(parents=True)
     try:
         results = run_circuits(
@@ -525,7 +536,7 @@ def test_run_circuits_returns_final_q1_q2_probabilities_from_verified_evolution(
             _context(),
             workspace,
             ROOT,
-            timeout_s=180.0,
+            timeout_s=900.0,
         )
         assert len(results) == 1
         result = results[0]

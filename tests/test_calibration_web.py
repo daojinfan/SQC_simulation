@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 import copy
 from dataclasses import replace
 import json
@@ -26,12 +30,10 @@ from sqvm.web import (
     create_calibration_web_server,
 )
 from sqvm.web.server import ExperimentStorageWebService, StorageWebError
-from test_qubit_spectroscopy import _context, _result, _single_request
-from test_spectroscopy_calibration_workflow import (
-    PARENT,
-    _install_synthetic_runner,
-    _request,
-)
+from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
+from tests.support.calibration_requests import spectroscopy_calibration_request as _request
+from tests.support.synthetic_runners import install_synthetic_spectroscopy_runner as _install_synthetic_runner
+PARENT = Path(__file__).resolve().parents[1] / "configs" / "calibration" / "platform_uncalibrated_v1.json"
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -595,8 +597,16 @@ def test_create_server_rejects_linked_startup_root_before_serving_and_releases_p
 def test_create_server_bootstraps_fresh_authority_roots_without_catalog(web_workspace) -> None:
     base, _output, _configuration, _run = web_workspace
     output = base / "fresh-output"; output.mkdir()
-    server = create_calibration_web_server(ROOT, output_root=output, port=0)
+    configuration = base / "fresh-configuration"
+    server = create_calibration_web_server(
+        ROOT,
+        output_root=output,
+        configuration_storage_root=configuration,
+        port=0,
+    )
     try:
+        assert configuration.is_dir()
+        assert server.store.root == configuration.resolve()
         assert (output / "experiments").is_dir()
         assert (output / "experiment-storage" / "lifecycle").is_dir()
         assert not (output / "experiment-storage" / "catalog.sqlite").exists()

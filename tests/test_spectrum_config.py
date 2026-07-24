@@ -1,3 +1,7 @@
+import pytest as _pytest
+
+pytestmark = _pytest.mark.evidence
+
 import json
 from pathlib import Path
 
@@ -10,9 +14,10 @@ from sqvm.spectrum import (
     load_stage2_rebaseline_manifest,
     validate_spectrum_provenance,
 )
+from tests.support.physics_fixture import physics_acceptance_config
 
 
-CONFIG = Path("configs/spectra/2q1c_static.yaml")
+CONFIG = physics_acceptance_config()
 
 
 def _mutated_config(tmp_path, mutate):
@@ -52,7 +57,7 @@ def test_reject_missing_rebaseline_approval(tmp_path):
 
 
 def test_reject_rejected_rebaseline_approval(tmp_path):
-    approval = json.loads(Path("output/stage_02_1_hamiltonian_rebaseline/rebaseline_approval.json").read_text())
+    approval = json.loads(load_spectrum_config(CONFIG).source_rebaseline_approval.read_text())
     approval["decision"] = "rejected"
     approval_path = tmp_path / "approval.json"
     approval_path.write_text(json.dumps(approval), encoding="utf-8")
@@ -64,7 +69,7 @@ def test_reject_rejected_rebaseline_approval(tmp_path):
 
 
 def test_reject_approval_manifest_hash_mismatch(tmp_path):
-    approval = json.loads(Path("output/stage_02_1_hamiltonian_rebaseline/rebaseline_approval.json").read_text())
+    approval = json.loads(load_spectrum_config(CONFIG).source_rebaseline_approval.read_text())
     approval["manifest_sha256"] = "0" * 64
     path = tmp_path / "approval.json"
     path.write_text(json.dumps(approval), encoding="utf-8")

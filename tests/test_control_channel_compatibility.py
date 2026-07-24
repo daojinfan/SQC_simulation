@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.evidence
+
 import json
 import builtins
 import os
@@ -612,6 +616,9 @@ def test_kernelspec_contract_fails_before_output(monkeypatch, workspace_tmp, att
     assert not target.exists() and not list(workspace_tmp.glob(".candidate.staging.*"))
 
 
+@pytest.mark.legacy_environment
+@pytest.mark.notebook
+@pytest.mark.windows
 def test_exact_runtime_preflight_and_protection_identity():
     assert compatibility_module._preflight_notebook_runtime().__name__ == "NotebookClient"
     assert raw_file_sha256(ROOT / "pyproject.toml") == "43025E901AEBD5EAACE6CE98A6E93DD2BF1A6951D528B582BB68BBF69A003E20"

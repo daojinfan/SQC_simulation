@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
@@ -123,6 +124,8 @@ class ExperimentStorageWebService:
         self._catalog_refresh_thread: threading.Thread | None = None
         self._catalog_refresh_error = False
         self._catalog_refresh_retry_after = 0.0
+        self._catalog_overview_lock = threading.Lock()
+        self._catalog_overview_cache: dict[str, object] | None = None
         self.on_change: Callable[[], None] | None = None
 
     def shutdown(self) -> None:
@@ -143,13 +146,28 @@ class ExperimentStorageWebService:
     def bootstrap_roots(self) -> None:
         """Validate/create only trusted authority directories, never the catalog."""
 
-        _safe_create_storage_directory(self.hot_root, "experiment hot root")
-        _safe_create_storage_directory(self.storage_root, "experiment storage root")
+        verified: set[Path] = set()
+        _safe_create_storage_directory(
+            self.hot_root, "experiment hot root", verified=verified
+        )
+        _safe_create_storage_directory(
+            self.storage_root, "experiment storage root", verified=verified
+        )
         for name in ("lifecycle", "tombstones", "trash"):
-            _safe_create_storage_directory(self.storage_root / name, f"experiment storage {name} root")
-        _safe_create_storage_directory(self.archive_root, "experiment archive root")
+            _safe_create_storage_directory(
+                self.storage_root / name,
+                f"experiment storage {name} root",
+                verified=verified,
+            )
+        _safe_create_storage_directory(
+            self.archive_root, "experiment archive root", verified=verified
+        )
         if os.path.lexists(self.configuration_root):
-            _safe_validate_storage_directory(self.configuration_root, "configuration storage root")
+            _safe_validate_storage_directory(
+                self.configuration_root,
+                "configuration storage root",
+                verified=verified,
+            )
 
     def _reference_graph(self):
         from sqvm.storage.references import build_reference_graph
@@ -308,6 +326,14 @@ class ExperimentStorageWebService:
 
     def overview(self) -> dict[str, object]:
         self._ensure_catalog()
+        if self._catalog_refresh_thread is not None or self._catalog_refresh_error:
+            with self._catalog_overview_lock:
+                cached = copy.deepcopy(self._catalog_overview_cache)
+            if cached is not None:
+                cached["refreshing"] = self._catalog_refresh_thread is not None
+                cached["refresh_error"] = self._catalog_refresh_error
+                return cached
+
         from sqvm.storage.catalog import query_catalog, storage_summary
         from sqvm.storage.errors import StorageError
         try:
@@ -319,14 +345,17 @@ class ExperimentStorageWebService:
                 rows = [_public_catalog_row(row) for row in query_catalog(self.catalog_path)]
         except StorageError as exc:
             raise StorageWebError("storage_catalog_unavailable", 500, "storage catalog is unreadable", retryable=True) from exc
-        return {"schema_version": "0.1", "catalog_revision": summary.catalog_revision,
-                "refreshing": self._catalog_refresh_thread is not None,
-                "refresh_error": self._catalog_refresh_error,
-                "logical_bytes": summary.logical_bytes, "allocated_bytes": summary.allocated_bytes,
-                "archive_bytes": summary.archive_bytes, "reclaimable_now_bytes": summary.reclaimable_now_bytes,
-                "reclaimable_after_trash_bytes": summary.reclaimable_after_trash_bytes,
-                "volume_free_bytes": summary.volume_free_bytes, "volume_total_bytes": summary.volume_total_bytes,
-                "allocated_estimated": summary.allocated_estimated, "items": rows}
+        result = {"schema_version": "0.1", "catalog_revision": summary.catalog_revision,
+                  "refreshing": self._catalog_refresh_thread is not None,
+                  "refresh_error": self._catalog_refresh_error,
+                  "logical_bytes": summary.logical_bytes, "allocated_bytes": summary.allocated_bytes,
+                  "archive_bytes": summary.archive_bytes, "reclaimable_now_bytes": summary.reclaimable_now_bytes,
+                  "reclaimable_after_trash_bytes": summary.reclaimable_after_trash_bytes,
+                  "volume_free_bytes": summary.volume_free_bytes, "volume_total_bytes": summary.volume_total_bytes,
+                  "allocated_estimated": summary.allocated_estimated, "items": rows}
+        with self._catalog_overview_lock:
+            self._catalog_overview_cache = copy.deepcopy(result)
+        return result
 
     def run(self, run_id: str, *, trash_only: bool = False) -> dict[str, object]:
         self._ensure_catalog()
@@ -1590,19 +1619,31 @@ def _linked_or_reparse(path: Path, info: os.stat_result) -> bool:
     return path.is_symlink() or bool(getattr(path, "is_junction", lambda: False)()) or bool(getattr(info, "st_reparse_tag", 0))
 
 
-def _safe_create_storage_directory(value: Path, label: str) -> Path:
+def _safe_create_storage_directory(
+    value: Path,
+    label: str,
+    *,
+    verified: set[Path] | None = None,
+) -> Path:
     """Create a trusted startup root without traversing link/reparse ancestors."""
 
     path = _lexical_absolute(value)
     anchor = Path(path.anchor)
-    try:
-        anchor_info = anchor.lstat()
-    except OSError as exc:
-        raise StorageWebError("storage_unavailable", 422, f"{label} cannot be inspected") from exc
-    if _linked_or_reparse(anchor, anchor_info):
-        raise StorageWebError("storage_unavailable", 422, f"{label} is linked or reparse-backed")
+    verified = verified if verified is not None else set()
+    if anchor not in verified:
+        try:
+            anchor_info = anchor.lstat()
+        except OSError as exc:
+            raise StorageWebError("storage_unavailable", 422, f"{label} cannot be inspected") from exc
+        if _linked_or_reparse(anchor, anchor_info):
+            raise StorageWebError("storage_unavailable", 422, f"{label} is linked or reparse-backed")
+        verified.add(anchor)
     current = anchor
     for part in path.parts[1:]:
+        cached = current / part
+        if cached in verified:
+            current = cached
+            continue
         try:
             matches = [entry for entry in os.scandir(current) if entry.name == part]
         except OSError as exc:
@@ -1625,22 +1666,35 @@ def _safe_create_storage_directory(value: Path, label: str) -> Path:
         if _linked_or_reparse(candidate, info) or not stat.S_ISDIR(info.st_mode):
             raise StorageWebError("storage_unavailable", 422, f"{label} contains a linked or non-directory component")
         current = candidate
+        verified.add(current)
     return current
 
 
-def _safe_validate_storage_directory(value: Path, label: str) -> Path:
+def _safe_validate_storage_directory(
+    value: Path,
+    label: str,
+    *,
+    verified: set[Path] | None = None,
+) -> Path:
     """Inspect an existing trusted directory without creating missing pieces."""
 
     path = _lexical_absolute(value)
     anchor = Path(path.anchor)
-    try:
-        anchor_info = anchor.lstat()
-    except OSError as exc:
-        raise StorageWebError("storage_unavailable", 422, f"{label} cannot be inspected") from exc
-    if _linked_or_reparse(anchor, anchor_info):
-        raise StorageWebError("storage_unavailable", 422, f"{label} is linked or reparse-backed")
+    verified = verified if verified is not None else set()
+    if anchor not in verified:
+        try:
+            anchor_info = anchor.lstat()
+        except OSError as exc:
+            raise StorageWebError("storage_unavailable", 422, f"{label} cannot be inspected") from exc
+        if _linked_or_reparse(anchor, anchor_info):
+            raise StorageWebError("storage_unavailable", 422, f"{label} is linked or reparse-backed")
+        verified.add(anchor)
     current = anchor
     for part in path.parts[1:]:
+        cached = current / part
+        if cached in verified:
+            current = cached
+            continue
         try:
             matches = [entry for entry in os.scandir(current) if entry.name == part]
         except OSError as exc:
@@ -1655,4 +1709,5 @@ def _safe_validate_storage_directory(value: Path, label: str) -> Path:
         if _linked_or_reparse(candidate, info) or not stat.S_ISDIR(info.st_mode):
             raise StorageWebError("storage_unavailable", 422, f"{label} contains a linked or non-directory component")
         current = candidate
+        verified.add(current)
     return current

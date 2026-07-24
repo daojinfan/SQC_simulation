@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 import copy
 import hashlib
 import os
@@ -32,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def platform_root():
-    root = ROOT / "output" / f".platform-v02.{uuid.uuid4().hex}"
+    root = ROOT / "tmp" / f".platform-v02.{uuid.uuid4().hex}"
     root.mkdir(parents=True)
     try:
         yield root
@@ -54,6 +58,79 @@ def _draft_mapper(mapper_id: str, target: str, mapper_type: str, **payload):
         "status": "draft", "base_revision": 0, "base_setting_hash": None,
         "revision": None, "setting_hash": None, "calibration_run_id": None, **payload,
     }
+
+
+def test_configuration_replace_retries_transient_windows_sharing_failure():
+    calls = []
+    sleeps = []
+
+    def replace(source, destination):
+        calls.append((source, destination))
+        if len(calls) < 3:
+            error = PermissionError("sharing violation")
+            error.winerror = 32
+            raise error
+
+    source = Path("source.tmp")
+    destination = Path("configuration.json")
+    configuration_module._replace_configuration_file(
+        source,
+        destination,
+        replacer=replace,
+        platform_name="nt",
+        sleeper=sleeps.append,
+    )
+
+    assert calls == [(source, destination)] * 3
+    assert sleeps == [0.01, 0.02]
+
+
+@pytest.mark.parametrize("platform_name,error_code", [("posix", 32), ("nt", 2)])
+def test_configuration_replace_does_not_retry_other_errors(
+    platform_name,
+    error_code,
+):
+    sleeps = []
+
+    def replace(_source, _destination):
+        error = PermissionError("not transient")
+        error.winerror = error_code
+        raise error
+
+    with pytest.raises(PermissionError, match="not transient"):
+        configuration_module._replace_configuration_file(
+            Path("source.tmp"),
+            Path("configuration.json"),
+            replacer=replace,
+            platform_name=platform_name,
+            sleeper=sleeps.append,
+        )
+
+    assert sleeps == []
+
+
+def test_configuration_replace_stops_after_bounded_attempts():
+    calls = 0
+    sleeps = []
+
+    def replace(_source, _destination):
+        nonlocal calls
+        calls += 1
+        error = PermissionError("still locked")
+        error.winerror = 5
+        raise error
+
+    with pytest.raises(PermissionError, match="still locked"):
+        configuration_module._replace_configuration_file(
+            Path("source.tmp"),
+            Path("configuration.json"),
+            replacer=replace,
+            platform_name="nt",
+            sleeper=sleeps.append,
+        )
+
+    assert calls == configuration_module._CONFIGURATION_REPLACE_ATTEMPTS
+    assert len(sleeps) == calls - 1
 
 
 def _reference(frequency: float):

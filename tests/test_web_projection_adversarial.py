@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -16,22 +20,19 @@ from sqvm.web.index import CalibrationWebIndex, WebArtifactError
 from sqvm.web.read_model import (
     PersistentExperimentReadModel,
     ReadModelError,
+    _database_carrier_link_count_is_safe,
 )
 from sqvm.web.registrar import enqueue_published_run
 from sqvm.web.server import (
     ExperimentStorageWebService,
     StorageWebError,
 )
-from test_web_persistent_read_model import _projection
-from test_web_projection_end_to_end import (
-    ROOT,
-    _close_server,
-    _experiment_page,
-    _eventually,
-    _publish_generic,
-    _request,
-    _start_server,
-)
+ROOT = Path(__file__).resolve().parents[1]
+from tests.support.web_projection import close_server as _close_server, eventually as _eventually, experiment_page as _experiment_page, projection as _projection, publish_generic as _publish_generic, request as _request, start_server as _shared_start_server
+
+
+def _start_server(base: Path):
+    return _shared_start_server(ROOT, base)
 
 
 @pytest.fixture
@@ -67,6 +68,15 @@ def test_database_and_sidecar_link_carriers_are_rejected(
 
     with pytest.raises(ReadModelError, match="linked or unsafe"):
         PersistentExperimentReadModel(database)
+
+
+def test_deletion_pending_sidecar_link_count_is_safe() -> None:
+    database = Path("web-read-model.sqlite")
+    sidecar = Path(f"{database}-wal")
+    info = type("CarrierInfo", (), {"st_nlink": 0})()
+
+    assert _database_carrier_link_count_is_safe(sidecar, database, info)
+    assert not _database_carrier_link_count_is_safe(database, database, info)
 
 
 def test_sqlite_connection_is_closed_when_context_exits(tmp_path: Path) -> None:

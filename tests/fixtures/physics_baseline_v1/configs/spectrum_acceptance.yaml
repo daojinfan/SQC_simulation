@@ -1,0 +1,76 @@
+schema_version: "0.1"
+
+spectrum:
+  name: demo_2q1c_static_spectrum
+  profile: acceptance
+  acceptance_eligible: true
+  source_hamiltonian_config: tests/fixtures/physics_baseline_v1/configs/hamiltonian.yaml
+  source_hamiltonian_artifacts: tests/fixtures/physics_baseline_v1/artifacts/hamiltonian_artifacts.json
+  source_rebaseline_manifest: tests/fixtures/physics_baseline_v1/metadata/rebaseline_manifest.json
+  source_rebaseline_approval: tests/fixtures/physics_baseline_v1/metadata/rebaseline_approval.json
+
+  eigen:
+    num_states: 48
+    solver: validated_eigsh
+    eigsh:
+      which: SA
+      tolerance: 1.0e-10
+      maxiter: 200000
+      ncv: 97
+      v0_rule: sha256_counter_v1
+    solver_validation:
+      gap_dense_tolerance_GHz: 1.0e-6
+      near_degenerate_gap_threshold_GHz: 1.0e-5
+      partition_boundary_margin_GHz: 2.0e-6
+      projector_error_norm: spectral_2
+      projector_dense_tolerance: 1.0e-6
+      projector_repeat_tolerance: 1.0e-8
+
+  dressed_labeling:
+    max_excitations: {q1: 2, c: 2, q2: 2}
+    max_total_excitations: 2
+    min_overlap: 0.50
+    assignment: global_overlap
+    continuity_min_overlap: 0.90
+
+  metrics:
+    compute_zz: true
+    compute_anharmonicity: true
+    compute_mode_participation: true
+
+  convergence:
+    cutoff_increment: 2
+    crossing_refinement_coarse_points: 17
+    crossing_refinement_levels: 4
+    frequency_tolerance_MHz: 0.50
+    anharmonicity_tolerance_MHz: 1.00
+    zz_absolute_tolerance_MHz: 0.01
+    avoided_crossing_absolute_tolerance_MHz: 0.01
+    avoided_crossing_relative_tolerance: 0.05
+    participation_fraction_tolerance: 0.02
+
+  crossing_evidence:
+    endpoint_character_min_fraction: 0.80
+    character_exchange_min_delta: 0.60
+    target_pair_min_fraction_at_crossing: 0.80
+    splitting_significance_min_ratio: 5.0
+
+  flux_scan:
+    enabled: true
+    target: c
+    start_phi0: 0.20
+    stop_phi0: 0.45
+    coarse_points: 25
+    min_refinement_levels: 4
+    max_refinement_levels: 8
+    refinement_points: 11
+    flux_key_decimal_places: 12
+    splitting_level_tolerance_MHz: 0.005
+    flux_energy_resolution_MHz: 0.005
+
+  runtime:
+    acceptance_budget_seconds: 1800
+    smoke_budget_seconds: 90
+    over_budget_fallback: fail
+    solver_validation_artifact: tests/fixtures/physics_baseline_v1/artifacts/solver_validation.json
+    solver_validation_approval: tests/fixtures/physics_baseline_v1/artifacts/solver_validation_approval.json

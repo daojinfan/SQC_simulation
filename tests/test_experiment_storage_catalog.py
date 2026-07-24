@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 import json
 import hashlib
 import os
@@ -29,7 +33,7 @@ from sqvm.storage.operations import ExperimentStorageOperations, StorageMutation
 from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
 from sqvm.calibration.spectroscopy_reader import verify_qubit_spectroscopy_scan_evidence
 import sqvm.calibration.spectroscopy as spectroscopy_module
-from test_qubit_spectroscopy import _context, _result, _single_request
+from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -662,7 +666,8 @@ def test_real_operations_random_hot_alias_trash_is_catalog_restorable(tmp_path: 
     alias = roots.hot_root / f"qubit_spectroscopy_{uuid.uuid4().hex}"
     original.rename(alias)
     storage = roots.lifecycle_root
-    config = tmp_path / "configuration"; shutil.copytree(ROOT / "output" / "platform-configurations", config)
+    from tests.support.fixture_loader import copy_fixture
+    config = copy_fixture("platform_configuration_reference_v1", tmp_path / "fixture") / "platform-configurations"
     index = tmp_path / "experiment-index"; index.mkdir()
     request = StorageMutationRequest("catalog.test", 7, hashlib.sha256((alias / "workflow.json").read_bytes()).hexdigest().upper(), "retention")
     operations = ExperimentStorageOperations(hot_root=roots.hot_root, storage_root=storage, configuration_root=config, experiment_output_root=index, catalog_revision=7)
@@ -855,7 +860,8 @@ def test_real_hardlinked_trash_record_is_quarantined(tmp_path: Path, monkeypatch
     run_id = _real_v03_carriers(tmp_path, roots, monkeypatch)
     hot = roots.hot_root / f"qubit_spectroscopy_{run_id}"
     storage = roots.lifecycle_root
-    config = tmp_path / "configuration"; shutil.copytree(ROOT / "output" / "platform-configurations", config)
+    from tests.support.fixture_loader import copy_fixture
+    config = copy_fixture("platform_configuration_reference_v1", tmp_path / "fixture") / "platform-configurations"
     index = tmp_path / "experiment-index"; index.mkdir()
     request = StorageMutationRequest("catalog.test", 7, hashlib.sha256((hot / "workflow.json").read_bytes()).hexdigest().upper(), "retention")
     operations = ExperimentStorageOperations(hot_root=roots.hot_root, storage_root=storage, configuration_root=config, experiment_output_root=index, catalog_revision=7)

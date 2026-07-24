@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 import json
 import os
 from functools import lru_cache
@@ -476,7 +480,8 @@ def _run_contract() -> dict[str, object]:
         [node, "-e", NODE_CONTRACT],
         cwd=ROOT,
         env=env,
-        text=True,
+        encoding="utf-8",
+        errors="strict",
         capture_output=True,
         check=False,
         timeout=30,

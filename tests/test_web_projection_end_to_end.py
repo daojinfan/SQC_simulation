@@ -1,17 +1,15 @@
 from __future__ import annotations
 
+import pytest as _pytest
+
+pytestmark = _pytest.mark.integration
+
 from dataclasses import replace
-import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import shutil
 import threading
-import time
-from typing import Any, Callable
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 import uuid
 
 import pytest
@@ -21,14 +19,17 @@ import sqvm.calibration.spectroscopy_run as spectroscopy_run_module
 import sqvm.web.index as index_module
 from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
 from sqvm.hamiltonian.provenance import canonical_json_bytes
-from sqvm.runtime.publication import publish_calibration_directory
 from sqvm.web.registrar import enqueue_published_run
-from sqvm.web.server import create_calibration_web_server
-from test_qubit_spectroscopy import _context, _result, _single_request
+from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
+from tests.support.web_projection import close_server as _close_server, eventually as _eventually, experiment_page as _experiment_page, publish_generic as _publish_generic, request as _request, start_server as _shared_start_server
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PARENT = ROOT / "configs" / "calibration" / "platform_uncalibrated_v1.json"
+
+
+def _start_server(base: Path):
+    return _shared_start_server(ROOT, base)
 
 
 @pytest.fixture
@@ -39,153 +40,6 @@ def e2e_base():
         yield base
     finally:
         shutil.rmtree(base, ignore_errors=True)
-
-
-def _start_server(base: Path):
-    output = base / "output"
-    output.mkdir(exist_ok=True)
-    server = create_calibration_web_server(
-        ROOT,
-        output_root=output,
-        configuration_storage_root=base / "configuration",
-        experiment_hot_root=base / "hot",
-        experiment_storage_root=base / "storage",
-        experiment_archive_root=base / "storage" / "archives",
-        port=0,
-    )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server, thread, f"http://127.0.0.1:{server.server_address[1]}"
-
-
-def _close_server(server, thread: threading.Thread) -> None:
-    server.shutdown()
-    server.server_close()
-    thread.join(timeout=5.0)
-    assert not thread.is_alive()
-
-
-def _line_plot(point_count: int, *, plot_id: str = "signal") -> dict[str, Any]:
-    return {
-        "schema_version": "1.0",
-        "plot_id": plot_id,
-        "plot_type": "line",
-        "title": "Projected signal",
-        "objects": [{"id": "Q1", "label": "Q1", "default_visible": True}],
-        "metrics": [{"id": "P1", "label": "P1", "default_visible": True}],
-        "axes": {
-            "x": {"label": "Frequency", "unit": "GHz"},
-            "y": {"label": "Population", "unit": ""},
-        },
-        "series": [
-            {
-                "id": "Q1:P1",
-                "object_id": "Q1",
-                "metric_id": "P1",
-                "points": [
-                    {
-                        "id": f"point-{index}",
-                        "x": float(index),
-                        "y": float(math.sin(index / 17.0)),
-                        "metadata": {"source_index": index},
-                    }
-                    for index in range(point_count)
-                ],
-            }
-        ],
-    }
-
-
-def _publish_generic(
-    base: Path,
-    run_id: str,
-    *,
-    created_utc: str,
-    point_count: int = 8,
-    collection: str = "published",
-) -> Path:
-    parent = base / collection
-    parent.mkdir(exist_ok=True)
-    staging = parent / f".{run_id}.staging"
-    target = parent / run_id
-    staging.mkdir()
-    workflow = {
-        "schema_version": "0.1",
-        "artifact_type": "generic_visualization_run",
-        "artifact_version": "0.1",
-        "workflow_id": "generic_visualization_v1",
-        "run_id": run_id,
-        "status": "completed",
-        "created_utc": created_utc,
-        "request": {"targets": ["Q1"], "execution_mode": "simulation"},
-        "plot_specs": [_line_plot(point_count)],
-    }
-    workflow_raw = canonical_json_bytes(workflow)
-    workflow_sha256 = hashlib.sha256(workflow_raw).hexdigest().upper()
-    receipt = {
-        "schema_version": "0.1",
-        "artifact_type": "generic_visualization_receipt",
-        "artifact_version": "0.1",
-        "run_id": run_id,
-        "status": "completed",
-        "workflow_sha256": workflow_sha256,
-    }
-    (staging / "workflow.json").write_bytes(workflow_raw)
-    (staging / "receipt.json").write_bytes(canonical_json_bytes(receipt))
-    evidence = staging / "execution"
-    evidence.mkdir()
-    (evidence / "large-evidence.bin").write_bytes(b"must-not-be-read-by-get")
-    publish_calibration_directory(staging, target)
-    return target
-
-
-def _request(
-    url: str,
-    *,
-    method: str = "GET",
-    payload: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-) -> tuple[int, Any, Any]:
-    raw = None if payload is None else json.dumps(payload).encode("utf-8")
-    request_headers = dict(headers or {})
-    if raw is not None:
-        request_headers["Content-Type"] = "application/json"
-    request = Request(
-        url,
-        method=method,
-        data=raw,
-        headers=request_headers,
-    )
-    try:
-        with urlopen(request, timeout=10.0) as response:
-            body = response.read()
-            value = json.loads(body.decode("utf-8")) if body else None
-            return response.status, response.headers, value
-    except HTTPError as exc:
-        if exc.code == 304:
-            return exc.code, exc.headers, None
-        body = exc.read().decode("utf-8", errors="replace")
-        raise AssertionError(f"HTTP {exc.code} from {url}: {body}") from exc
-
-
-def _eventually(
-    probe: Callable[[], Any],
-    predicate: Callable[[Any], bool],
-    *,
-    timeout_s: float = 10.0,
-) -> Any:
-    deadline = time.monotonic() + timeout_s
-    last: Any = None
-    while time.monotonic() < deadline:
-        last = probe()
-        if predicate(last):
-            return last
-        time.sleep(0.02)
-    raise AssertionError(f"eventual condition was not reached; last value: {last!r}")
-
-
-def _experiment_page(base_url: str, query: str = "limit=200") -> dict[str, Any]:
-    return _request(f"{base_url}/api/v1/experiments?{query}")[2]
 
 
 def test_server_coordinator_recovers_inbox_and_stops_cleanly(

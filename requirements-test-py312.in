@@ -1,0 +1,17 @@
+# Current development and CI test environment for CPython 3.12.10.
+# Keep the runtime entries in sync with pyproject.toml.  Generate platform
+# locks with: python tools/generate_test_locks.py
+
+# Runtime dependencies from pyproject.toml
+numpy>=1.25
+scipy>=1.11
+pyyaml>=6.0
+nbformat>=5.10
+matplotlib>=3.8
+qutip>=5.1,<5.4
+
+# Test and notebook-kernel dependencies
+pytest>=7.4
+nbclient==0.10.2
+jupyter-client
+ipykernel
