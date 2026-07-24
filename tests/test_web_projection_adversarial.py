@@ -70,13 +70,10 @@ def test_database_and_sidecar_link_carriers_are_rejected(
         PersistentExperimentReadModel(database)
 
 
-def test_windows_deletion_pending_sidecar_link_count_is_safe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_deletion_pending_sidecar_link_count_is_safe() -> None:
     database = Path("web-read-model.sqlite")
     sidecar = Path(f"{database}-wal")
     info = type("CarrierInfo", (), {"st_nlink": 0})()
-    monkeypatch.setattr("sqvm.web.read_model._is_windows", lambda: True)
 
     assert _database_carrier_link_count_is_safe(sidecar, database, info)
     assert not _database_carrier_link_count_is_safe(database, database, info)
