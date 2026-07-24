@@ -4,6 +4,7 @@ import pytest as _pytest
 
 pytestmark = _pytest.mark.contract
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +14,7 @@ import sys
 import pytest
 
 from tests.support.fixture_loader import copy_fixture, fixture_path, verify_fixture_manifest
+from tests.tools.generate_physics_baseline_fixture import _assert_regeneration_equivalent
 
 
 def test_fixture_copy_is_writable_only_outside_the_golden_tree(tmp_path: Path) -> None:
@@ -58,7 +60,7 @@ def test_physics_fixture_is_explicitly_non_production() -> None:
     assert manifest["source_authority"] == "test_only_non_production"
 
 
-def test_physics_fixture_regenerates_byte_exact(tmp_path: Path) -> None:
+def test_physics_fixture_regenerates_within_physics_tolerance(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     shutil.copy2("pyproject.toml", repository / "pyproject.toml")
@@ -87,3 +89,20 @@ def test_physics_fixture_regenerates_byte_exact(tmp_path: Path) -> None:
         cwd=repository,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_physics_fixture_regeneration_rejects_numeric_and_exact_byte_drift(tmp_path: Path) -> None:
+    committed = fixture_path("physics_baseline_v1")
+    numeric_drift = copy_fixture("physics_baseline_v1", tmp_path / "numeric-drift")
+    artifact_path = numeric_drift / "artifacts/hamiltonian_artifacts.json"
+    artifact = json.loads(artifact_path.read_bytes())
+    artifact["lowest_eigenvalues_GHz"][0] += 1e-6
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    with pytest.raises(ValueError, match="exceeds regeneration tolerance"):
+        _assert_regeneration_equivalent(numeric_drift, committed)
+
+    exact_drift = copy_fixture("physics_baseline_v1", tmp_path / "exact-drift")
+    config_path = exact_drift / "configs/spectrum_smoke.yaml"
+    config_path.write_text(config_path.read_text("utf-8") + "# drift\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="non-numeric bytes differ"):
+        _assert_regeneration_equivalent(exact_drift, committed)

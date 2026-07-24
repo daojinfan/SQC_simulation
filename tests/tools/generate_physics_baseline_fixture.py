@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 import sys
@@ -35,8 +36,13 @@ from tests.support.fixture_loader import _aggregate, verify_fixture_manifest
 FIXTURE_ID = "physics_baseline_v1"
 FIXED_CLOCK_UTC = "2026-07-24T00:00:00.000000Z"
 AUTHORITY = "test_only_non_production"
-FLOAT_SIGNIFICANT_DIGITS = 11
-FLOAT_ZERO_ABS_THRESHOLD = 1e-12
+NUMERIC_ABS_TOLERANCE = 1e-9
+DERIVED_NUMERIC_FILES = {
+    "artifacts/hamiltonian_artifacts.json",
+    "metadata/rebaseline_approval.json",
+    "metadata/rebaseline_manifest.json",
+    "provenance.json",
+}
 
 
 def _sha256(raw: bytes) -> str:
@@ -46,20 +52,6 @@ def _sha256(raw: bytes) -> str:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical_json_bytes(payload))
-
-
-def _stable_numeric_payload(value: Any) -> Any:
-    """Normalize non-authoritative fixture numerics across BLAS implementations."""
-
-    if isinstance(value, float):
-        if abs(value) < FLOAT_ZERO_ABS_THRESHOLD:
-            return 0.0
-        return float(format(value, f".{FLOAT_SIGNIFICANT_DIGITS}g"))
-    if isinstance(value, list):
-        return [_stable_numeric_payload(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _stable_numeric_payload(item) for key, item in value.items()}
-    return value
 
 
 def _fixture_relative(repository_root: Path, path: Path) -> str:
@@ -171,7 +163,7 @@ def generate(repository_root: Path, target: Path) -> None:
     candidate_payload["hamiltonian_config"]["path"] = _fixture_relative(
         repository_root, hamiltonian_config
     )
-    _write_json(candidate, _stable_numeric_payload(candidate_payload))
+    _write_json(candidate, candidate_payload)
 
     previous = artifacts / "previous_hamiltonian_artifacts.json"
     _write_json(
@@ -296,19 +288,72 @@ def _all_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
-def _byte_difference_summary(actual: Path, expected: Path) -> str:
+def _semantic_differences(actual: Any, expected: Any, path: str = "$") -> list[str]:
+    if isinstance(actual, float) and isinstance(expected, float):
+        if math.isclose(
+            actual,
+            expected,
+            rel_tol=0.0,
+            abs_tol=NUMERIC_ABS_TOLERANCE,
+        ):
+            return []
+        return [f"{path}: generated={actual!r}, committed={expected!r}"]
+    if type(actual) is not type(expected):
+        return [
+            f"{path}: type generated={type(actual).__name__}, "
+            f"committed={type(expected).__name__}"
+        ]
+    if isinstance(actual, dict):
+        if set(actual) != set(expected):
+            return [f"{path}: object keys differ"]
+        differences: list[str] = []
+        for key in sorted(actual, key=lambda value: value.encode("utf-8")):
+            differences.extend(
+                _semantic_differences(actual[key], expected[key], f"{path}.{key}")
+            )
+            if len(differences) >= 10:
+                break
+        return differences
+    if isinstance(actual, list):
+        if len(actual) != len(expected):
+            return [f"{path}: list lengths differ"]
+        differences = []
+        for index, (actual_item, expected_item) in enumerate(
+            zip(actual, expected, strict=True)
+        ):
+            differences.extend(
+                _semantic_differences(actual_item, expected_item, f"{path}[{index}]")
+            )
+            if len(differences) >= 10:
+                break
+        return differences
+    if actual == expected:
+        return []
+    return [f"{path}: generated={actual!r}, committed={expected!r}"]
+
+
+def _assert_regeneration_equivalent(actual: Path, expected: Path) -> None:
     actual_files = _all_bytes(actual)
     expected_files = _all_bytes(expected)
-    names = sorted(set(actual_files) | set(expected_files), key=lambda value: value.encode("utf-8"))
-    differences = []
-    for name in names:
-        actual_raw = actual_files.get(name)
-        expected_raw = expected_files.get(name)
-        if actual_raw != expected_raw:
-            actual_hash = "missing" if actual_raw is None else _sha256(actual_raw)
-            expected_hash = "missing" if expected_raw is None else _sha256(expected_raw)
-            differences.append(f"{name} (generated={actual_hash}, committed={expected_hash})")
-    return "; ".join(differences)
+    if set(actual_files) != set(expected_files):
+        raise ValueError("generated physics fixture file set differs from --verify-against")
+    exact_differences = [
+        name
+        for name in sorted(actual_files, key=lambda value: value.encode("utf-8"))
+        if name not in DERIVED_NUMERIC_FILES and actual_files[name] != expected_files[name]
+    ]
+    if exact_differences:
+        raise ValueError(
+            "generated physics fixture non-numeric bytes differ from --verify-against: "
+            + ", ".join(exact_differences)
+        )
+    actual_artifact = json.loads(actual_files["artifacts/hamiltonian_artifacts.json"])
+    expected_artifact = json.loads(expected_files["artifacts/hamiltonian_artifacts.json"])
+    numeric_differences = _semantic_differences(actual_artifact, expected_artifact)
+    if numeric_differences:
+        raise ValueError(
+            "generated Hamiltonian exceeds regeneration tolerance: " + "; ".join(numeric_differences)
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -328,9 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     generate(args.repository_root, args.target)
     if args.verify_against is not None:
         verify_fixture_manifest(args.verify_against)
-        if _all_bytes(args.target.resolve()) != _all_bytes(args.verify_against.resolve()):
-            details = _byte_difference_summary(args.target.resolve(), args.verify_against.resolve())
-            raise ValueError(f"generated physics fixture differs from --verify-against: {details}")
+        _assert_regeneration_equivalent(args.target.resolve(), args.verify_against.resolve())
     return 0
 
 

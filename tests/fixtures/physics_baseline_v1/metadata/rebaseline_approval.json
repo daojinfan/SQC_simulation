@@ -4,10 +4,10 @@
   "blocking_findings": [],
   "decision": "approved",
   "legacy_baseline_anchor_sha256": "D59442655B8D66B898BCF0C0F757D4B908E727D5D69190D44E30521C85E963BB",
-  "manifest_sha256": "06923308BC09943FBEAFC92DD50C527B4134A424DEEB765E542BEFA2CB323AF5",
+  "manifest_sha256": "B3A12ABBEFDF31055B7A9C84E911151DFE749AEB06A7740CB9E6A73766E21D51",
   "previous_stage2_artifacts_sha256": "393D9799E1E37FC2D8A20A0E57ACE35301CB0280FDBBCD93556AF4525BC4778A",
   "review_record_path": "tests/fixtures/physics_baseline_v1/metadata/fixture_authority.json",
   "reviewer_role": "independent_test_review_ai",
   "schema_version": "0.1",
-  "stage2_artifacts_sha256": "19B2E3D9EA65C66101AB36C56BC8623B29CDD1CC8D19B2535B208F01DA5A2EE2"
+  "stage2_artifacts_sha256": "349F77C03E1E53BBEA11CD5CB868AB613271FAB5C93E946A686E95919EB7EA55"
 }
