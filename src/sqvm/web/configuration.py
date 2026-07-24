@@ -10,7 +10,8 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any, Mapping, Sequence
+import time
+from typing import Any, Callable, Mapping, Sequence
 import uuid
 
 import yaml
@@ -63,6 +64,8 @@ _DIFF_EXCLUDED_FIELDS = _SYSTEM_FIELDS | {
 }
 _MAX_CHECKPOINTS = 20
 _MAX_AUTOMATIC_SNAPSHOTS = 10
+_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({5, 32, 33})
+_CONFIGURATION_REPLACE_ATTEMPTS = 25
 _PHYSICAL_FIELD_NAMES = {
     "capacitance",
     "capacitance_f",
@@ -1863,15 +1866,52 @@ class PlatformConfigurationStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         raw = canonical_json_bytes(payload)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        with temporary.open("xb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        try:
+            with temporary.open("xb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _replace_configuration_file(temporary, path)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     @staticmethod
     def _check(name: str, passed: bool, message: str) -> dict[str, Any]:
         return {"name": name, "passed": bool(passed), "message": message}
+
+
+def _replace_configuration_file(
+    source: Path,
+    destination: Path,
+    *,
+    replacer: Callable[[Path, Path], None] | None = None,
+    platform_name: str | None = None,
+    sleeper: Callable[[float], None] | None = None,
+) -> None:
+    """Replace one configuration file across transient Windows sharing locks."""
+
+    replacer = replacer or os.replace
+    platform_name = platform_name or os.name
+    sleeper = sleeper or time.sleep
+    delay_s = 0.01
+    for attempt in range(_CONFIGURATION_REPLACE_ATTEMPTS):
+        try:
+            replacer(source, destination)
+            return
+        except OSError as exc:
+            error = getattr(exc, "winerror", None) or exc.errno
+            retryable = (
+                platform_name == "nt"
+                and error in _WINDOWS_TRANSIENT_REPLACE_ERRORS
+                and attempt < _CONFIGURATION_REPLACE_ATTEMPTS - 1
+            )
+            if not retryable:
+                raise
+            sleeper(delay_s)
+            delay_s = min(delay_s * 2.0, 0.1)
 
 
 def _collect_system_fields(value: Any, path: str = "$") -> dict[str, Any]:
