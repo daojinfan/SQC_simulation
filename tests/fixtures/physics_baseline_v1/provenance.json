@@ -59,7 +59,7 @@
   ],
   "fixed_clock_utc": "2026-07-24T00:00:00.000000Z",
   "fixture_id": "physics_baseline_v1",
-  "generator_raw_sha256": "881BC6E08AE9448A1D4D985DE346A8D65D75C2FABADA33191433F08DCD274326",
+  "generator_raw_sha256": "ECE1DE15FC2D7FF4DA6AD9748B2D5236928B2A33FC5988B370B4293213574AB4",
   "generator_version": "0.1",
   "schema_version": "0.1",
   "source_authority": "test_only_non_production"

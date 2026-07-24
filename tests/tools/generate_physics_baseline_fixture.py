@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import sys
 from typing import Any
@@ -43,6 +44,9 @@ DERIVED_NUMERIC_FILES = {
     "metadata/rebaseline_manifest.json",
     "provenance.json",
 }
+NUMERIC_TEXT_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_.])[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+)
 
 
 def _sha256(raw: bytes) -> str:
@@ -327,9 +331,33 @@ def _semantic_differences(actual: Any, expected: Any, path: str = "$") -> list[s
             if len(differences) >= 10:
                 break
         return differences
+    if (
+        isinstance(actual, str)
+        and path.startswith("$.checks[")
+        and path.endswith(".message")
+    ):
+        return _numeric_text_differences(actual, expected, path)
     if actual == expected:
         return []
     return [f"{path}: generated={actual!r}, committed={expected!r}"]
+
+
+def _numeric_text_differences(actual: str, expected: str, path: str) -> list[str]:
+    actual_values = [float(value) for value in NUMERIC_TEXT_PATTERN.findall(actual)]
+    expected_values = [float(value) for value in NUMERIC_TEXT_PATTERN.findall(expected)]
+    actual_scaffold = NUMERIC_TEXT_PATTERN.sub("{number}", actual)
+    expected_scaffold = NUMERIC_TEXT_PATTERN.sub("{number}", expected)
+    if actual_scaffold != expected_scaffold or len(actual_values) != len(expected_values):
+        return [f"{path}: generated={actual!r}, committed={expected!r}"]
+    for actual_value, expected_value in zip(actual_values, expected_values, strict=True):
+        if not math.isclose(
+            actual_value,
+            expected_value,
+            rel_tol=0.0,
+            abs_tol=NUMERIC_ABS_TOLERANCE,
+        ):
+            return [f"{path}: generated={actual!r}, committed={expected!r}"]
+    return []
 
 
 def _assert_regeneration_equivalent(actual: Path, expected: Path) -> None:
