@@ -155,6 +155,7 @@ def test_capability_is_immutable_bounded_and_not_registered_in_stage6():
     assert CAPABILITY["qualification_scope"] == "bounded_smoke_only"
     assert CAPABILITY["stage6_registered"] is False
     assert CAPABILITY["recommendation_eligible"] is False
+    assert BOUNDED_ENVELOPE["max_worker_wall_seconds"] == 900.0
     assert get_builtin_backend_registry().ids() == ("deterministic_fake_v1",)
     with pytest.raises(TypeError):
         CAPABILITY["stage6_registered"] = True
@@ -203,7 +204,7 @@ def test_bounded_admission_accepts_one_short_compilation_and_rejects_limits():
     assert captured.value.code is Stage71FailureCode.BOUNDED_ENVELOPE_EXCEEDED
 
     with pytest.raises(Stage71EntranceError) as captured:
-        _admit_compilation(short, "point_1", 180.0001, _authority())
+        _admit_compilation(short, "point_1", 900.0001, _authority())
     assert captured.value.code is Stage71FailureCode.BOUNDED_ENVELOPE_EXCEEDED
 
 
@@ -248,11 +249,11 @@ def test_evidence_contains_only_refs_and_evidence_quality_not_physics_arrays():
 
 
 def test_real_qcis_stage41_stage51_bounded_entrance_and_public_replay():
-    workspace = ROOT / "output" / f".stage71-e2e.{uuid.uuid4().hex}"
+    workspace = ROOT / "artifacts" / f".stage71-e2e.{uuid.uuid4().hex}"
     workspace.mkdir(parents=True)
     try:
         compilation = _compile("PLSXY Q1 0 -1 2 0.001 5.1 0 0 2\n")
-        result = run_bounded_model_point(compilation, "point_1", workspace, ROOT, timeout_s=180.0)
+        result = run_bounded_model_point(compilation, "point_1", workspace, ROOT, timeout_s=900.0)
         assert result.qualification_scope == "bounded_smoke_only"
         assert result.replay_fidelity == pytest.approx(1.0, abs=1.0e-9)
         assert (result.artifact_root / "receipt.json").is_file()

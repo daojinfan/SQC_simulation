@@ -64,7 +64,7 @@ max_logical_duration_ns    32.0
 max_effective_sample_count 96
 max_effective_duration_ns  48.0
 dt_ns                      0.5
-max_worker_wall_seconds    180.0
+max_worker_wall_seconds    900.0
 allowed_pilot_kind         compiled_qcis_single_point
 allowed_cutoffs            q1=1,c=1,q2=1
 solver_profile             stage_05_1_smoke

@@ -78,7 +78,7 @@ BOUNDED_ENVELOPE = frozen_mapping(
         "max_effective_sample_count": 96,
         "max_effective_duration_ns": 48.0,
         "dt_ns": 0.5,
-        "max_worker_wall_seconds": 180.0,
+        "max_worker_wall_seconds": 900.0,
         "allowed_pilot_kind": "compiled_qcis_single_point",
         "allowed_cutoffs": {"q1": 1, "c": 1, "q2": 1},
         "solver_profile": "stage_05_1_smoke",
@@ -133,7 +133,7 @@ def run_bounded_model_point(
     output_root: str | Path,
     repository_root: str | Path | None = None,
     *,
-    timeout_s: float = 180.0,
+    timeout_s: float = 900.0,
 ) -> Stage71EvidenceHandle:
     """Run and atomically publish one bounded, non-calibration model point."""
 

@@ -1,7 +1,7 @@
 {
   "artifact_type": "stage_07_1_model_entrance_authority",
   "artifact_version": "0.1",
-  "authority_id": "A2400C3E3053FD7D8A5ADE51122880CB25A7001DCCB5E27FB10BB3C54EF8F3E3",
+  "authority_id": "3B5629C5645AC81C1A7B3FCBE1E3DD198B72F63E6E7B587C8D5CE91B31C75B13",
   "bounded_envelope": {
     "allowed_cutoffs": {
       "c": 1,
@@ -15,7 +15,7 @@
     "max_logical_duration_ns": 32.0,
     "max_logical_sample_count": 64,
     "max_point_count": 1,
-    "max_worker_wall_seconds": 180.0,
+    "max_worker_wall_seconds": 900.0,
     "solver_profile": "stage_05_1_smoke"
   },
   "capability": {
@@ -35,12 +35,12 @@
   },
   "design": {
     "path": "docs/designs/07_1_model_backend_entrance_design.md",
-    "raw_sha256": "76A3FDD7B07319AF6762EF6EE887A46D7F3DC33FD26017FC493F351F2275F62B"
+    "raw_sha256": "D7B2F3BBDC21092D033474C7E66A17F1F8C21FF68C578743C04E5BE2DBC019CC"
   },
   "schema_version": "0.1",
   "source": {
     "path": "src/sqvm/runtime/stage71.py",
-    "raw_sha256": "75AB4DF07B474F1E579787F1513667D843D6E54138B3744B6FA35BF6330701BF"
+    "raw_sha256": "87CA6CB21EC3D9E3205134C88F58D2ECE1ED07623EC317789FE81F259584E82B"
   },
   "stage4_1_approval": {
     "path": "configs/control/stage41/production_approval_v1.json",

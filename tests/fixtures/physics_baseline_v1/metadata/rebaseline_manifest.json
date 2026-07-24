@@ -1,0 +1,46 @@
+{
+  "artifact_type": "stage_02_1_hamiltonian_rebaseline",
+  "artifact_version": "0.1",
+  "candidate_stage2_artifact_version": "0.2",
+  "created_from_stage2_artifact_version": "0.1",
+  "determinism_checks": {
+    "fixture_manifest_bound": true
+  },
+  "git_commit": "TEST-ONLY-NON-PRODUCTION",
+  "git_dirty": false,
+  "legacy_baseline_anchor_path": "tests/fixtures/physics_baseline_v1/metadata/legacy_baseline_anchor.json",
+  "legacy_baseline_anchor_sha256": "D59442655B8D66B898BCF0C0F757D4B908E727D5D69190D44E30521C85E963BB",
+  "old_to_new_numeric_deltas": {
+    "authority": "test_only_non_production",
+    "not_physical_evidence": true
+  },
+  "paths": {
+    "candidate_stage2_artifact": "tests/fixtures/physics_baseline_v1/artifacts/hamiltonian_artifacts.json",
+    "device_artifacts": "tests/fixtures/physics_baseline_v1/artifacts/device_artifacts.json",
+    "device_config": "tests/fixtures/physics_baseline_v1/configs/device.yaml",
+    "hamiltonian_config": "tests/fixtures/physics_baseline_v1/configs/hamiltonian.yaml",
+    "legacy_baseline_anchor": "tests/fixtures/physics_baseline_v1/metadata/legacy_baseline_anchor.json",
+    "previous_stage2_artifact": "tests/fixtures/physics_baseline_v1/artifacts/previous_hamiltonian_artifacts.json",
+    "stage2_cli": "src/sqvm/__main__.py"
+  },
+  "previous_stage2_artifacts_sha256": "393D9799E1E37FC2D8A20A0E57ACE35301CB0280FDBBCD93556AF4525BC4778A",
+  "schema_version": "0.1",
+  "sha256": {
+    "device_artifacts_sha256": "B771B72ED33FE104E8940730684710B23BB9278451230318D2B52543C77CE86D",
+    "device_config_sha256": "CA300E0AE08DCBBE7810F92AFDDFD713C6928A2E04E4A853FCE418B181E18D3F",
+    "hamiltonian_config_sha256": "825B158EAA57D6642C5BD94B7CA5C3666AEC0F2614EAE604174598C59DA329A7",
+    "legacy_baseline_anchor_sha256": "D59442655B8D66B898BCF0C0F757D4B908E727D5D69190D44E30521C85E963BB",
+    "stage2_artifacts_sha256": "349F77C03E1E53BBEA11CD5CB868AB613271FAB5C93E946A686E95919EB7EA55",
+    "stage2_cli_sha256_at_rebaseline": "95D0337C65261BD9D7337D2AFC7C04712977AB7C7CD848B35553672D9D81E9ED",
+    "stage2_model_source_tree_sha256": "EEB158FE8508569C936CC9138530DB7C38F6592E4F476ED2C3BCE61686A8CBC0"
+  },
+  "test_summary": {
+    "clean_checkout_fixture": true
+  },
+  "verify_device_summary": {
+    "fixture_bytes_verified": true
+  },
+  "verify_hamiltonian_summary": {
+    "ok": true
+  }
+}

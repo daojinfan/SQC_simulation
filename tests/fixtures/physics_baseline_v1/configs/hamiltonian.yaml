@@ -1,0 +1,18 @@
+schema_version: "0.1"
+
+hamiltonian:
+  name: demo_2q1c_charge_basis
+  source_device_artifacts: tests/fixtures/physics_baseline_v1/artifacts/device_artifacts.json
+
+  basis:
+    q1:
+      charge_cutoff: 7
+    c:
+      charge_cutoff: 7
+    q2:
+      charge_cutoff: 7
+
+  solver:
+    num_eigenvalues: 12
+    method: eigh
+    tolerance: 1.0e-10

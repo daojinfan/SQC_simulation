@@ -17,13 +17,14 @@ from sqvm.spectrum import (
     run_stage2_dense_gap_consistency,
     validate_spectrum_provenance,
 )
+from tests.support.physics_fixture import physics_smoke_config
 
 PRIMARY_MARKERS = frozenset({"contract", "integration", "physics_slow", "evidence"})
 
 
 @pytest.fixture(scope="session")
 def spectrum_session():
-    config = load_spectrum_config("configs/spectra/2q1c_static_smoke.yaml")
+    config = load_spectrum_config(physics_smoke_config())
     manifest = load_stage2_rebaseline_manifest(config.source_rebaseline_manifest)
     approval = load_stage2_rebaseline_approval(config.source_rebaseline_approval)
     provenance = validate_spectrum_provenance(config, manifest, approval)
