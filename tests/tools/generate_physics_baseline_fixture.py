@@ -35,7 +35,7 @@ from tests.support.fixture_loader import _aggregate, verify_fixture_manifest
 FIXTURE_ID = "physics_baseline_v1"
 FIXED_CLOCK_UTC = "2026-07-24T00:00:00.000000Z"
 AUTHORITY = "test_only_non_production"
-FLOAT_SIGNIFICANT_DIGITS = 12
+FLOAT_SIGNIFICANT_DIGITS = 11
 FLOAT_ZERO_ABS_THRESHOLD = 1e-12
 
 

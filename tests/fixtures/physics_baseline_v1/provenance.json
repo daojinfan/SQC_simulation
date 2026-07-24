@@ -1,5 +1,5 @@
 {
-  "aggregate_sha256": "B7FFB17616962A0B299134B4F578F2FF83705BD162136DAF96DA070BEA6FF52C",
+  "aggregate_sha256": "7BDD22118A8A6745FE51C857AA6CBCFDEACE01F315F69044417C66F8818A0EBF",
   "files": [
     {
       "byte_length": 5487,
@@ -7,9 +7,9 @@
       "raw_sha256": "B771B72ED33FE104E8940730684710B23BB9278451230318D2B52543C77CE86D"
     },
     {
-      "byte_length": 10578,
+      "byte_length": 10506,
       "path": "artifacts/hamiltonian_artifacts.json",
-      "raw_sha256": "1555E2650A360B91FBC69E25D6126C3E89D79F77E36DB5CF265C7F45F04045DF"
+      "raw_sha256": "19B2E3D9EA65C66101AB36C56BC8623B29CDD1CC8D19B2535B208F01DA5A2EE2"
     },
     {
       "byte_length": 115,
@@ -49,17 +49,17 @@
     {
       "byte_length": 715,
       "path": "metadata/rebaseline_approval.json",
-      "raw_sha256": "6D1E6FA565A89399635EF69BDB0057E771B61DE48FD2516CBB381FEBB1DD04E5"
+      "raw_sha256": "D14755EA0AEBEF082C1C39FF7866E9D55AAF16F29DA997D954AF8B608F6A8507"
     },
     {
       "byte_length": 2341,
       "path": "metadata/rebaseline_manifest.json",
-      "raw_sha256": "16E5C2BD91370D2B6EBA30BBD240AFA0EE4683F8057C0FBB748FCA7678F159AD"
+      "raw_sha256": "06923308BC09943FBEAFC92DD50C527B4134A424DEEB765E542BEFA2CB323AF5"
     }
   ],
   "fixed_clock_utc": "2026-07-24T00:00:00.000000Z",
   "fixture_id": "physics_baseline_v1",
-  "generator_raw_sha256": "77C95B4B1CDEB94BB648F5803B3A612A8AE8F8CA74A5B32AA6494FEC023B0939",
+  "generator_raw_sha256": "18BCFEEE5BD77D9D41FF81A1D866BC30BE911237B48A76646ED294271F5DCC57",
   "generator_version": "0.1",
   "schema_version": "0.1",
   "source_authority": "test_only_non_production"

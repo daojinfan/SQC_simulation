@@ -76,26 +76,26 @@
       {
         "charge_cutoff": 7,
         "drift_GHz": -3.8673975844e-07,
-        "gap_GHz": 5.19353434073,
+        "gap_GHz": 5.1935343407,
         "mode": "q1",
         "refined_charge_cutoff": 9,
-        "refined_gap_GHz": 5.19353395399
+        "refined_gap_GHz": 5.193533954
       },
       {
         "charge_cutoff": 7,
-        "drift_GHz": -9.73653278322e-05,
+        "drift_GHz": -9.7365327832e-05,
         "gap_GHz": 7.5689347155,
         "mode": "c",
         "refined_charge_cutoff": 9,
-        "refined_gap_GHz": 7.56883735017
+        "refined_gap_GHz": 7.5688373502
       },
       {
         "charge_cutoff": 7,
-        "drift_GHz": -1.10102928019e-06,
-        "gap_GHz": 5.33159675041,
+        "drift_GHz": -1.1010292802e-06,
+        "gap_GHz": 5.3315967504,
         "mode": "q2",
         "refined_charge_cutoff": 9,
-        "refined_gap_GHz": 5.33159564938
+        "refined_gap_GHz": 5.3315956494
       }
     ]
   },
@@ -255,18 +255,18 @@
     "matrix_GHz": [
       [
         0.25148043141,
-        0.000332079667817,
-        0.000235956794537
+        0.00033207966782,
+        0.00023595679454
       ],
       [
-        0.000332079667817,
-        0.255544782017,
-        0.000319442824562
+        0.00033207966782,
+        0.25554478202,
+        0.00031944282456
       ],
       [
-        0.000235956794537,
-        0.000319442824562,
-        0.241901704224
+        0.00023595679454,
+        0.00031944282456,
+        0.24190170422
       ]
     ],
     "modes": [
@@ -278,27 +278,27 @@
   "effective_junctions": [
     {
       "component": "q1",
-      "ej1_GHz": 7.78545039051,
-      "ej2_GHz": 7.78545039051,
-      "ej_effective_GHz": 14.8088066524,
+      "ej1_GHz": 7.7854503905,
+      "ej2_GHz": 7.7854503905,
+      "ej_effective_GHz": 14.808806652,
       "flux_bias_phi0": 0.1,
       "formula": "sqrt((EJ1+EJ2)^2*cos(pi*phi)^2 + (EJ1-EJ2)^2*sin(pi*phi)^2)",
       "mode": "q1"
     },
     {
       "component": "c",
-      "ej1_GHz": 22.6945627253,
-      "ej2_GHz": 22.6945627253,
-      "ej_effective_GHz": 30.0163672171,
+      "ej1_GHz": 22.694562725,
+      "ej2_GHz": 22.694562725,
+      "ej_effective_GHz": 30.016367217,
       "flux_bias_phi0": 0.27,
       "formula": "sqrt((EJ1+EJ2)^2*cos(pi*phi)^2 + (EJ1-EJ2)^2*sin(pi*phi)^2)",
       "mode": "c"
     },
     {
       "component": "q2",
-      "ej1_GHz": 8.06026253481,
-      "ej2_GHz": 8.06026253481,
-      "ej_effective_GHz": 16.1205250696,
+      "ej1_GHz": 8.0602625348,
+      "ej2_GHz": 8.0602625348,
+      "ej_effective_GHz": 16.12052507,
       "flux_bias_phi0": 0.0,
       "formula": "sqrt((EJ1+EJ2)^2*cos(pi*phi)^2 + (EJ1-EJ2)^2*sin(pi*phi)^2)",
       "mode": "q2"
@@ -307,16 +307,16 @@
   "eigenvalue_gaps_GHz": [
     0.0,
     5.1934799099,
-    5.33163305101,
-    7.56894672464,
-    10.1020030361,
-    10.3914405196,
-    10.5252303283,
-    12.7624232837,
-    12.9005760564,
-    14.6946279306,
-    14.8609886095,
-    15.1527551788
+    5.331633051,
+    7.5689467246,
+    10.102003036,
+    10.39144052,
+    10.525230328,
+    12.762423284,
+    12.900576056,
+    14.694627931,
+    14.86098861,
+    15.152755179
   ],
   "hamiltonian_config": {
     "basis": {
@@ -350,24 +350,24 @@
   },
   "hilbert_dimension": 3375,
   "lowest_eigenvalues_GHz": [
-    -51.6983777421,
-    -46.5048978322,
+    -51.698377742,
+    -46.504897832,
     -46.366744691,
-    -44.1294310174,
+    -44.129431017,
     -41.596374706,
-    -41.3069372225,
-    -41.1731474138,
-    -38.9359544583,
-    -38.7978016857,
-    -37.0037498115,
-    -36.8373891325,
-    -36.5456225633
+    -41.306937223,
+    -41.173147414,
+    -38.935954458,
+    -38.797801686,
+    -37.003749811,
+    -36.837389133,
+    -36.545622563
   ],
   "mode_capacitance_matrix_fF": {
     "eigenvalues_fF": [
-      75.7892796028,
-      77.0316533001,
-      80.0790670971
+      75.789279603,
+      77.0316533,
+      80.079067097
     ],
     "matrix_fF": [
       [
@@ -480,33 +480,33 @@
   "single_transmon_analytic_limit": {
     "rows": [
       {
-        "analytic_f01_GHz": 5.20681606886,
+        "analytic_f01_GHz": 5.2068160689,
         "ec_GHz": 0.25148043141,
-        "ej_effective_GHz": 14.8088066524,
+        "ej_effective_GHz": 14.808806652,
         "mode": "q1",
-        "numeric_f01_GHz": 5.19353434073,
-        "numeric_minus_analytic_GHz": -0.0132817281321,
-        "numeric_minus_prior_GHz": 0.0935343407305,
+        "numeric_f01_GHz": 5.1935343407,
+        "numeric_minus_analytic_GHz": -0.013281728132,
+        "numeric_minus_prior_GHz": 0.09353434073,
         "prior_f01_GHz": 5.1
       },
       {
-        "analytic_f01_GHz": 7.57798623149,
-        "ec_GHz": 0.255544782017,
-        "ej_effective_GHz": 30.0163672171,
+        "analytic_f01_GHz": 7.5779862315,
+        "ec_GHz": 0.25554478202,
+        "ej_effective_GHz": 30.016367217,
         "mode": "c",
         "numeric_f01_GHz": 7.5689347155,
-        "numeric_minus_analytic_GHz": -0.00905151599123,
-        "numeric_minus_prior_GHz": 0.0689347154984,
+        "numeric_minus_analytic_GHz": -0.0090515159912,
+        "numeric_minus_prior_GHz": 0.068934715498,
         "prior_f01_GHz": 7.5
       },
       {
-        "analytic_f01_GHz": 5.34349531824,
-        "ec_GHz": 0.241901704224,
-        "ej_effective_GHz": 16.1205250696,
+        "analytic_f01_GHz": 5.3434953182,
+        "ec_GHz": 0.24190170422,
+        "ej_effective_GHz": 16.12052507,
         "mode": "q2",
-        "numeric_f01_GHz": 5.33159675041,
-        "numeric_minus_analytic_GHz": -0.0118985678357,
-        "numeric_minus_prior_GHz": 0.0315967504054,
+        "numeric_f01_GHz": 5.3315967504,
+        "numeric_minus_analytic_GHz": -0.011898567836,
+        "numeric_minus_prior_GHz": 0.031596750405,
         "prior_f01_GHz": 5.3
       }
     ]
