@@ -15,12 +15,11 @@ import stat
 from typing import Any, Mapping
 import uuid
 
-from sqvm.calibration.spectroscopy_run import verify_qubit_spectroscopy_scan
 from sqvm.storage.archive_format import DirectoryEvidenceReader, write_sqrun
 from sqvm.storage.archive_verify import ArchiveLimits, ZipEvidenceReader, verify_sqrun
 from sqvm.storage.lifecycle import LifecycleConflict, LifecycleError, append_event, read_head
 from sqvm.storage.references import build_reference_graph
-from sqvm.storage.workflow_verifiers import archive_evidence_verifier_registry, get_workflow_evidence_verifier
+from sqvm.storage.workflow_verifiers import archive_evidence_verifier_registry, get_workflow_evidence_verifier, hot_alias_prefix, hot_alias_prefixes, valid_hot_alias, workflow_hot_verifier_registry
 
 
 class StorageOperationError(RuntimeError):
@@ -188,7 +187,7 @@ class ExperimentStorageOperations:
         staging = self._hot_root / f".restore-{operation}"
         try:
             self._extract_archive(archive, bundle, staging)
-            self._verified_hot(staging, run_id, request.expected_workflow_sha256)
+            self._verified_hot(staging, run_id, request.expected_workflow_sha256, require_alias=False)
             _publish_new(staging, target)
             self._verified_hot(target, run_id, request.expected_workflow_sha256)
             _remove_carrier_safe(archive, "sqrun")
@@ -382,11 +381,10 @@ class ExperimentStorageOperations:
         _safe_existing(self._hot_root, self._hot_root)
         try:
             entries = sorted(os.scandir(self._hot_root), key=lambda row: row.name)
-            prefix = "qubit_spectroscopy_"
             for entry in entries:
-                if entry.name.lower().startswith(prefix) and not entry.name.startswith(prefix):
+                if any(entry.name.lower().startswith(prefix) for prefix in hot_alias_prefixes()) and not valid_hot_alias(entry.name):
                     raise StorageOperationError("hot carrier candidate uses an invalid alias case")
-                if not entry.name.startswith(prefix):
+                if not valid_hot_alias(entry.name):
                     continue
                 path = Path(entry.path)
                 info = path.lstat()
@@ -397,17 +395,13 @@ class ExperimentStorageOperations:
                 if not stat.S_ISREG(workflow_info.st_mode) or workflow_info.st_nlink > 1 or _is_link_or_reparse(workflow_info):
                     raise StorageOperationError("hot carrier candidate workflow is unsafe")
                 workflow = _workflow_identity(workflow_path)
-                # Every published-looking carrier is authority.  A corrupted
-                # sibling might otherwise hide a duplicate run identity.
-                version = workflow.get("artifact_version")
-                if version in {"0.1", "0.2"}:
+                verifier = workflow_hot_verifier_registry().get((workflow.get("workflow_id"), workflow.get("artifact_version")))
+                if verifier is None:
                     if workflow.get("run_id") == run_id:
-                        raise StorageOperationError("legacy hot carrier is not archive eligible")
+                        raise StorageOperationError("hot carrier is not explicitly registered")
                     continue
-                if version != "0.3":
-                    raise StorageOperationError("hot carrier candidate has an unknown artifact version")
                 try:
-                    verify_qubit_spectroscopy_scan(path)
+                    verifier(path)
                 except Exception as exc:
                     raise StorageOperationError("hot carrier candidate verifier rejected run") from exc
                 if workflow.get("run_id") != run_id:
@@ -422,26 +416,29 @@ class ExperimentStorageOperations:
             raise StorageOperationError("hot carrier identity is missing or ambiguous")
         return candidates[0]
 
-    def _restored_hot_path(self, run_id: str) -> Path:
-        return self._hot_alias_path(f"qubit_spectroscopy_restored_{run_id.replace('-', '')}")
-
     def _hot_alias_path(self, alias: str) -> Path:
-        if not _safe_hot_alias(alias):
+        if not valid_hot_alias(alias):
             raise StorageOperationError("hot carrier alias is invalid")
         return self._hot_root / alias
     def _source_verifier(self, workflow: Mapping[str, Any]):
         value = get_workflow_evidence_verifier(workflow.get("workflow_id"), workflow.get("artifact_version"))
         if value is None: raise StorageOperationError("only registered v0.3 evidence is archivable")
         return value
-    def _verified_hot(self, path: Path, run_id: str, expected: str) -> dict[str, Any]:
+    def _verified_hot(self, path: Path, run_id: str, expected: str, *, require_alias: bool = True) -> dict[str, Any]:
         _safe_existing(path, path)
-        try: verify_qubit_spectroscopy_scan(path)
-        except Exception as exc: raise StorageOperationError("hot carrier verifier rejected run") from exc
         try:
             workflow = json.loads((path / "workflow.json").read_text("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise StorageOperationError("workflow cannot be read") from exc
-        if workflow.get("run_id") != run_id or workflow.get("artifact_version") != "0.3" or workflow.get("archive_eligible") is not True or _sha_file(path / "workflow.json") != expected:
+        verifier = workflow_hot_verifier_registry().get((workflow.get("workflow_id"), workflow.get("artifact_version")))
+        if verifier is None:
+            raise StorageOperationError("hot carrier is not explicitly registered")
+        expected_prefix = hot_alias_prefix(workflow.get("workflow_id"), workflow.get("artifact_version"))
+        if require_alias and (expected_prefix is None or path.name != f"{expected_prefix}{run_id.replace('-', '')}"):
+            raise StorageOperationError("hot carrier alias does not bind run identity")
+        try: verifier(path)
+        except Exception as exc: raise StorageOperationError("hot carrier verifier rejected run") from exc
+        if workflow.get("run_id") != run_id or workflow.get("archive_eligible") is not True or _sha_file(path / "workflow.json") != expected:
             raise StorageOperationError("hot carrier identity is invalid")
         self._source_verifier(workflow)
         return {"workflow_id": workflow["workflow_id"], "artifact_version": workflow["artifact_version"], "workflow_sha256": expected, "receipt_sha256": _sha_file(path / "receipt.json")}
@@ -449,10 +446,13 @@ class ExperimentStorageOperations:
         _safe_existing(path, path)
         try: bundle = verify_sqrun(path, verifier_registry=self._archive_registry, require_source_verified=True)
         except Exception as exc: raise StorageOperationError("archive verifier rejected carrier") from exc
-        if bundle.run_id != run_id or bundle.workflow_sha256 != expected or bundle.source_artifact_version != "0.3": raise StorageOperationError("archive identity is invalid")
+        if bundle.run_id != run_id or bundle.workflow_sha256 != expected or get_workflow_evidence_verifier(bundle.workflow_id, bundle.source_artifact_version) is None: raise StorageOperationError("archive identity is invalid")
         return bundle
     def _verify_carrier(self, path: Path, kind: str, run: str, expected: str):
-        return self._verified_hot(path, run, expected) if kind == "hot_directory" else self._verified_archive(path, run, expected)
+        # Trash payloads are intentionally named ``payload``; semantic
+        # evidence still verifies, while final hot aliases are checked at the
+        # hot discovery/publication boundary.
+        return self._verified_hot(path, run, expected, require_alias=path.name != "payload") if kind == "hot_directory" else self._verified_archive(path, run, expected)
     def _carrier_for_state(self, run: str, state: str, expected: str) -> Path:
         if state in {"hot", "archived_duplicate"}: return self._find_hot(run, expected)
         if state == "archived": return self._archive_root / f"{run}.sqrun"
@@ -519,7 +519,7 @@ def _contains_path(parent: Path, child: Path) -> bool:
 def _is_link_or_reparse(info: os.stat_result) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_reparse_tag", 0))
 def _safe_hot_alias(alias: Any) -> bool:
-    return isinstance(alias, str) and alias.startswith("qubit_spectroscopy_") and 1 <= len(alias) <= 128 and "\x00" not in alias and "/" not in alias and "\\" not in alias and ":" not in alias and alias not in {".", ".."}
+    return valid_hot_alias(alias)
 def _safe_existing(path: Path, root: Path):
     if not os.path.lexists(path): raise StorageOperationError("trusted path is missing")
     try: path.relative_to(root)

@@ -120,6 +120,11 @@ def test_rabi_publishes_and_replays_same_operation_without_second_batch(monkeypa
         results = tuple(CircuitResult(circuit.circuit_id, sha256_json({"id": circuit.circuit_id}), "B" * 64, "C" * 64, DressedPopulations(1.0 - index / 10, index / 10, 0.0, 0.0), (("Q1",),), (), 0.0, 0.0, execution_root / "circuit_execution" / circuit.circuit_id, execution_root / circuit.circuit_id, "D" * 64, "calibration_scan_model_only") for index, circuit in enumerate(circuits))
         return CircuitBatchHandle(kwargs["batch_id"], execution_root, "A" * 64, "B" * 64, "completed", 1, 0, results, kwargs["metadata"])
     monkeypatch.setattr(rabi, "run_circuit_batch", fake_batch)
+    # This is an idempotency seam: its fake runner intentionally does not
+    # materialise Runtime evidence.  Full evidence publication is covered by
+    # reader/integration fixtures below.
+    monkeypatch.setattr(rabi, "_verify_staging_for_publish", lambda *_args: None)
+    monkeypatch.setattr(rabi, "verify_rabi_scan", lambda *_args: True)
     monkeypatch.setattr(
         rabi,
         "_static_phase_audits",
@@ -143,6 +148,7 @@ def test_rabi_publishes_and_replays_same_operation_without_second_batch(monkeypa
     assert len(calls) == 1
     assert first.candidates["Q1"]["recommendation_eligible"] is False
     assert first.dataset.runtime_batch.root == first.root / "execution"
+    monkeypatch.undo()
     for name, key, replacement in (
         ("receipt.json", "status", "tampered"),
         ("verification_report.json", "ok", False),
@@ -170,5 +176,5 @@ def test_rabi_publishes_and_replays_same_operation_without_second_batch(monkeypa
         payload["workflow_sha256"] = workflow_sha
         payload["dataset_sha256"] = workflow_payload["dataset"]["sha256"]
         path.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(rabi.RabiError, match="probability"):
+    with pytest.raises(rabi.RabiError):
         rabi.verify_rabi_scan(first.root)

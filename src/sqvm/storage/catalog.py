@@ -138,8 +138,8 @@ def rebuild_catalog(
     """Rebuild a derived SQLite cache without mutating any authority root."""
 
     if hot_verifier_registry is None:
-        from sqvm.calibration.spectroscopy_run import verify_qubit_spectroscopy_scan
-        hot_verifier_registry = {("qubit_spectroscopy_scan_v1", "0.3"): verify_qubit_spectroscopy_scan}
+        from sqvm.storage.workflow_verifiers import workflow_hot_verifier_registry
+        hot_verifier_registry = workflow_hot_verifier_registry()
     if archive_verifier_registry is None:
         from sqvm.storage.workflow_verifiers import archive_evidence_verifier_registry
         archive_verifier_registry = archive_evidence_verifier_registry()
@@ -820,10 +820,14 @@ def _run_id(value: object) -> str:
 
 
 def _name_run_id(name: str) -> str | None:
-    try:
-        return _run_id(name.removeprefix("qubit_spectroscopy_"))
-    except Exception:
-        return None
+    from sqvm.storage.workflow_verifiers import hot_alias_prefixes
+    for prefix in hot_alias_prefixes():
+        if name.startswith(prefix):
+            try:
+                return _run_id(name.removeprefix(prefix))
+            except Exception:
+                return None
+    return None
 
 
 def _is_sha(value: object) -> bool:
@@ -850,7 +854,8 @@ def _valid_alias(value: object) -> bool:
 
 
 def _is_hot_alias(value: object) -> bool:
-    return _valid_alias(value) and value.startswith("qubit_spectroscopy_") and 1 <= len(value) <= 128 and all(ord(char) >= 32 and ord(char) != 127 for char in value)
+    from sqvm.storage.workflow_verifiers import valid_hot_alias
+    return _valid_alias(value) and valid_hot_alias(value) and all(ord(char) >= 32 and ord(char) != 127 for char in value)
 
 
 def _workflow_created_utc(workflow: Mapping[str, object]) -> str:

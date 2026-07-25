@@ -26,11 +26,14 @@ from sqvm.candidate_protocol import calibration_candidate, parameter_change
 from sqvm.calibration.rabi_phase import RabiPhaseAuditError, audit_two_x2p_phase
 from sqvm.circuits import CircuitExecutionContext, CircuitExecutionProfile, QCISCircuit, compile_circuit
 from sqvm.qcis.canonical import canonical_float, canonical_json_bytes, sha256_json
-from sqvm.runtime.batch import CircuitBatchHandle, run_circuit_batch
+from sqvm.runtime.batch import CircuitBatchHandle, run_circuit_batch, verify_circuit_batch
 from sqvm.runtime.journal import utc_now_text
 from sqvm.runtime.lifecycle import CancellationToken
 from sqvm.runtime.publication import publish_calibration_directory
 from sqvm.runtime.storage import write_canonical_new
+from sqvm.storage.archive_format import DirectoryEvidenceReader
+from sqvm.storage.inventory import inventory_tree
+from sqvm.storage.models import ArchiveEntry
 
 
 RABI_EXPERIMENT_ID = "qubit_rabi_x2p_amplitude_v1"
@@ -206,6 +209,10 @@ def run_qubit_rabi_scan(
     staging = target.parent / f".rabi_{run_id.replace('-', '')}"
     staging.mkdir(parents=True, exist_ok=True)
     if (staging / "workflow.json").exists():
+        # A crash may leave terminal-looking but incomplete evidence.  Never
+        # reserve the immutable target until its complete request-bound
+        # publication verifies locally.
+        _verify_staging_for_publish(staging, request, context, parent_sha, root)
         publish_calibration_directory(staging, target)
         return _open_published(target, request, context, parent_sha, root)
     _validate_context_binding(request, context)
@@ -243,7 +250,7 @@ def run_qubit_rabi_scan(
         "workflow_id": RABI_SCAN_WORKFLOW_ID, "run_id": run_id, "recommendation_id": recommendation_id,
         "status": "completed", "parent_configuration": {"path": parent.relative_to(root).as_posix(), "sha256": parent_sha, "snapshot_id": context.platform_snapshot_id},
         "request": _request_payload(request, context, parent_sha),
-        "dataset": {"path": "dataset.json", "sha256": dataset_sha}, "runtime_batch": batch.to_dict(),
+        "dataset": {"path": "dataset.json", "sha256": dataset_sha}, "runtime_batch": _runtime_batch_payload(batch),
         "analysis": analysis.to_dict(), "phase_audit": {"passed": phase_ok, "implementation": "rabi_x2p_phase_v1"},
         "recommendation_eligible": eligible, "candidates": candidates, "archive_eligible": True,
         "claim": {"evidence_class": "model_calibration_simulation", "physics_claim": "model_derived_only", "hardware_measurement": False, "execution_profile": execution_profile.value, "recommendation_eligible": eligible},
@@ -260,7 +267,7 @@ def run_qubit_rabi_scan(
         "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha,
     })
     write_canonical_new(staging / "manifest.json", {"artifact_type": "rabi_scan_manifest", "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha, "receipt_sha256": receipt_sha})
-    verify_rabi_scan(staging)
+    _verify_staging_for_publish(staging, request, context, parent_sha, root)
     publish_calibration_directory(staging, target)
     return RabiRun(target, run_id, recommendation_id, _relocate_dataset(dataset, staging, target), analysis, eligible, MappingProxyType({request.target: MappingProxyType(candidates[0])}), workflow_sha, receipt_sha)
 
@@ -300,51 +307,42 @@ def analyze_rabi(dataset: RabiDataset, *, policy: Mapping[str, Any] | None = Non
 def verify_rabi_scan(run_root: str | Path) -> bool:
     root = Path(run_root)
     try:
+        _verify_rabi_evidence_root(root)
         workflow = _load(root / "workflow.json")
-        dataset = _load(root / "dataset.json")
-        receipt = _load(root / "receipt.json")
-        report = _load(root / "verification_report.json")
-    except OSError as exc:
-        raise RabiError("cannot read rabi scan artifact") from exc
-    if workflow.get("workflow_id") != RABI_SCAN_WORKFLOW_ID:
-        raise RabiError("rabi workflow identity is invalid")
-    workflow_sha = _raw_sha(root / "workflow.json")
-    run_id = workflow.get("run_id")
-    recommendation_id = workflow.get("recommendation_id")
-    dataset_sha = _raw_sha(root / "dataset.json")
-    expected_receipt = {
-        "artifact_type": "rabi_scan_receipt", "status": "completed",
-        "run_id": run_id, "workflow_sha256": workflow_sha,
-        "dataset_sha256": dataset_sha, "recommendation_id": recommendation_id,
-    }
-    expected_report = {
-        "ok": True, "status": "completed", "run_id": run_id,
-        "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha,
-    }
-    if receipt != expected_receipt:
-        raise RabiError("rabi receipt binding is invalid")
-    if report != expected_report:
-        raise RabiError("rabi verification report binding is invalid")
-    if dataset_sha != workflow.get("dataset", {}).get("sha256"):
-        raise RabiError("rabi dataset hash mismatch")
-    axis = dataset.get("axis", {}).get("values")
-    series = dataset.get("series", {}).get(dataset.get("target"), {})
-    if not isinstance(axis, list) or not isinstance(series, Mapping) or any(not isinstance(series.get(key), list) or len(series[key]) != len(axis) for key in ("P0", "P1", "leakage", "norm_error")):
-        raise RabiError("rabi dataset columns are invalid")
-    if len(dataset.get("points", [])) != len(axis):
-        raise RabiError("rabi dataset points are invalid")
-    if not axis or axis[0] != 0.0 or any(not _finite(value) for value in axis) or any(left >= right for left, right in zip(axis, axis[1:])):
-        raise RabiError("rabi dataset axis is invalid")
-    for name in ("P0", "P1", "leakage"):
-        if any(not _finite(value) or not 0.0 <= float(value) <= 1.0 for value in series[name]):
-            raise RabiError("rabi dataset probability is invalid")
-    if any(not _finite(value) or float(value) < 0.0 for value in series["norm_error"]):
-        raise RabiError("rabi dataset norm error is invalid")
-    for index, point in enumerate(dataset["points"]):
-        audit = point.get("phase_audit") if isinstance(point, Mapping) else None
-        if not isinstance(point, Mapping) or point.get("point_index") != index or not isinstance(point.get("circuit_id"), str) or not point["circuit_id"] or not isinstance(audit, Mapping) or audit.get("event_count") != 2:
-            raise RabiError("rabi dataset point alignment is invalid")
+        verify_circuit_batch(root / "execution", expected_batch_id=workflow["run_id"])
+    except Exception as exc:
+        if isinstance(exc, RabiError):
+            raise
+        raise RabiError("rabi scan evidence is invalid") from exc
     return True
+
+
+def _runtime_batch_payload(batch: CircuitBatchHandle) -> dict[str, Any]:
+    """Persist stable batch identity only; evidence paths are relative elsewhere."""
+    return {
+        "batch_id": batch.batch_id, "request_sha256": batch.request_sha256,
+        "head_sha256": batch.head_sha256, "status": batch.status,
+        "attempt_count": batch.attempt_count, "reused_point_count": batch.reused_point_count,
+        "point_count": len(batch.results),
+    }
+
+
+def _verify_rabi_evidence_root(root: Path) -> None:
+    from sqvm.calibration.rabi_reader import verify_qubit_rabi_scan_evidence
+    try:
+        inventory = inventory_tree(root, confinement_root=root)
+        entries = tuple(ArchiveEntry(row.relative_path, row.logical_bytes, _raw_sha(root / row.relative_path)) for row in inventory.files)
+        verify_qubit_rabi_scan_evidence(DirectoryEvidenceReader(root, entries))
+    except Exception as exc:
+        raise RabiError("rabi evidence reader rejected artifact") from exc
+
+
+def _verify_staging_for_publish(staging: Path, request: RabiRequest, context: CircuitExecutionContext, parent_sha: str, root: Path) -> None:
+    _verify_rabi_evidence_root(staging)
+    workflow = _load(staging / "workflow.json")
+    if workflow.get("run_id") != _operation_id(workflow.get("run_id")) or staging.name != f".rabi_{workflow['run_id'].replace('-', '')}" or workflow.get("request") != _request_payload(request, context, parent_sha):
+        raise RabiError("rabi idempotency conflict")
+    verify_circuit_batch(staging / "execution", expected_batch_id=workflow["run_id"])
 
 
 def _dataset(request: RabiRequest, batch: CircuitBatchHandle, audits: Sequence[Mapping[str, Any]], context: CircuitExecutionContext) -> RabiDataset:
@@ -413,7 +411,7 @@ def _static_phase_audits(circuits: Sequence[QCISCircuit], context: CircuitExecut
                 logical_sample_count=int(compilation.q1_xy.size), electronics_schedule=None,
                 source_operations=source_operations, require_electronics_schedule=False,
             )
-            audits.append(MappingProxyType(audit.to_dict()))
+            audits.append(MappingProxyType({"passed": True, **audit.to_dict()}))
     except (RabiPhaseAuditError, KeyError, TypeError, IndexError, ValueError) as exc:
         raise RabiError("rabi_phase_audit_failed") from exc
     return tuple(audits)
@@ -462,7 +460,7 @@ def _accepted_frequency(target: str, context: CircuitExecutionContext) -> bool:
 
 def _request_payload(request: RabiRequest, context: CircuitExecutionContext, parent_sha: str) -> dict[str, Any]:
     setting_id, setting = _active_setting(request.target, context)
-    return {"experiment_id": RABI_EXPERIMENT_ID, "workflow_id": RABI_SCAN_WORKFLOW_ID, "target": request.target, "axis": {"name": "amplitude_GHz", "unit": "GHz", "values": list(request.axis.amplitudes_GHz)}, "gate_sequence": ["X2P", "X2P"], "setting_selector": "active_xy2_setting", "setting_id": setting_id, "setting_hash": setting.get("setting_hash"), "parent_configuration_sha256": parent_sha, "analysis_policy_id": request.analysis_policy_id, "analysis_policy_approved": request.analysis_policy_approved, "analysis_policy_sha256": request.analysis_policy_sha256}
+    return {"experiment_id": RABI_EXPERIMENT_ID, "workflow_id": RABI_SCAN_WORKFLOW_ID, "target": request.target, "axis": {"name": "amplitude_GHz", "unit": "GHz", "values": list(request.axis.amplitudes_GHz)}, "gate_sequence": ["X2P", "X2P"], "setting_selector": "active_xy2_setting", "setting_id": setting_id, "setting_hash": setting.get("setting_hash"), "setting_amplitude_GHz": setting.get("amplitude_GHz"), "parent_configuration_sha256": parent_sha, "analysis_policy_id": request.analysis_policy_id, "analysis_policy_approved": request.analysis_policy_approved, "analysis_policy_sha256": request.analysis_policy_sha256}
 
 
 def _open_published(target: Path, request: RabiRequest, context: CircuitExecutionContext, parent_sha: str, root: Path) -> RabiRun:
