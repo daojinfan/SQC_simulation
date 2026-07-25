@@ -93,7 +93,14 @@ class RabiAnalysis:
     peak_bracket_GHz: tuple[float, float] | None
     fitted_P1: tuple[float, ...]
     dense_fit_curve: Mapping[str, tuple[float, ...]] | None = None
+    candidate_distance_to_edge_steps: int | None = None
+    candidate_leakage: float | None = None
+    max_norm_error: float | None = None
+    phase_audit_passed: bool | None = None
     reason: str | None = None
+    input_dataset_sha256: str | None = None
+    optimizer_nfev: int | None = None
+    residual_sum_squares: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +115,13 @@ class RabiAnalysis:
                 {"amplitude_GHz": list(self.dense_fit_curve["amplitude_GHz"]), "P1": list(self.dense_fit_curve["P1"])}
                 if self.dense_fit_curve is not None else None
             ),
+            "candidate_distance_to_edge_steps": self.candidate_distance_to_edge_steps,
+            "candidate_leakage": self.candidate_leakage,
+            "max_norm_error": self.max_norm_error,
+            "phase_audit_passed": self.phase_audit_passed,
+            "input_dataset_sha256": self.input_dataset_sha256,
+            "optimizer_nfev": self.optimizer_nfev,
+            "residual_sum_squares": self.residual_sum_squares,
         }
 
 
@@ -218,9 +232,10 @@ def run_qubit_rabi_scan(
     dataset = _dataset(request, batch, audits, context)
     dataset_sha = write_canonical_new(staging / "dataset.json", dataset.to_dict())
     dataset = replace(dataset, dataset_sha256=dataset_sha)
-    analysis = analyze_rabi(dataset)
+    analysis = analyze_rabi(dataset, policy=request.analysis_policy)
     setting_id, setting = _active_setting(request.target, context)
     phase_ok = bool(audits) and all(audit.get("event_count") == 2 for audit in audits)
+    analysis = replace(analysis, phase_audit_passed=phase_ok)
     eligible = bool(request.analysis_policy_approved and phase_ok and analysis.fit_converged and _accepted_frequency(request.target, context) and _policy_gates(request, dataset, analysis))
     candidates = _candidates(request, analysis, dataset_sha, setting_id, setting, eligible)
     workflow = {
@@ -250,21 +265,26 @@ def run_qubit_rabi_scan(
     return RabiRun(target, run_id, recommendation_id, _relocate_dataset(dataset, staging, target), analysis, eligible, MappingProxyType({request.target: MappingProxyType(candidates[0])}), workflow_sha, receipt_sha)
 
 
-def analyze_rabi(dataset: RabiDataset) -> RabiAnalysis:
+def analyze_rabi(dataset: RabiDataset, *, policy: Mapping[str, Any] | None = None) -> RabiAnalysis:
     """Fit the fixed-phase two-X2P first-lobe model deterministically."""
     x, y = np.asarray(dataset.amplitudes_GHz, dtype=float), np.asarray(dataset.p1, dtype=float)
     peaks = [index for index in range(1, len(y) - 1) if y[index] > y[index - 1] and y[index] >= y[index + 1]]
     if not peaks:
-        return RabiAnalysis(False, None, None, None, None, None, None, None, None, (), None, "first_peak_not_found")
+        return RabiAnalysis(False, None, None, None, None, None, None, None, None, (), None, None, None, max(dataset.norm_error), None, "first_peak_not_found", dataset.dataset_sha256)
     index = peaks[0]
     bracket = (float(x[index - 1]), float(x[index + 1]))
+    bounds = _fit_bounds(policy, bracket)
+    if bounds is None:
+        return RabiAnalysis(False, None, None, None, None, None, None, index, bracket, (), None, None, None, max(dataset.norm_error), None, "fit_bounds_do_not_intersect_peak_bracket", dataset.dataset_sha256)
     initial = _quadratic_peak(x[index - 1:index + 2], y[index - 1:index + 2], float(x[index]))
     def residual(values: np.ndarray) -> np.ndarray:
         return values[0] + values[1] * np.sin(np.pi * x / (2.0 * values[2])) ** 2 - y
     try:
-        outcome = least_squares(residual, (float(y[0]), max(float(y[index] - y[0]), 1e-12), initial), bounds=((-1.0, 0.0, bracket[0]), (1.0, 1.0, bracket[1])), method="trf", ftol=1e-12, xtol=1e-12, gtol=1e-12, max_nfev=200)
+        lower, upper = bounds
+        initial_values = np.clip((float(y[0]), max(float(y[index] - y[0]), 1e-12), initial), lower, upper)
+        outcome = least_squares(residual, initial_values, bounds=(lower, upper), method="trf", ftol=1e-12, xtol=1e-12, gtol=1e-12, max_nfev=200)
     except (ValueError, np.linalg.LinAlgError):
-        return RabiAnalysis(False, None, None, None, None, None, None, index, bracket, (), None, "fit_failed")
+        return RabiAnalysis(False, None, None, None, None, None, None, index, bracket, (), None, None, None, max(dataset.norm_error), None, "fit_failed", dataset.dataset_sha256)
     fitted = outcome.x[0] + outcome.x[1] * np.sin(np.pi * x / (2.0 * outcome.x[2])) ** 2
     rmse = float(np.sqrt(np.mean((fitted - y) ** 2)))
     scale = max(float(np.ptp(y)), 1e-12)
@@ -272,7 +292,9 @@ def analyze_rabi(dataset: RabiDataset) -> RabiAnalysis:
     dense_x = np.linspace(float(x[0]), float(x[-1]), 201, dtype=float)
     dense_y = outcome.x[0] + outcome.x[1] * np.sin(np.pi * dense_x / (2.0 * outcome.x[2])) ** 2
     curve = MappingProxyType({"amplitude_GHz": tuple(float(value) for value in dense_x), "P1": tuple(float(value) for value in dense_y)})
-    return RabiAnalysis(bool(outcome.success), float(outcome.x[0]), float(outcome.x[1]), float(outcome.x[2]), rmse, rmse / scale, 1.0 - float(np.sum((fitted-y)**2)) / ss_total if ss_total else 1.0, index, bracket, tuple(float(value) for value in fitted), curve, None if outcome.success else "fit_not_converged")
+    candidate_index = min(range(len(x)), key=lambda item: abs(float(x[item]) - float(outcome.x[2])))
+    residual_sum_squares = float(np.sum((fitted - y) ** 2))
+    return RabiAnalysis(bool(outcome.success), float(outcome.x[0]), float(outcome.x[1]), float(outcome.x[2]), rmse, rmse / scale, 1.0 - residual_sum_squares / ss_total if ss_total else 1.0, index, bracket, tuple(float(value) for value in fitted), curve, min(candidate_index, len(x) - candidate_index - 1), float(dataset.leakage[candidate_index]), max(dataset.norm_error), None, None if outcome.success else "fit_not_converged", dataset.dataset_sha256, int(outcome.nfev), residual_sum_squares)
 
 
 def verify_rabi_scan(run_root: str | Path) -> bool:
@@ -460,7 +482,7 @@ def _analysis_from_payload(row: Mapping[str, Any]) -> RabiAnalysis:
     bracket = row.get("peak_bracket_GHz")
     dense = row.get("dense_fit_curve")
     curve = MappingProxyType({"amplitude_GHz": tuple(dense["amplitude_GHz"]), "P1": tuple(dense["P1"])}) if isinstance(dense, Mapping) else None
-    return RabiAnalysis(bool(row["fit_converged"]), row.get("offset"), row.get("contrast"), row.get("x2p_amplitude_GHz"), row.get("rmse"), row.get("normalized_rmse"), row.get("r_squared"), row.get("first_peak_index"), tuple(bracket) if bracket else None, tuple(row.get("fitted_P1", ())), curve, row.get("reason"))
+    return RabiAnalysis(bool(row["fit_converged"]), row.get("offset"), row.get("contrast"), row.get("x2p_amplitude_GHz"), row.get("rmse"), row.get("normalized_rmse"), row.get("r_squared"), row.get("first_peak_index"), tuple(bracket) if bracket else None, tuple(row.get("fitted_P1", ())), curve, row.get("candidate_distance_to_edge_steps"), row.get("candidate_leakage"), row.get("max_norm_error"), row.get("phase_audit_passed"), row.get("reason"), row.get("input_dataset_sha256"), row.get("optimizer_nfev"), row.get("residual_sum_squares"))
 
 
 def _relocate_dataset(dataset: RabiDataset, source: Path, destination: Path) -> RabiDataset:
@@ -482,6 +504,26 @@ def _quadratic_peak(x: np.ndarray, y: np.ndarray, fallback: float) -> float:
         return value if math.isfinite(value) and float(x[0]) <= value <= float(x[-1]) else fallback
     except (ValueError, np.linalg.LinAlgError, ZeroDivisionError):
         return fallback
+
+
+def _fit_bounds(
+    policy: Mapping[str, Any] | None,
+    bracket: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Use approved authority bounds; diagnostics use explicit safe bounds."""
+    if isinstance(policy, Mapping) and policy.get("approved") is True:
+        source = policy["fit_parameter_bounds"]
+        offset, contrast, amplitude = (source[name] for name in ("offset", "contrast", "x2p_amplitude_GHz"))
+    else:
+        offset, contrast, amplitude = (-1.0, 1.0), (0.0, 1.0), bracket
+    amplitude_lower = max(float(amplitude[0]), bracket[0])
+    amplitude_upper = min(float(amplitude[1]), bracket[1])
+    if amplitude_lower >= amplitude_upper:
+        return None
+    return (
+        np.asarray((float(offset[0]), float(contrast[0]), amplitude_lower)),
+        np.asarray((float(offset[1]), float(contrast[1]), amplitude_upper)),
+    )
 
 
 def _validate_request(request: RabiRequest) -> None:
@@ -533,7 +575,7 @@ def _validate_policy_mapping(policy: Mapping[str, Any]) -> None:
     if not isinstance(bounds, Mapping) or set(bounds) != {"offset", "contrast", "x2p_amplitude_GHz"}:
         raise RabiError("approved rabi analysis policy fit bounds are invalid")
     for name, pair in bounds.items():
-        if not isinstance(pair, list) or len(pair) != 2 or not all(_finite(value) for value in pair) or pair[0] > pair[1] or (name in {"offset", "contrast"} and not 0.0 <= pair[0] <= pair[1] <= 1.0) or (name == "x2p_amplitude_GHz" and pair[0] < 0.0):
+        if not isinstance(pair, list) or len(pair) != 2 or not all(_finite(value) for value in pair) or pair[0] >= pair[1] or (name in {"offset", "contrast"} and not 0.0 <= pair[0] < pair[1] <= 1.0) or (name == "x2p_amplitude_GHz" and pair[0] < 0.0):
             raise RabiError("approved rabi analysis policy fit bounds are invalid")
 
 
@@ -542,7 +584,6 @@ def _policy_gates(request: RabiRequest, dataset: RabiDataset, analysis: RabiAnal
     if not isinstance(policy, Mapping) or not policy.get("approved") or analysis.first_peak_index is None or analysis.x2p_amplitude_GHz is None or analysis.offset is None or analysis.contrast is None or analysis.r_squared is None or analysis.normalized_rmse is None:
         return False
     peak = analysis.first_peak_index
-    candidate = min(range(len(dataset.amplitudes_GHz)), key=lambda index: abs(dataset.amplitudes_GHz[index] - analysis.x2p_amplitude_GHz))
     bounds = policy["fit_parameter_bounds"]
     return bool(
         len(dataset.amplitudes_GHz) >= int(policy["minimum_point_count"])
@@ -551,9 +592,9 @@ def _policy_gates(request: RabiRequest, dataset: RabiDataset, analysis: RabiAnal
         and analysis.contrast >= float(policy["minimum_contrast"])
         and analysis.r_squared >= float(policy["minimum_r_squared"])
         and analysis.normalized_rmse <= float(policy["maximum_normalized_rmse"])
-        and dataset.leakage[candidate] <= float(policy["maximum_candidate_leakage"])
-        and max(dataset.norm_error) <= float(policy["maximum_norm_error"])
-        and min(candidate, len(dataset.amplitudes_GHz) - candidate - 1) >= int(policy["minimum_edge_guard_steps"])
+        and analysis.candidate_leakage is not None and analysis.candidate_leakage <= float(policy["maximum_candidate_leakage"])
+        and analysis.max_norm_error is not None and analysis.max_norm_error <= float(policy["maximum_norm_error"])
+        and analysis.candidate_distance_to_edge_steps is not None and analysis.candidate_distance_to_edge_steps >= int(policy["minimum_edge_guard_steps"])
         and float(bounds["offset"][0]) <= analysis.offset <= float(bounds["offset"][1])
         and float(bounds["contrast"][0]) <= analysis.contrast <= float(bounds["contrast"][1])
         and float(bounds["x2p_amplitude_GHz"][0]) <= analysis.x2p_amplitude_GHz <= float(bounds["x2p_amplitude_GHz"][1])

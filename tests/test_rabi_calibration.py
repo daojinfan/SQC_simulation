@@ -48,6 +48,10 @@ def test_approved_policy_requires_complete_integer_thresholds_and_bounds():
     }
     with pytest.raises(RabiError, match="integer"):
         rabi._validate_policy_mapping(malformed)
+    malformed["minimum_point_count"] = 3
+    malformed["fit_parameter_bounds"]["contrast"] = [0.5, 0.5]
+    with pytest.raises(RabiError, match="fit bounds"):
+        rabi._validate_policy_mapping(malformed)
 
 
 @pytest.mark.parametrize(
@@ -75,6 +79,26 @@ def test_rabi_analysis_fits_first_peak_and_builds_common_candidate():
     normalized = normalize_calibration_candidate(candidate)
     assert normalized["candidate_type"] == "xy2_amplitude"
     assert normalized["changes"][0]["parameter_path"] == "calibration_values.waveform_registry.settings.q1_xy2.amplitude_GHz"
+
+
+def test_approved_policy_bounds_drive_fit_and_analysis_payload_round_trips():
+    from sqvm.calibration import rabi
+    amplitudes = tuple(index * 0.01 for index in range(11))
+    p1 = tuple(0.03 + 0.8 * __import__("math").sin(__import__("math").pi * value / 0.1) ** 2 for value in amplitudes)
+    batch = CircuitBatchHandle("00000000-0000-4000-8000-000000000000", __import__("pathlib").Path("."), "A" * 64, "B" * 64, "completed", 1, 0, (), {})
+    from sqvm.calibration.rabi import RabiDataset
+    dataset = RabiDataset("Q1", amplitudes, tuple(1 - value for value in p1), p1, (0.01,) * 11, (0.0,) * 11, (), "C" * 64, batch)
+    policy = {"approved": True, "fit_parameter_bounds": {"offset": [0.0, 0.1], "contrast": [0.7, 0.9], "x2p_amplitude_GHz": [0.045, 0.055]}}
+    analysis = analyze_rabi(dataset, policy=policy)
+    assert analysis.fit_converged
+    assert 0.045 <= analysis.x2p_amplitude_GHz <= 0.055
+    assert analysis.input_dataset_sha256 == "C" * 64
+    assert analysis.optimizer_nfev is not None
+    assert analysis.residual_sum_squares is not None
+    restored = rabi._analysis_from_payload(analysis.to_dict())
+    assert restored.to_dict() == analysis.to_dict()
+    impossible = {"approved": True, "fit_parameter_bounds": {**policy["fit_parameter_bounds"], "x2p_amplitude_GHz": [0.07, 0.08]}}
+    assert analyze_rabi(dataset, policy=impossible).reason == "fit_bounds_do_not_intersect_peak_bracket"
 
 
 def test_rabi_publishes_and_replays_same_operation_without_second_batch(monkeypatch, tmp_path):
