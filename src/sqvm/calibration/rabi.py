@@ -23,6 +23,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from sqvm.candidate_protocol import calibration_candidate, parameter_change
+from sqvm.calibration.rabi_phase import RabiPhaseAuditError, audit_two_x2p_phase
 from sqvm.circuits import CircuitExecutionContext, CircuitExecutionProfile, QCISCircuit, compile_circuit
 from sqvm.qcis.canonical import canonical_float, canonical_json_bytes, sha256_json
 from sqvm.runtime.batch import CircuitBatchHandle, run_circuit_batch
@@ -34,6 +35,7 @@ from sqvm.runtime.storage import write_canonical_new
 
 RABI_EXPERIMENT_ID = "qubit_rabi_x2p_amplitude_v1"
 RABI_SCAN_WORKFLOW_ID = "qubit_rabi_x2p_amplitude_scan_v1"
+RABI_POLICY_PATH = "configs/calibration/rabi_x2p_analysis_policy_v1.json"
 
 
 class RabiError(ValueError):
@@ -52,6 +54,8 @@ class RabiRequest:
     axis: RabiAmplitudeAxis
     analysis_policy_id: str = "rabi_x2p_pilot_v1"
     analysis_policy_approved: bool = False
+    analysis_policy_sha256: str | None = None
+    analysis_policy: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +92,7 @@ class RabiAnalysis:
     first_peak_index: int | None
     peak_bracket_GHz: tuple[float, float] | None
     fitted_P1: tuple[float, ...]
+    dense_fit_curve: Mapping[str, tuple[float, ...]] | None = None
     reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -99,6 +104,10 @@ class RabiAnalysis:
             "r_squared": self.r_squared, "first_peak_index": self.first_peak_index,
             "peak_bracket_GHz": list(self.peak_bracket_GHz) if self.peak_bracket_GHz else None,
             "fitted_P1": list(self.fitted_P1), "reason": self.reason,
+            "dense_fit_curve": (
+                {"amplitude_GHz": list(self.dense_fit_curve["amplitude_GHz"]), "P1": list(self.dense_fit_curve["P1"])}
+                if self.dense_fit_curve is not None else None
+            ),
         }
 
 
@@ -169,8 +178,9 @@ def run_qubit_rabi_scan(
     phase_auditor: PhaseAuditor | None = None,
 ) -> RabiRun:
     """Run, resume, or replay one immutable X2P amplitude scan."""
-    _validate_request(request)
     root = _root(repository_root)
+    request = _bind_policy(request, root)
+    _validate_request(request)
     target = _inside(output_root, root, "rabi output")
     parent = _inside(parent_configuration_path, root, "parent configuration")
     if not parent.is_file():
@@ -186,15 +196,16 @@ def run_qubit_rabi_scan(
         return _open_published(target, request, context, parent_sha, root)
     _validate_context_binding(request, context)
     circuits = build_rabi_circuits(request)
-    audits = _phase_audits(circuits, context, phase_auditor)
-    # A supplied auditor fails closed.  Until the dedicated phase-audit module
-    # is installed, diagnostics may run but the pending audit keeps candidates
-    # ineligible; it is not silently treated as a passed audit.
-    if any(audit.get("passed") is False for audit in audits):
-        raise RabiError("rabi_phase_audit_failed")
+    # All static Rabi checks complete before Runtime is allowed to start any
+    # point. Stage 4.1 validates the effective global schedule generically.
     # It is part of batch metadata, so it must remain stable across a resumed
     # operation even when no completed workflow has been published yet.
     recommendation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{RABI_SCAN_WORKFLOW_ID}:{run_id}"))
+    audits = _static_phase_audits(circuits, context, request.axis.amplitudes_GHz)
+    if phase_auditor is not None:
+        supplied = _phase_audits(circuits, context, phase_auditor)
+        if any(audit.get("passed") is False for audit in supplied):
+            raise RabiError("rabi_phase_audit_failed")
     batch = run_circuit_batch(
         circuits, context, staging / "execution", root, batch_id=run_id,
         experiment_request=_request_payload(request, context, parent_sha),
@@ -209,8 +220,8 @@ def run_qubit_rabi_scan(
     dataset = replace(dataset, dataset_sha256=dataset_sha)
     analysis = analyze_rabi(dataset)
     setting_id, setting = _active_setting(request.target, context)
-    phase_ok = all(audit.get("passed") is True for audit in audits)
-    eligible = bool(request.analysis_policy_approved and phase_ok and analysis.fit_converged and _accepted_frequency(request.target, context))
+    phase_ok = bool(audits) and all(audit.get("event_count") == 2 for audit in audits)
+    eligible = bool(request.analysis_policy_approved and phase_ok and analysis.fit_converged and _accepted_frequency(request.target, context) and _policy_gates(request, dataset, analysis))
     candidates = _candidates(request, analysis, dataset_sha, setting_id, setting, eligible)
     workflow = {
         "schema_version": "0.1", "artifact_type": "qubit_rabi_x2p_amplitude_scan", "artifact_version": "0.1",
@@ -218,14 +229,21 @@ def run_qubit_rabi_scan(
         "status": "completed", "parent_configuration": {"path": parent.relative_to(root).as_posix(), "sha256": parent_sha, "snapshot_id": context.platform_snapshot_id},
         "request": _request_payload(request, context, parent_sha),
         "dataset": {"path": "dataset.json", "sha256": dataset_sha}, "runtime_batch": batch.to_dict(),
-        "analysis": analysis.to_dict(), "phase_audit": {"passed": phase_ok, "implementation": "external" if phase_auditor else "pending_external"},
+        "analysis": analysis.to_dict(), "phase_audit": {"passed": phase_ok, "implementation": "rabi_x2p_phase_v1"},
         "recommendation_eligible": eligible, "candidates": candidates, "archive_eligible": True,
         "claim": {"evidence_class": "model_calibration_simulation", "physics_claim": "model_derived_only", "hardware_measurement": False, "execution_profile": execution_profile.value, "recommendation_eligible": eligible},
     }
     workflow_sha = write_canonical_new(staging / "workflow.json", workflow)
-    receipt = {"artifact_type": "rabi_scan_receipt", "run_id": run_id, "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha, "recommendation_id": recommendation_id}
+    receipt = {
+        "artifact_type": "rabi_scan_receipt", "status": "completed",
+        "run_id": run_id, "workflow_sha256": workflow_sha,
+        "dataset_sha256": dataset_sha, "recommendation_id": recommendation_id,
+    }
     receipt_sha = write_canonical_new(staging / "receipt.json", receipt)
-    write_canonical_new(staging / "verification_report.json", {"status": "passed", "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha})
+    write_canonical_new(staging / "verification_report.json", {
+        "ok": True, "status": "completed", "run_id": run_id,
+        "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha,
+    })
     write_canonical_new(staging / "manifest.json", {"artifact_type": "rabi_scan_manifest", "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha, "receipt_sha256": receipt_sha})
     verify_rabi_scan(staging)
     publish_calibration_directory(staging, target)
@@ -237,7 +255,7 @@ def analyze_rabi(dataset: RabiDataset) -> RabiAnalysis:
     x, y = np.asarray(dataset.amplitudes_GHz, dtype=float), np.asarray(dataset.p1, dtype=float)
     peaks = [index for index in range(1, len(y) - 1) if y[index] > y[index - 1] and y[index] >= y[index + 1]]
     if not peaks:
-        return RabiAnalysis(False, None, None, None, None, None, None, None, None, (), "first_peak_not_found")
+        return RabiAnalysis(False, None, None, None, None, None, None, None, None, (), None, "first_peak_not_found")
     index = peaks[0]
     bracket = (float(x[index - 1]), float(x[index + 1]))
     initial = _quadratic_peak(x[index - 1:index + 2], y[index - 1:index + 2], float(x[index]))
@@ -246,12 +264,15 @@ def analyze_rabi(dataset: RabiDataset) -> RabiAnalysis:
     try:
         outcome = least_squares(residual, (float(y[0]), max(float(y[index] - y[0]), 1e-12), initial), bounds=((-1.0, 0.0, bracket[0]), (1.0, 1.0, bracket[1])), method="trf", ftol=1e-12, xtol=1e-12, gtol=1e-12, max_nfev=200)
     except (ValueError, np.linalg.LinAlgError):
-        return RabiAnalysis(False, None, None, None, None, None, None, index, bracket, (), "fit_failed")
+        return RabiAnalysis(False, None, None, None, None, None, None, index, bracket, (), None, "fit_failed")
     fitted = outcome.x[0] + outcome.x[1] * np.sin(np.pi * x / (2.0 * outcome.x[2])) ** 2
     rmse = float(np.sqrt(np.mean((fitted - y) ** 2)))
     scale = max(float(np.ptp(y)), 1e-12)
     ss_total = float(np.sum((y - np.mean(y)) ** 2))
-    return RabiAnalysis(bool(outcome.success), float(outcome.x[0]), float(outcome.x[1]), float(outcome.x[2]), rmse, rmse / scale, 1.0 - float(np.sum((fitted-y)**2)) / ss_total if ss_total else 1.0, index, bracket, tuple(float(value) for value in fitted), None if outcome.success else "fit_not_converged")
+    dense_x = np.linspace(float(x[0]), float(x[-1]), 201, dtype=float)
+    dense_y = outcome.x[0] + outcome.x[1] * np.sin(np.pi * dense_x / (2.0 * outcome.x[2])) ** 2
+    curve = MappingProxyType({"amplitude_GHz": tuple(float(value) for value in dense_x), "P1": tuple(float(value) for value in dense_y)})
+    return RabiAnalysis(bool(outcome.success), float(outcome.x[0]), float(outcome.x[1]), float(outcome.x[2]), rmse, rmse / scale, 1.0 - float(np.sum((fitted-y)**2)) / ss_total if ss_total else 1.0, index, bracket, tuple(float(value) for value in fitted), curve, None if outcome.success else "fit_not_converged")
 
 
 def verify_rabi_scan(run_root: str | Path) -> bool:
@@ -259,11 +280,30 @@ def verify_rabi_scan(run_root: str | Path) -> bool:
     try:
         workflow = _load(root / "workflow.json")
         dataset = _load(root / "dataset.json")
+        receipt = _load(root / "receipt.json")
+        report = _load(root / "verification_report.json")
     except OSError as exc:
         raise RabiError("cannot read rabi scan artifact") from exc
     if workflow.get("workflow_id") != RABI_SCAN_WORKFLOW_ID:
         raise RabiError("rabi workflow identity is invalid")
-    if _raw_sha(root / "dataset.json") != workflow.get("dataset", {}).get("sha256"):
+    workflow_sha = _raw_sha(root / "workflow.json")
+    run_id = workflow.get("run_id")
+    recommendation_id = workflow.get("recommendation_id")
+    dataset_sha = _raw_sha(root / "dataset.json")
+    expected_receipt = {
+        "artifact_type": "rabi_scan_receipt", "status": "completed",
+        "run_id": run_id, "workflow_sha256": workflow_sha,
+        "dataset_sha256": dataset_sha, "recommendation_id": recommendation_id,
+    }
+    expected_report = {
+        "ok": True, "status": "completed", "run_id": run_id,
+        "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha,
+    }
+    if receipt != expected_receipt:
+        raise RabiError("rabi receipt binding is invalid")
+    if report != expected_report:
+        raise RabiError("rabi verification report binding is invalid")
+    if dataset_sha != workflow.get("dataset", {}).get("sha256"):
         raise RabiError("rabi dataset hash mismatch")
     axis = dataset.get("axis", {}).get("values")
     series = dataset.get("series", {}).get(dataset.get("target"), {})
@@ -271,6 +311,17 @@ def verify_rabi_scan(run_root: str | Path) -> bool:
         raise RabiError("rabi dataset columns are invalid")
     if len(dataset.get("points", [])) != len(axis):
         raise RabiError("rabi dataset points are invalid")
+    if not axis or axis[0] != 0.0 or any(not _finite(value) for value in axis) or any(left >= right for left, right in zip(axis, axis[1:])):
+        raise RabiError("rabi dataset axis is invalid")
+    for name in ("P0", "P1", "leakage"):
+        if any(not _finite(value) or not 0.0 <= float(value) <= 1.0 for value in series[name]):
+            raise RabiError("rabi dataset probability is invalid")
+    if any(not _finite(value) or float(value) < 0.0 for value in series["norm_error"]):
+        raise RabiError("rabi dataset norm error is invalid")
+    for index, point in enumerate(dataset["points"]):
+        audit = point.get("phase_audit") if isinstance(point, Mapping) else None
+        if not isinstance(point, Mapping) or point.get("point_index") != index or not isinstance(point.get("circuit_id"), str) or not point["circuit_id"] or not isinstance(audit, Mapping) or audit.get("event_count") != 2:
+            raise RabiError("rabi dataset point alignment is invalid")
     return True
 
 
@@ -322,6 +373,30 @@ def _phase_audits(circuits: Sequence[QCISCircuit], context: CircuitExecutionCont
     return tuple(audits)
 
 
+def _static_phase_audits(circuits: Sequence[QCISCircuit], context: CircuitExecutionContext, amplitudes: Sequence[float]) -> tuple[Mapping[str, Any], ...]:
+    """Audit every precompiled Rabi point before Runtime may start a worker.
+
+    Stage 4.1's effective global schedule remains validated by its generic
+    verifier during control publication; this static audit deliberately does
+    not invent an electronics receipt before that artifact exists.
+    """
+    audits = []
+    try:
+        for circuit, amplitude in zip(circuits, amplitudes, strict=True):
+            compilation = compile_circuit(circuit, context).compilation
+            source_operations = {int(step["index"]): str(step["op"]) for step in compilation.plan.trace["steps"]}
+            audit = audit_two_x2p_phase(
+                compilation.plan.drive_event_inventory,
+                amplitude_GHz=float(amplitude), dt_ns=float(compilation.plan.dt_ns),
+                logical_sample_count=int(compilation.q1_xy.size), electronics_schedule=None,
+                source_operations=source_operations, require_electronics_schedule=False,
+            )
+            audits.append(MappingProxyType(audit.to_dict()))
+    except (RabiPhaseAuditError, KeyError, TypeError, IndexError, ValueError) as exc:
+        raise RabiError("rabi_phase_audit_failed") from exc
+    return tuple(audits)
+
+
 def _candidates(request: RabiRequest, analysis: RabiAnalysis, dataset_sha: str, setting_id: str, setting: Mapping[str, Any], eligible: bool) -> list[dict[str, Any]]:
     proposed = analysis.x2p_amplitude_GHz
     if proposed is None:
@@ -365,7 +440,7 @@ def _accepted_frequency(target: str, context: CircuitExecutionContext) -> bool:
 
 def _request_payload(request: RabiRequest, context: CircuitExecutionContext, parent_sha: str) -> dict[str, Any]:
     setting_id, setting = _active_setting(request.target, context)
-    return {"experiment_id": RABI_EXPERIMENT_ID, "workflow_id": RABI_SCAN_WORKFLOW_ID, "target": request.target, "axis": {"name": "amplitude_GHz", "unit": "GHz", "values": list(request.axis.amplitudes_GHz)}, "gate_sequence": ["X2P", "X2P"], "setting_selector": "active_xy2_setting", "setting_id": setting_id, "setting_hash": setting.get("setting_hash"), "parent_configuration_sha256": parent_sha, "analysis_policy_id": request.analysis_policy_id, "analysis_policy_approved": request.analysis_policy_approved}
+    return {"experiment_id": RABI_EXPERIMENT_ID, "workflow_id": RABI_SCAN_WORKFLOW_ID, "target": request.target, "axis": {"name": "amplitude_GHz", "unit": "GHz", "values": list(request.axis.amplitudes_GHz)}, "gate_sequence": ["X2P", "X2P"], "setting_selector": "active_xy2_setting", "setting_id": setting_id, "setting_hash": setting.get("setting_hash"), "parent_configuration_sha256": parent_sha, "analysis_policy_id": request.analysis_policy_id, "analysis_policy_approved": request.analysis_policy_approved, "analysis_policy_sha256": request.analysis_policy_sha256}
 
 
 def _open_published(target: Path, request: RabiRequest, context: CircuitExecutionContext, parent_sha: str, root: Path) -> RabiRun:
@@ -383,11 +458,22 @@ def _open_published(target: Path, request: RabiRequest, context: CircuitExecutio
 
 def _analysis_from_payload(row: Mapping[str, Any]) -> RabiAnalysis:
     bracket = row.get("peak_bracket_GHz")
-    return RabiAnalysis(bool(row["fit_converged"]), row.get("offset"), row.get("contrast"), row.get("x2p_amplitude_GHz"), row.get("rmse"), row.get("normalized_rmse"), row.get("r_squared"), row.get("first_peak_index"), tuple(bracket) if bracket else None, tuple(row.get("fitted_P1", ())), row.get("reason"))
+    dense = row.get("dense_fit_curve")
+    curve = MappingProxyType({"amplitude_GHz": tuple(dense["amplitude_GHz"]), "P1": tuple(dense["P1"])}) if isinstance(dense, Mapping) else None
+    return RabiAnalysis(bool(row["fit_converged"]), row.get("offset"), row.get("contrast"), row.get("x2p_amplitude_GHz"), row.get("rmse"), row.get("normalized_rmse"), row.get("r_squared"), row.get("first_peak_index"), tuple(bracket) if bracket else None, tuple(row.get("fitted_P1", ())), curve, row.get("reason"))
 
 
 def _relocate_dataset(dataset: RabiDataset, source: Path, destination: Path) -> RabiDataset:
-    return dataset
+    source_execution = source / "execution"
+    target_execution = destination / "execution"
+    def relocated(path: Path) -> Path:
+        try:
+            return target_execution / path.relative_to(source_execution)
+        except ValueError:
+            return path
+    results = tuple(replace(result, evidence_root=relocated(result.evidence_root), model_evidence_root=relocated(result.model_evidence_root)) for result in dataset.runtime_batch.results)
+    batch = replace(dataset.runtime_batch, root=target_execution, results=results)
+    return replace(dataset, runtime_batch=batch)
 
 
 def _quadratic_peak(x: np.ndarray, y: np.ndarray, fallback: float) -> float:
@@ -404,6 +490,74 @@ def _validate_request(request: RabiRequest) -> None:
     values = request.axis.amplitudes_GHz
     if len(values) > 64 or values[0] != 0.0 or any(not _finite(value) for value in values) or any(left >= right for left, right in zip(values, values[1:])):
         raise RabiError("rabi amplitude axis is invalid")
+
+
+def load_rabi_analysis_policy(repository_root: str | Path | None = None) -> Mapping[str, Any]:
+    """Load the versioned analysis authority; pilot policies disable all gates."""
+    root = _root(repository_root)
+    policy = _load(root / RABI_POLICY_PATH)
+    _validate_policy_mapping(policy)
+    return MappingProxyType(policy)
+
+
+def _bind_policy(request: RabiRequest, root: Path) -> RabiRequest:
+    if request.analysis_policy is None:
+        policy = load_rabi_analysis_policy(root)
+        digest = _raw_sha(root / RABI_POLICY_PATH)
+    else:
+        # Keep test/private callers subject to the same schema as file-backed policy.
+        policy = MappingProxyType(dict(request.analysis_policy))
+        digest = sha256_json(dict(policy))
+        _validate_policy_mapping(policy)
+    if request.analysis_policy_sha256 is not None and request.analysis_policy_sha256 != digest:
+        raise RabiError("rabi analysis policy hash differs")
+    return replace(request, analysis_policy_id=policy["policy_id"], analysis_policy_approved=policy["approved"], analysis_policy_sha256=digest, analysis_policy=policy)
+
+
+def _validate_policy_mapping(policy: Mapping[str, Any]) -> None:
+    thresholds = ("minimum_point_count", "minimum_points_before_peak", "minimum_points_after_peak", "minimum_contrast", "minimum_r_squared", "maximum_normalized_rmse", "maximum_candidate_leakage", "maximum_norm_error", "minimum_edge_guard_steps")
+    required = {"schema_version", "policy_id", "approved", "fit_parameter_bounds", *thresholds}
+    if set(policy) != required or policy.get("schema_version") != "0.1" or not isinstance(policy.get("policy_id"), str) or not policy["policy_id"].strip() or type(policy.get("approved")) is not bool:
+        raise RabiError("rabi analysis policy is invalid")
+    if not policy["approved"]:
+        if any(policy[name] is not None for name in thresholds) or policy["fit_parameter_bounds"] is not None:
+            raise RabiError("unapproved rabi analysis policy must disable thresholds")
+        return
+    integer_names = ("minimum_point_count", "minimum_points_before_peak", "minimum_points_after_peak", "minimum_edge_guard_steps")
+    if any(type(policy[name]) is not int or policy[name] < 0 for name in integer_names) or policy["minimum_point_count"] < 3:
+        raise RabiError("approved rabi analysis policy integer thresholds are invalid")
+    unit_names = ("minimum_contrast", "minimum_r_squared", "maximum_candidate_leakage")
+    if any(not _finite(policy[name]) or not 0.0 <= float(policy[name]) <= 1.0 for name in unit_names) or not _finite(policy["maximum_normalized_rmse"]) or float(policy["maximum_normalized_rmse"]) < 0.0 or not _finite(policy["maximum_norm_error"]) or float(policy["maximum_norm_error"]) < 0.0:
+        raise RabiError("approved rabi analysis policy thresholds are invalid")
+    bounds = policy["fit_parameter_bounds"]
+    if not isinstance(bounds, Mapping) or set(bounds) != {"offset", "contrast", "x2p_amplitude_GHz"}:
+        raise RabiError("approved rabi analysis policy fit bounds are invalid")
+    for name, pair in bounds.items():
+        if not isinstance(pair, list) or len(pair) != 2 or not all(_finite(value) for value in pair) or pair[0] > pair[1] or (name in {"offset", "contrast"} and not 0.0 <= pair[0] <= pair[1] <= 1.0) or (name == "x2p_amplitude_GHz" and pair[0] < 0.0):
+            raise RabiError("approved rabi analysis policy fit bounds are invalid")
+
+
+def _policy_gates(request: RabiRequest, dataset: RabiDataset, analysis: RabiAnalysis) -> bool:
+    policy = request.analysis_policy
+    if not isinstance(policy, Mapping) or not policy.get("approved") or analysis.first_peak_index is None or analysis.x2p_amplitude_GHz is None or analysis.offset is None or analysis.contrast is None or analysis.r_squared is None or analysis.normalized_rmse is None:
+        return False
+    peak = analysis.first_peak_index
+    candidate = min(range(len(dataset.amplitudes_GHz)), key=lambda index: abs(dataset.amplitudes_GHz[index] - analysis.x2p_amplitude_GHz))
+    bounds = policy["fit_parameter_bounds"]
+    return bool(
+        len(dataset.amplitudes_GHz) >= int(policy["minimum_point_count"])
+        and peak >= int(policy["minimum_points_before_peak"])
+        and len(dataset.amplitudes_GHz) - peak - 1 >= int(policy["minimum_points_after_peak"])
+        and analysis.contrast >= float(policy["minimum_contrast"])
+        and analysis.r_squared >= float(policy["minimum_r_squared"])
+        and analysis.normalized_rmse <= float(policy["maximum_normalized_rmse"])
+        and dataset.leakage[candidate] <= float(policy["maximum_candidate_leakage"])
+        and max(dataset.norm_error) <= float(policy["maximum_norm_error"])
+        and min(candidate, len(dataset.amplitudes_GHz) - candidate - 1) >= int(policy["minimum_edge_guard_steps"])
+        and float(bounds["offset"][0]) <= analysis.offset <= float(bounds["offset"][1])
+        and float(bounds["contrast"][0]) <= analysis.contrast <= float(bounds["contrast"][1])
+        and float(bounds["x2p_amplitude_GHz"][0]) <= analysis.x2p_amplitude_GHz <= float(bounds["x2p_amplitude_GHz"][1])
+    )
 
 
 def _decimal(value: Any, label: str) -> Decimal:
@@ -451,4 +605,4 @@ def _load(path: Path) -> dict[str, Any]:
     return value
 
 
-__all__ = ["RABI_EXPERIMENT_ID", "RABI_SCAN_WORKFLOW_ID", "RabiAmplitudeAxis", "RabiAnalysis", "RabiDataset", "RabiError", "RabiRequest", "RabiRun", "amplitude_axis", "analyze_rabi", "build_rabi_circuits", "run_qubit_rabi_scan", "verify_rabi_scan"]
+__all__ = ["RABI_EXPERIMENT_ID", "RABI_POLICY_PATH", "RABI_SCAN_WORKFLOW_ID", "RabiAmplitudeAxis", "RabiAnalysis", "RabiDataset", "RabiError", "RabiRequest", "RabiRun", "amplitude_axis", "analyze_rabi", "build_rabi_circuits", "load_rabi_analysis_policy", "run_qubit_rabi_scan", "verify_rabi_scan"]

@@ -1,0 +1,15 @@
+{
+  "approved": false,
+  "fit_parameter_bounds": null,
+  "maximum_candidate_leakage": null,
+  "maximum_norm_error": null,
+  "maximum_normalized_rmse": null,
+  "minimum_contrast": null,
+  "minimum_edge_guard_steps": null,
+  "minimum_point_count": null,
+  "minimum_points_after_peak": null,
+  "minimum_points_before_peak": null,
+  "minimum_r_squared": null,
+  "policy_id": "rabi_x2p_pilot_v1",
+  "schema_version": "0.1"
+}

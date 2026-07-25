@@ -108,12 +108,15 @@ class RabiPhaseAudit:
     lab_phase_advance_unwrapped_rad: float
     lab_phase_advance_wrapped_rad: float
     absolute_start_time_ns: tuple[float, float]
-    electronics_schedule: RabiElectronicsScheduleProof
+    electronics_schedule: RabiElectronicsScheduleProof | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "event_count": self.event_count,
             "intervals": [self.first_interval.to_dict(), self.second_interval.to_dict()],
+            "first_start_sample": self.first_interval.start_sample,
+            "second_start_sample": self.second_interval.start_sample,
+            "length_samples": self.first_interval.end_sample - self.first_interval.start_sample,
             "setting_hashes": [self.first_interval.setting_hash, self.second_interval.setting_hash],
             "amplitude_GHz": self.amplitude_GHz,
             "phase_total_rad": self.phase_total_rad,
@@ -125,7 +128,7 @@ class RabiPhaseAudit:
             "lab_phase_advance_unwrapped_rad": self.lab_phase_advance_unwrapped_rad,
             "lab_phase_advance_wrapped_rad": self.lab_phase_advance_wrapped_rad,
             "absolute_start_time_ns": list(self.absolute_start_time_ns),
-            "electronics_schedule": self.electronics_schedule.to_dict(),
+            "electronics_schedule": self.electronics_schedule.to_dict() if self.electronics_schedule else None,
         }
 
 
@@ -135,8 +138,9 @@ def audit_two_x2p_phase(
     amplitude_GHz: float,
     dt_ns: float,
     logical_sample_count: int,
-    electronics_schedule: RabiElectronicsScheduleProof,
+    electronics_schedule: RabiElectronicsScheduleProof | None,
     source_operations: Mapping[int, str],
+    require_electronics_schedule: bool = True,
 ) -> RabiPhaseAudit:
     """Validate absolute rotating/lab phase rules for exactly two X2P events.
 
@@ -145,11 +149,14 @@ def audit_two_x2p_phase(
     compiler's immutable event evidence stores setting identity, not its full record.
     """
 
-    if not math.isfinite(amplitude_GHz) or amplitude_GHz <= 0.0:
-        raise RabiPhaseAuditError("amplitude_GHz must be finite and positive")
+    if not math.isfinite(amplitude_GHz) or amplitude_GHz < 0.0:
+        raise RabiPhaseAuditError("amplitude_GHz must be finite and nonnegative")
     if not math.isfinite(dt_ns) or dt_ns <= 0.0 or type(logical_sample_count) is not int or logical_sample_count <= 0:
         raise RabiPhaseAuditError("logical clock evidence is invalid")
-    _validate_electronics_proof(electronics_schedule, logical_sample_count, dt_ns)
+    if require_electronics_schedule:
+        _validate_electronics_proof(electronics_schedule, logical_sample_count, dt_ns)
+    elif electronics_schedule is not None:
+        raise RabiPhaseAuditError("static phase audit must not fabricate electronics evidence")
     if len(drive_events) != 2:
         raise RabiPhaseAuditError("exactly two drive events are required")
 

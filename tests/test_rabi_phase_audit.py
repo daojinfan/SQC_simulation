@@ -58,6 +58,17 @@ def test_integer_carrier_cycles_are_valid_even_when_wrapped_lab_advance_is_zero(
     assert audit.lab_phase_advance_wrapped_rad == pytest.approx(0.0)
     assert audit.absolute_start_time_ns == pytest.approx((0.25, 1.25))
     assert audit.to_dict()["electronics_schedule"]["application_count"] == 1
+    assert audit.to_dict()["first_start_sample"] == 0
+    assert audit.to_dict()["second_start_sample"] == 2
+    assert audit.to_dict()["length_samples"] == 2
+
+
+def test_zero_amplitude_is_a_valid_first_lobe_endpoint_but_negative_is_rejected():
+    events = [_event(0, count=2), _event(2, count=2)]
+    audit = audit_two_x2p_phase(events, amplitude_GHz=0.0, dt_ns=0.5, logical_sample_count=6, electronics_schedule=_proof(), source_operations=_source_ops(events))
+    assert audit.amplitude_GHz == 0.0
+    with pytest.raises(RabiPhaseAuditError, match="nonnegative"):
+        audit_two_x2p_phase(events, amplitude_GHz=-0.001, dt_ns=0.5, logical_sample_count=6, electronics_schedule=_proof(), source_operations=_source_ops(events))
 
 
 @pytest.mark.parametrize("detuning", (-0.2, 0.2))

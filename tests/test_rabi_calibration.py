@@ -11,6 +11,7 @@ from sqvm.calibration.rabi import (
     amplitude_axis,
     analyze_rabi,
     build_rabi_circuits,
+    load_rabi_analysis_policy,
 )
 from sqvm.candidate_protocol import normalize_calibration_candidate
 from sqvm.runtime.batch import CircuitBatchHandle
@@ -25,6 +26,28 @@ def test_rabi_circuits_are_exact_set_then_two_x2p_without_plsxy():
         "SET Q1 setting.active_xy2_setting.amplitude_GHz 0.05\nX2P Q1\nX2P Q1\n"
     )
     assert "PLSXY" not in circuits[1].source
+
+
+def test_default_rabi_analysis_policy_is_versioned_and_disables_pilot_candidates():
+    policy = load_rabi_analysis_policy()
+    assert policy["policy_id"] == "rabi_x2p_pilot_v1"
+    assert policy["approved"] is False
+    assert policy["minimum_contrast"] is None
+
+
+def test_approved_policy_requires_complete_integer_thresholds_and_bounds():
+    from sqvm.calibration import rabi
+    malformed = {
+        "schema_version": "0.1", "policy_id": "approved", "approved": True,
+        "minimum_point_count": 3.0, "minimum_points_before_peak": 1,
+        "minimum_points_after_peak": 1, "minimum_contrast": 0.1,
+        "minimum_r_squared": 0.9, "maximum_normalized_rmse": 0.1,
+        "maximum_candidate_leakage": 0.1, "maximum_norm_error": 0.1,
+        "minimum_edge_guard_steps": 1,
+        "fit_parameter_bounds": {"offset": [0.0, 1.0], "contrast": [0.0, 1.0], "x2p_amplitude_GHz": [0.0, 1.0]},
+    }
+    with pytest.raises(RabiError, match="integer"):
+        rabi._validate_policy_mapping(malformed)
 
 
 @pytest.mark.parametrize(
@@ -46,6 +69,8 @@ def test_rabi_analysis_fits_first_peak_and_builds_common_candidate():
     analysis = analyze_rabi(dataset)
     assert analysis.fit_converged
     assert analysis.x2p_amplitude_GHz == pytest.approx(0.05, abs=1e-8)
+    assert len(analysis.dense_fit_curve["amplitude_GHz"]) == 201
+    assert len(analysis.dense_fit_curve["P1"]) == 201
     candidate = _candidates(RabiRequest("Q1", amplitude_axis((0, 0.1), 0.01, "Q1")), analysis, "D" * 64, "q1_xy2", {"amplitude_GHz": 0.02}, True)[0]
     normalized = normalize_calibration_candidate(candidate)
     assert normalized["candidate_type"] == "xy2_amplitude"
@@ -53,6 +78,8 @@ def test_rabi_analysis_fits_first_peak_and_builds_common_candidate():
 
 
 def test_rabi_publishes_and_replays_same_operation_without_second_batch(monkeypatch, tmp_path):
+    import hashlib
+    import json
     from pathlib import Path
     from sqvm.calibration import rabi
     from sqvm.circuits import CircuitExecutionContext, CircuitResult, DressedPopulations
@@ -64,14 +91,60 @@ def test_rabi_publishes_and_replays_same_operation_without_second_batch(monkeypa
     parent = tmp_path / "parent.json"; parent.write_text("{}", encoding="utf-8")
     calls = []
     def fake_batch(circuits, *_args, **kwargs):
+        execution_root = Path(_args[1])
         calls.append(tuple(circuit.circuit_id for circuit in circuits))
-        results = tuple(CircuitResult(circuit.circuit_id, sha256_json({"id": circuit.circuit_id}), "B" * 64, "C" * 64, DressedPopulations(1.0 - index / 10, index / 10, 0.0, 0.0), (("Q1",),), (), 0.0, 0.0, Path("evidence"), Path("model"), "D" * 64, "calibration_scan_model_only") for index, circuit in enumerate(circuits))
-        return CircuitBatchHandle(kwargs["batch_id"], tmp_path / "execution", "A" * 64, "B" * 64, "completed", 1, 0, results, kwargs["metadata"])
+        results = tuple(CircuitResult(circuit.circuit_id, sha256_json({"id": circuit.circuit_id}), "B" * 64, "C" * 64, DressedPopulations(1.0 - index / 10, index / 10, 0.0, 0.0), (("Q1",),), (), 0.0, 0.0, execution_root / "circuit_execution" / circuit.circuit_id, execution_root / circuit.circuit_id, "D" * 64, "calibration_scan_model_only") for index, circuit in enumerate(circuits))
+        return CircuitBatchHandle(kwargs["batch_id"], execution_root, "A" * 64, "B" * 64, "completed", 1, 0, results, kwargs["metadata"])
     monkeypatch.setattr(rabi, "run_circuit_batch", fake_batch)
+    monkeypatch.setattr(
+        rabi,
+        "_static_phase_audits",
+        lambda circuits, _context, _amplitudes: tuple({"event_count": 2, "first_start_sample": 0, "second_start_sample": 2, "length_samples": 2} for _ in circuits),
+    )
     operation_id = "00000000-0000-4000-8000-000000000000"
-    request = RabiRequest("Q1", amplitude_axis((0, 0.1), 0.01, "Q1"))
+    request = RabiRequest(
+        "Q1", amplitude_axis((0, 0.1), 0.01, "Q1"),
+        analysis_policy={
+            "schema_version": "0.1", "policy_id": "test_pilot", "approved": False,
+            "minimum_point_count": None, "minimum_points_before_peak": None,
+            "minimum_points_after_peak": None, "minimum_contrast": None,
+            "minimum_r_squared": None, "maximum_normalized_rmse": None,
+            "maximum_candidate_leakage": None, "maximum_norm_error": None,
+            "minimum_edge_guard_steps": None, "fit_parameter_bounds": None,
+        },
+    )
     first = rabi.run_qubit_rabi_scan(request, context, parent, tmp_path / "run", tmp_path, operation_id=operation_id)
     replay = rabi.run_qubit_rabi_scan(request, context, parent, tmp_path / "run", tmp_path, operation_id=operation_id)
     assert first.run_id == replay.run_id == operation_id
     assert len(calls) == 1
     assert first.candidates["Q1"]["recommendation_eligible"] is False
+    assert first.dataset.runtime_batch.root == first.root / "execution"
+    for name, key, replacement in (
+        ("receipt.json", "status", "tampered"),
+        ("verification_report.json", "ok", False),
+        ("workflow.json", "status", "tampered"),
+    ):
+        path = first.root / name
+        original = path.read_text("utf-8")
+        payload = json.loads(original); payload[key] = replacement
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(rabi.RabiError):
+            rabi.verify_rabi_scan(first.root)
+        path.write_text(original, encoding="utf-8")
+    dataset_path = first.root / "dataset.json"
+    workflow_path = first.root / "workflow.json"
+    dataset_payload = json.loads(dataset_path.read_text("utf-8"))
+    dataset_payload["series"]["Q1"]["P1"][0] = -0.1
+    dataset_path.write_text(json.dumps(dataset_payload), encoding="utf-8")
+    workflow_payload = json.loads(workflow_path.read_text("utf-8"))
+    workflow_payload["dataset"]["sha256"] = hashlib.sha256(dataset_path.read_bytes()).hexdigest().upper()
+    workflow_path.write_text(json.dumps(workflow_payload), encoding="utf-8")
+    workflow_sha = hashlib.sha256(workflow_path.read_bytes()).hexdigest().upper()
+    for name in ("receipt.json", "verification_report.json"):
+        path = first.root / name
+        payload = json.loads(path.read_text("utf-8"))
+        payload["workflow_sha256"] = workflow_sha
+        payload["dataset_sha256"] = workflow_payload["dataset"]["sha256"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(rabi.RabiError, match="probability"):
+        rabi.verify_rabi_scan(first.root)
