@@ -26,9 +26,9 @@ def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent() -> None:
     operation_id = "8dc263a6-88a4-4f8c-b1b0-567711c3c9f7"
     # Keep the fixture portable inside deep Codex/Git worktree roots while the
     # product's Windows evidence-path preflight remains strict.
-    isolated_root = ROOT / "tmp" / f"ra_{uuid.uuid4().hex[:8]}"
-    storage = isolated_root / "platform-configurations"
-    collection = isolated_root / "experiments"
+    isolated_root = ROOT / f".ra_{uuid.uuid4().hex[:8]}"
+    storage = isolated_root / "c"
+    collection = isolated_root / "e"
     try:
         shutil.copytree(CONFIG_FIXTURE, storage)
         run = run_rabi(
