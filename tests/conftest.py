@@ -83,6 +83,7 @@ MODULE_PRIMARY_MARKERS = {
     "test_qubit_spectroscopy.py": "integration",
     "test_rabi_phase_audit.py": "contract",
     "test_rabi_calibration.py": "contract",
+    "test_rabi_runtime_adapter.py": "integration",
     "test_runtime_publication.py": "integration",
     "test_runtime_v03_batch.py": "integration",
     "test_rabi_acceptance_vectors.py": "contract",
