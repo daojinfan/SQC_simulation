@@ -88,6 +88,7 @@ MODULE_PRIMARY_MARKERS = {
     "test_rabi_acceptance_vectors.py": "contract",
     "test_rabi_public_api_acceptance.py": "integration",
     "test_rabi_real_qutip_acceptance.py": "physics_slow",
+    "test_rabi_storage_lifecycle.py": "physics_slow",
     "test_run_circuits.py": "integration",
     "test_solver_validation_gate.py": "evidence",
     "test_spectroscopy_calibration_workflow.py": "integration",
