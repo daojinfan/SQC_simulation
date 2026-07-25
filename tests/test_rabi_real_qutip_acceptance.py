@@ -21,25 +21,25 @@ def _run_rabi():
     return run_rabi
 
 
-def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent(tmp_path: Path) -> None:
+def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent() -> None:
     run_rabi = _run_rabi()
-    storage = tmp_path / "platform-configurations"
-    shutil.copytree(CONFIG_FIXTURE, storage)
     operation_id = "8dc263a6-88a4-4f8c-b1b0-567711c3c9f7"
-    collection = ROOT / "tmp" / f"rabi_acceptance_{uuid.uuid4().hex}"
-
-    run = run_rabi(
-        target="Q1",
-        amplitude_range_GHz=(0.0, 0.20),
-        amplitude_step_GHz=0.05,
-        output_root=collection,
-        configuration_storage_root=storage,
-        repository_root=ROOT,
-        operation_id=operation_id,
-        timeout_s=120.0,
-        batch_deadline_s=600.0,
-    )
+    isolated_root = ROOT / "tmp" / f"rabi_acceptance_{uuid.uuid4().hex}"
+    storage = isolated_root / "platform-configurations"
+    collection = isolated_root / "experiments"
     try:
+        shutil.copytree(CONFIG_FIXTURE, storage)
+        run = run_rabi(
+            target="Q1",
+            amplitude_range_GHz=(0.0, 0.20),
+            amplitude_step_GHz=0.05,
+            output_root=collection,
+            configuration_storage_root=storage,
+            repository_root=ROOT,
+            operation_id=operation_id,
+            timeout_s=120.0,
+            batch_deadline_s=600.0,
+        )
         root = Path(run.root)
         assert root.name == f"qubit_rabi_{operation_id.replace('-', '')}"
         assert {path.name for path in root.iterdir()} >= {
@@ -83,4 +83,4 @@ def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent(tmp_path: P
         )
         assert Path(replay.root) == root
     finally:
-        shutil.rmtree(collection, ignore_errors=True)
+        shutil.rmtree(isolated_root, ignore_errors=True)
