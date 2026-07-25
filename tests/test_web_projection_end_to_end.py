@@ -19,6 +19,7 @@ import sqvm.calibration.spectroscopy_run as spectroscopy_run_module
 import sqvm.web.index as index_module
 from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_bytes
 from sqvm.web.registrar import enqueue_published_run
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 from tests.support.web_projection import close_server as _close_server, eventually as _eventually, experiment_page as _experiment_page, publish_generic as _publish_generic, request as _request, start_server as _shared_start_server
@@ -233,7 +234,7 @@ def test_http_pagination_etag_lod_and_db_only_gets(
 
 
 def _install_scan_runner(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake_run(circuits, _context_value, output_root, _repository_root, **kwargs):
         execution_root = Path(output_root)
         rows = []
         for circuit in circuits:
@@ -243,6 +244,8 @@ def _install_scan_runner(monkeypatch: pytest.MonkeyPatch) -> None:
             rows.append(
                 replace(
                     _result(circuit.circuit_id, 0.8, 0.19, 0.0, 0.0),
+                    circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                    readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
                     evidence_root=evidence,
                     model_evidence_root=evidence,
                 )

@@ -162,17 +162,22 @@ Web 不负责启动实验。校准实验通过 Python API 运行，结果写入
 扫谱，两个对象自动并行：
 
 ```python
+from uuid import uuid4
+
 from sqvm.calibration import (
     apply_calibration_candidates_to_current_configuration,
+    cancel_spectroscopy,
     run_spectroscopy,
 )
 
+operation_id = str(uuid4())
 result = run_spectroscopy(
     {
         "Q1": (5.00, 5.40),
         "Q2": (5.10, 5.50),
     },
     frequency_step_GHz=0.20,
+    operation_id=operation_id,
 )
 
 print(result.run_id)
@@ -210,12 +215,20 @@ Web 和 Python API 均按 `candidate_ids` 选择候选，通用确认短语为
 | `pulse_r_sigma_samples` | 否 | `8.0` | 扫谱脉冲的 `r_sigma` |
 | `device_id` | 否 | `demo_2q1c2r` | 使用 Active 配置的设备 |
 | `timeout_s` | 否 | `600.0` | 每个隔离 QuTiP worker 的 watchdog，不是整次实验总时长 |
+| `batch_deadline_s` | 否 | `3600.0` | 一次有效批次 attempt 的总时限；已提交点在下次 attempt 中复用 |
+| `operation_id` | 否 | 自动 UUID4 | 幂等运行 ID；重试时传回原值即可续跑或零执行重开 |
+| `cancellation_token` | 否 | `None` | 进程内协作取消；在两个 QCIS 点之间生效 |
 | `output_root` | 否 | `output/experiments` | 实验结果集合目录 |
 | `progress_callback` | 否 | `None` | 接收运行进度事件的回调 |
 
 每次调用只执行参数指定的这一轮扫描，不会自动追加另一组范围或步进。本次扫描的有效峰
 会形成候选校准值；候选通过峰质量、最大 leakage 和最大 norm error 门限后，可以由用户
 显式确认并写入当前配置。需要换范围或步进时，再次调用同一个接口。
+
+调用前保存 `operation_id`。进程中断后，以完全相同的参数和该 ID 再次调用，只执行尚未提交的
+QCIS 点；结果已经发布时则只验证并重开，不重复运行 QuTiP。同一个 ID 如果绑定了不同范围、
+波形、Active 配置或执行时限会被拒绝。跨进程取消可调用
+`cancel_spectroscopy(operation_id, ...)`，取消为协作式，不会在单个 QuTiP worker 中途强杀线程。
 
 本地校准扫描使用已批准的 Stage 4.1 控制链，并把验证后的有效 I/Q 数组交给独立的
 QuTiP worker。默认从 `(7,7,7)` 电荷基重建 2Q1C 哈密顿量，再投影到
@@ -437,6 +450,7 @@ Smoke 完成不等于生产物理后端通过正式规模验收。
 - 当前初态固定为 `lab_ground`，observable 主要是 dressed computational population。
 - 尚未实现真实 shot、IQ、assignment matrix 和读出噪声模型。
 - Rabi、Ramsey、DRAG、Coupler 和 CZ 等校准实验尚未接入完整工作流。
+- Runtime 0.3 批执行底座与扫谱适配已完成；Rabi 是下一项实验适配，本版本尚未开始实现。
 - 校准扫描仍是后台 Python 工作流，不作为 Web 请求内的同步操作。
 - `runtime`、`runtime_v02` 以及部分 Stage 4/5 双版本仍待后续架构收敛。
 

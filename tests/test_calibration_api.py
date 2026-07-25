@@ -84,7 +84,7 @@ def test_active_spectroscopy_api_publishes_web_visible_data(monkeypatch):
         )
 
         assert run.root.parent == base / "experiments"
-        assert len(calls) == 4
+        assert len(calls) == 18
         assert all(
             call["execution_profile"] == "calibration_scan"
             for call in calls
@@ -210,7 +210,7 @@ def test_run_spectroscopy_builds_the_scan_from_ranges_and_step(monkeypatch):
         assert isinstance(run, SpectroscopyRun)
         assert run.analysis.recommendation_eligible is False
         assert run.recommendation_eligible is True
-        assert [len(call["circuits"]) for call in calls] == [3]
+        assert [len(call["circuits"]) for call in calls] == [1, 1, 1]
         workflow = json.loads((run.root / "workflow.json").read_text("utf-8"))
         scan = workflow["request"]
         assert workflow["workflow_id"] == "qubit_spectroscopy_scan_v1"
@@ -275,6 +275,37 @@ def test_run_spectroscopy_builds_the_scan_from_ranges_and_step(monkeypatch):
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_run_spectroscopy_replays_the_same_operation_without_execution(monkeypatch):
+    base = ROOT / "tmp" / f"simple_spectroscopy_replay_{uuid.uuid4().hex}"
+    calls = []
+    _install_synthetic_runner(monkeypatch, calls)
+    store = _active_store(base)
+    operation_id = str(uuid.uuid4())
+    arguments = {
+        "frequency_step_GHz": 0.1,
+        "operation_id": operation_id,
+        "output_root": base / "experiments",
+        "configuration_storage_root": store.root,
+        "repository_root": ROOT,
+        "timeout_s": 10.0,
+    }
+    try:
+        first = run_spectroscopy({"Q1": (4.9, 5.1)}, **arguments)
+        executed = len(calls)
+        replay = run_spectroscopy({"Q1": (4.9, 5.1)}, **arguments)
+
+        assert executed == 3
+        assert len(calls) == executed
+        assert replay.run_id == first.run_id == operation_id
+        assert replay.root == first.root
+        assert replay.workflow_sha256 == first.workflow_sha256
+        assert replay.receipt_sha256 == first.receipt_sha256
+        assert replay.dataset.runtime_batch is not None
+        assert replay.dataset.runtime_batch.reused_point_count == 3
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_run_spectroscopy_rejects_a_range_not_divisible_by_the_step():
     base = ROOT / "tmp" / f"simple_spectroscopy_invalid_{uuid.uuid4().hex}"
     store = _active_store(base)
@@ -308,7 +339,7 @@ def test_run_spectroscopy_accepts_a_single_target_with_an_even_point_count(monke
 
         assert run.analysis.recommendation_eligible is False
         assert run.recommendation_eligible is True
-        assert [len(call["circuits"]) for call in calls] == [4]
+        assert [len(call["circuits"]) for call in calls] == [1, 1, 1, 1]
         workflow = json.loads((run.root / "workflow.json").read_text("utf-8"))
         scan = workflow["request"]
         assert scan["execution_mode"] == "single"

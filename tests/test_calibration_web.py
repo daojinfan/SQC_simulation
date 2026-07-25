@@ -23,6 +23,7 @@ import pytest
 import sqvm.calibration.spectroscopy as spectroscopy_module
 from sqvm.calibration import run_qubit_spectroscopy_calibration
 from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
+from sqvm.qcis.canonical import sha256_bytes
 from sqvm.web import (
     CalibrationWebIndex,
     ConfigurationManagementError,
@@ -669,12 +670,18 @@ def test_server_accepts_separate_trusted_archive_root_and_rejects_relative_root(
 
 
 def test_web_storage_reads_operations_lifecycle_keep_and_trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake_run(circuits, _context_value, output_root, _repository_root, **kwargs):
         root = Path(output_root); rows = []
         for circuit in circuits:
             evidence = root / "circuits" / circuit.circuit_id; evidence.mkdir(parents=True)
             (evidence / "result.bin").write_bytes(circuit.circuit_id.encode("ascii"))
-            rows.append(replace(_result(circuit.circuit_id, .8, .19, 0, 0), evidence_root=evidence, model_evidence_root=evidence))
+            rows.append(replace(
+                _result(circuit.circuit_id, .8, .19, 0, 0),
+                circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
+                evidence_root=evidence,
+                model_evidence_root=evidence,
+            ))
         return tuple(rows)
 
     monkeypatch.setattr(spectroscopy_module, "run_circuits", fake_run)

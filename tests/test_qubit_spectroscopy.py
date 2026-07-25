@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import pytest as _pytest
 
 pytestmark = _pytest.mark.integration
@@ -23,7 +24,7 @@ from sqvm.calibration.spectroscopy import (
     expand_qubit_spectroscopy_points,
     run_qubit_spectroscopy,
 )
-from sqvm.qcis.canonical import sha256_json
+from sqvm.qcis.canonical import sha256_bytes, sha256_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,6 +139,29 @@ def _result(circuit_id: str, p000: float, p100: float, p001: float, p101: float)
     )
 
 
+def _materialized_result(
+    circuit,
+    output_root,
+    p000: float,
+    p100: float,
+    p001: float,
+    p101: float,
+) -> CircuitResult:
+    evidence = Path(output_root) / "fake-circuit-evidence" / circuit.circuit_id
+    model = Path(output_root) / "fake-model-evidence" / circuit.circuit_id
+    evidence.mkdir(parents=True)
+    model.mkdir(parents=True)
+    (evidence / "result.bin").write_bytes(circuit.circuit_id.encode("ascii"))
+    (model / "model.bin").write_bytes(circuit.source.encode("ascii"))
+    return replace(
+        _result(circuit.circuit_id, p000, p100, p001, p101),
+        circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+        readout_qubit=(("Q1",),),
+        evidence_root=evidence,
+        model_evidence_root=model,
+    )
+
+
 def test_capability_adapter_supports_arbitrary_registered_names():
     adapter = build_qubit_capability_adapter(_context("QA", "QB"))
 
@@ -200,18 +224,21 @@ def test_planner_rejects_ambiguous_or_invalid_requests(spectroscopy_request, cod
 
 
 def test_run_parallel_delegates_one_batch_and_uses_excited_marginals(monkeypatch, tmp_path: Path):
-    captured = {}
+    captured = []
 
     def fake_run(circuits, context, output_root, repository_root, **kwargs):
-        captured.update(
-            circuits=circuits,
-            context=context,
-            output_root=output_root,
-            repository_root=repository_root,
-            kwargs=kwargs,
+        captured.append(
+            {
+                "circuits": circuits,
+                "context": context,
+                "output_root": output_root,
+                "repository_root": repository_root,
+                "kwargs": kwargs,
+            }
         )
         return tuple(
-            _result(circuit.circuit_id, 0.45, 0.15, 0.20, 0.10) for circuit in circuits
+            _materialized_result(circuit, output_root, 0.45, 0.15, 0.20, 0.10)
+            for circuit in circuits
         )
 
     monkeypatch.setattr(spectroscopy_module, "run_circuits", fake_run)
@@ -219,9 +246,9 @@ def test_run_parallel_delegates_one_batch_and_uses_excited_marginals(monkeypatch
     context = _context()
     dataset = run_qubit_spectroscopy(request, context, str(tmp_path), str(ROOT), timeout_s=12.0)
 
-    assert len(captured["circuits"]) == 2
-    assert captured["kwargs"]["readout_qubit"] == [["Q1"], ["Q2"], ["Q1", "Q2"]]
-    assert captured["kwargs"]["timeout_s"] == 12.0
+    assert [len(call["circuits"]) for call in captured] == [1, 1]
+    assert captured[0]["kwargs"]["readout_qubit"] == (("Q1",), ("Q2",), ("Q1", "Q2"))
+    assert captured[0]["kwargs"]["timeout_s"] == 12.0
     assert dataset.points[0].target_excited_population["Q1"] == pytest.approx(0.25)
     assert dataset.points[0].target_excited_population["Q2"] == pytest.approx(0.30)
     assert dataset.points[0].primary_observable_id["Q1"] == "Q1.target_excited_marginal"
@@ -230,11 +257,19 @@ def test_run_parallel_delegates_one_batch_and_uses_excited_marginals(monkeypatch
 
 def test_single_uses_spectator_ground_projector_and_peak_analysis(monkeypatch, tmp_path: Path):
     populations = (0.1, 0.7, 0.2)
+    next_population = iter(populations)
 
-    def fake_run(circuits, *_args, **_kwargs):
+    def fake_run(circuits, _context, output_root, _repository_root, **_kwargs):
         return tuple(
-            _result(circuit.circuit_id, 0.9 - p100, p100, 0.0, 0.0)
-            for circuit, p100 in zip(circuits, populations, strict=True)
+            _materialized_result(
+                circuit,
+                output_root,
+                0.9 - (p100 := next(next_population)),
+                p100,
+                0.0,
+                0.0,
+            )
+            for circuit in circuits
         )
 
     monkeypatch.setattr(spectroscopy_module, "run_circuits", fake_run)
@@ -254,10 +289,19 @@ def test_boundary_or_nonunique_peak_is_not_recommendation_eligible(monkeypatch, 
         ("boundary", (0.7, 0.2, 0.1), "peak_at_boundary"),
         ("nonunique", (0.2, 0.7, 0.7), "peak_nonunique"),
     ):
-        def fake_run(circuits, *_args, **_kwargs):
+        next_population = iter(populations)
+
+        def fake_run(circuits, _context, output_root, _repository_root, **_kwargs):
             return tuple(
-                _result(circuit.circuit_id, 0.9 - p100, p100, 0.0, 0.0)
-                for circuit, p100 in zip(circuits, populations, strict=True)
+                _materialized_result(
+                    circuit,
+                    output_root,
+                    0.9 - (p100 := next(next_population)),
+                    p100,
+                    0.0,
+                    0.0,
+                )
+                for circuit in circuits
             )
 
         monkeypatch.setattr(spectroscopy_module, "run_circuits", fake_run)

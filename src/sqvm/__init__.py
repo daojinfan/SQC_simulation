@@ -68,6 +68,7 @@ __all__ = [
     "SpectroscopyParameterUpdate",
     "apply_calibration_candidates_to_current_configuration",
     "apply_spectroscopy_candidates_to_current_configuration",
+    "cancel_spectroscopy",
     "run_active_qubit_spectroscopy_calibration",
     "run_spectroscopy",
 ]
@@ -83,6 +84,7 @@ def __getattr__(name: str):
         "SpectroscopyParameterUpdate",
         "apply_calibration_candidates_to_current_configuration",
         "apply_spectroscopy_candidates_to_current_configuration",
+        "cancel_spectroscopy",
         "run_active_qubit_spectroscopy_calibration",
         "run_spectroscopy",
     }:
@@ -93,6 +95,7 @@ def __getattr__(name: str):
             SpectroscopyParameterUpdate,
             apply_calibration_candidates_to_current_configuration,
             apply_spectroscopy_candidates_to_current_configuration,
+            cancel_spectroscopy,
             run_active_qubit_spectroscopy_calibration,
             run_spectroscopy,
         )
@@ -104,6 +107,7 @@ def __getattr__(name: str):
             "SpectroscopyParameterUpdate": SpectroscopyParameterUpdate,
             "apply_calibration_candidates_to_current_configuration": apply_calibration_candidates_to_current_configuration,
             "apply_spectroscopy_candidates_to_current_configuration": apply_spectroscopy_candidates_to_current_configuration,
+            "cancel_spectroscopy": cancel_spectroscopy,
             "run_active_qubit_spectroscopy_calibration": run_active_qubit_spectroscopy_calibration,
             "run_spectroscopy": run_spectroscopy,
         }

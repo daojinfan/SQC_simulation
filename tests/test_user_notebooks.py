@@ -26,6 +26,7 @@ def test_qubit_spectroscopy_notebook_uses_the_simple_public_api():
     assert "sys.path" not in source
     assert "SRC_ROOT" not in source
     assert "RUN_EXPERIMENT =" in source
+    assert "operation_id=OPERATION_ID" in source
     assert "apply_calibration_candidates_to_current_configuration" in source
     assert "UPDATE_PARAMETERS = False" in source
     assert "APPLY CALIBRATION CANDIDATES" in source
@@ -51,6 +52,7 @@ def test_qubit_spectroscopy_notebook_uses_the_simple_public_api():
         "Q2": (5.10, 5.50),
     }
     step = namespace["FREQUENCY_STEP_GHZ"]
+    assert isinstance(namespace["OPERATION_ID"], str)
     assert isinstance(step, float) and step > 0.0
     for start, stop in namespace["FREQUENCY_RANGES_GHZ"].values():
         intervals = round((stop - start) / step)

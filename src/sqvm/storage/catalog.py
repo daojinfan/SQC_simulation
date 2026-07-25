@@ -309,6 +309,10 @@ def _discover_runs(
     rows: dict[str, _Found] = {}
     global_blockers: set[str] = set()
     for entry in _safe_entries(hot_root, "hot root"):
+        if entry.name == ".runtime-v03":
+            if not stat.S_ISDIR(entry.stat(follow_symlinks=False).st_mode):
+                global_blockers.add("runtime_coordinator_invalid")
+            continue
         if not stat.S_ISDIR(entry.stat(follow_symlinks=False).st_mode):
             global_blockers.add("unknown_hot_root_entry")
             continue

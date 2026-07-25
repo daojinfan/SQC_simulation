@@ -19,4 +19,5 @@
 
 真实 QuTiP 扫描可能耗时较长。Notebook 的 `RUN_EXPERIMENT=True` 会开始运行；需要先
 检查导入和参数时可改成 `False`。运行后逐点打印进度和 circuit ID，每个 worker 的
-watchdog 上限为 600 秒。
+watchdog 上限为 600 秒。Notebook 同时保存一个 `OPERATION_ID`；运行中断后不要重新执行
+参数单元格，直接重跑实验单元格即可复用已完成的数据点。
