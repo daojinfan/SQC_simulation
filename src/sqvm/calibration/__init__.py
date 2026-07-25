@@ -44,6 +44,7 @@ from sqvm.calibration.api import (
     SpectroscopyParameterUpdate,
     apply_calibration_candidates_to_current_configuration,
     apply_spectroscopy_candidates_to_current_configuration,
+    cancel_spectroscopy,
     run_active_qubit_spectroscopy_calibration,
     run_spectroscopy,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "SpectroscopyParameterUpdate",
     "apply_calibration_candidates_to_current_configuration",
     "apply_spectroscopy_candidates_to_current_configuration",
+    "cancel_spectroscopy",
     "run_active_qubit_spectroscopy_calibration",
     "run_spectroscopy",
 ]

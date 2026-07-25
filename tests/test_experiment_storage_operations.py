@@ -17,6 +17,7 @@ import sqvm.calibration.spectroscopy as spectroscopy_module
 import sqvm.storage.operations as operations
 from sqvm.calibration.api import run_spectroscopy
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_bytes
 from sqvm.storage.operations import ExperimentStorageOperations, StorageMutationRequest, StorageOperationError
 from sqvm.storage.catalog import CatalogRoots, rebuild_catalog, query_catalog
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
@@ -29,12 +30,18 @@ PARENT = ROOT / "configs" / "calibration" / "platform_uncalibrated_v1.json"
 
 
 def _runner(monkeypatch):
-    def fake(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake(circuits, _context_value, output_root, _repository_root, **kwargs):
         root = Path(output_root); rows = []
         for circuit in circuits:
             evidence = root / "circuits" / circuit.circuit_id; evidence.mkdir(parents=True)
             (evidence / "result.bin").write_bytes(circuit.circuit_id.encode())
-            rows.append(replace(_result(circuit.circuit_id, .8, .19, 0, 0), evidence_root=evidence, model_evidence_root=evidence))
+            rows.append(replace(
+                _result(circuit.circuit_id, .8, .19, 0, 0),
+                circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
+                evidence_root=evidence,
+                model_evidence_root=evidence,
+            ))
         return tuple(rows)
     monkeypatch.setattr(spectroscopy_module, "run_circuits", fake)
 

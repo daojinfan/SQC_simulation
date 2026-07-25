@@ -30,7 +30,7 @@ from sqvm.calibration import (
     verify_qubit_spectroscopy_calibration,
     verify_qubit_spectroscopy_calibration_decision,
 )
-from sqvm.qcis.canonical import canonical_json_bytes
+from sqvm.qcis.canonical import canonical_json_bytes, sha256_bytes
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result
 
 
@@ -103,6 +103,8 @@ def _install_synthetic_runner(monkeypatch, calls, *, cross_excitation=0.005):
             results.append(
                 replace(
                     result,
+                    circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                    readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
                     evidence_root=circuit_evidence,
                     model_evidence_root=model_evidence,
                 )
@@ -138,12 +140,14 @@ def test_parallel_workflow_reuses_one_api_and_publishes_eligible_candidates(monk
         assert set(run.candidates) == {"Q1", "Q2"}
         assert run.candidates["Q1"]["proposed_frequency_GHz"] == pytest.approx(5.0)
         assert run.candidates["Q2"]["proposed_frequency_GHz"] == pytest.approx(5.2)
-        assert len(calls) == 4
-        assert [len(call["circuits"]) for call in calls] == [3, 5, 5, 5]
-        assert calls[0]["readout_qubit"] == [["Q1"], ["Q2"], ["Q1", "Q2"]]
-        assert calls[1]["readout_qubit"] == [["Q1"], ["Q2"], ["Q1", "Q2"]]
-        assert calls[2]["readout_qubit"] == [["Q1"]]
-        assert calls[3]["readout_qubit"] == [["Q2"]]
+        assert len(calls) == 18
+        assert all(len(call["circuits"]) == 1 for call in calls)
+        assert all(
+            call["readout_qubit"] == (("Q1",), ("Q2",), ("Q1", "Q2"))
+            for call in calls[:8]
+        )
+        assert all(call["readout_qubit"] == (("Q1",),) for call in calls[8:13])
+        assert all(call["readout_qubit"] == (("Q2",),) for call in calls[13:])
         assert verify_qubit_spectroscopy_calibration(target)
         assert (target / "spectroscopy.png").is_file()
         workflow = json.loads((target / "workflow.json").read_text("utf-8"))
@@ -169,7 +173,7 @@ def test_single_workflow_skips_confirmation_and_accept_updates_context(monkeypat
             run_target,
             ROOT,
         )
-        assert len(calls) == 2
+        assert len(calls) == 8
         decision = decide_qubit_spectroscopy_calibration(
             run.root,
             PARENT,

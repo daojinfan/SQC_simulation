@@ -1,0 +1,59 @@
+{
+  "schema_version": "0.3",
+  "artifact_type": "runtime_v03_batch_contract_vectors",
+  "artifact_version": "0.3",
+  "request_fields": [
+    "artifact_type",
+    "artifact_version",
+    "batch_id",
+    "circuits",
+    "context",
+    "execution",
+    "experiment_request",
+    "metadata",
+    "request_sha256",
+    "resource_key",
+    "schema_version"
+  ],
+  "head_fields": [
+    "artifact_type",
+    "artifact_version",
+    "attempt_count",
+    "batch_id",
+    "completed_points",
+    "failure",
+    "generation",
+    "request_sha256",
+    "schema_version",
+    "status",
+    "updated_utc"
+  ],
+  "point_receipt_fields": [
+    "artifact_type",
+    "artifact_version",
+    "batch_id",
+    "circuit_id",
+    "circuit_sha256",
+    "evidence",
+    "point_index",
+    "result",
+    "schema_version"
+  ],
+  "completed_point_fields": [
+    "circuit_id",
+    "point_index",
+    "receipt_path",
+    "receipt_raw_sha256"
+  ],
+  "terminal_statuses": ["completed", "cancelled"],
+  "resumable_statuses": ["prepared", "running", "interrupted", "deadline_exceeded"],
+  "stable_errors": {
+    "batch_busy": 503,
+    "batch_cancelled": 409,
+    "batch_deadline_exceeded": 408,
+    "batch_idempotency_conflict": 409,
+    "batch_recovery_required": 503,
+    "invalid_batch_id": 422,
+    "invalid_batch_request": 422
+  }
+}

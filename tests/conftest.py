@@ -82,6 +82,7 @@ MODULE_PRIMARY_MARKERS = {
     "test_platform_configuration_v02.py": "integration",
     "test_qubit_spectroscopy.py": "integration",
     "test_runtime_publication.py": "integration",
+    "test_runtime_v03_batch.py": "integration",
     "test_run_circuits.py": "integration",
     "test_solver_validation_gate.py": "evidence",
     "test_spectroscopy_calibration_workflow.py": "integration",

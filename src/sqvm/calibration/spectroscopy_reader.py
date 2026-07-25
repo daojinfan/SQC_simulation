@@ -15,6 +15,7 @@ from sqvm.calibration.spectroscopy_run import (
 )
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.qcis.canonical import canonical_json_bytes as dataset_json_bytes
+from sqvm.qcis.canonical import sha256_json
 from sqvm.storage.archive_format import EvidenceReader
 
 
@@ -43,10 +44,28 @@ def verify_qubit_spectroscopy_scan_evidence(reader: EvidenceReader) -> None:
         dataset_raw, dataset = _metadata(reader, "dataset.json", "dataset", dataset_json_bytes)
         manifest_raw, manifest = _metadata(reader, "manifest.json", "manifest", canonical_json_bytes)
         report_raw, report = _metadata(reader, "verification_report.json", "verification report", canonical_json_bytes)
-
         workflow_sha256 = _sha(workflow_raw)
         dataset_sha256 = _sha(dataset_raw)
         _verify_workflow(workflow, dataset, receipt, workflow_sha256, dataset_sha256)
+        if workflow.get("runtime_batch") is not None:
+            _batch_request_raw, batch_request = _metadata(
+                reader,
+                "execution/batch/request.json",
+                "runtime batch request",
+                canonical_json_bytes,
+            )
+            batch_head_raw, batch_head = _metadata(
+                reader,
+                "execution/batch/head.json",
+                "runtime batch head",
+                canonical_json_bytes,
+            )
+            _verify_runtime_batch(
+                workflow,
+                batch_request,
+                batch_head_raw,
+                batch_head,
+            )
         _verify_evidence_closure(
             paths, inventory, workflow, receipt, manifest_raw, manifest, report_raw, report,
             workflow_sha256, dataset_sha256,
@@ -167,6 +186,79 @@ def _verify_workflow(
         or receipt.get("recommendation_eligible") is not workflow.get("recommendation_eligible")
     ):
         raise SpectroscopyReaderVerificationError("spectroscopy recommendation receipt is invalid")
+
+
+def _verify_runtime_batch(
+    workflow: Mapping[str, Any],
+    request: Mapping[str, Any],
+    head_raw: bytes,
+    head: Mapping[str, Any],
+) -> None:
+    binding = workflow.get("runtime_batch")
+    if not isinstance(binding, Mapping) or set(binding) != {
+        "batch_id",
+        "request_sha256",
+        "head_sha256",
+        "attempt_count",
+        "point_count",
+    }:
+        raise SpectroscopyReaderVerificationError("spectroscopy runtime batch binding is invalid")
+    semantic = {
+        key: value
+        for key, value in request.items()
+        if key not in {"metadata", "request_sha256"}
+    }
+    completed = head.get("completed_points")
+    if (
+        set(request)
+        != {
+            "schema_version",
+            "artifact_type",
+            "artifact_version",
+            "batch_id",
+            "experiment_request",
+            "circuits",
+            "context",
+            "execution",
+            "resource_key",
+            "metadata",
+            "request_sha256",
+        }
+        or set(head)
+        != {
+            "schema_version",
+            "artifact_type",
+            "artifact_version",
+            "batch_id",
+            "request_sha256",
+            "generation",
+            "attempt_count",
+            "status",
+            "completed_points",
+            "failure",
+            "updated_utc",
+        }
+        or request.get("artifact_type") != "runtime_v03_circuit_batch_request"
+        or request.get("artifact_version") != "0.3"
+        or request.get("batch_id") != workflow.get("run_id")
+        or request.get("request_sha256") != sha256_json(semantic)
+        or binding.get("batch_id") != request.get("batch_id")
+        or binding.get("request_sha256") != request.get("request_sha256")
+        or head.get("artifact_type") != "runtime_v03_circuit_batch_head"
+        or head.get("artifact_version") != "0.3"
+        or head.get("batch_id") != request.get("batch_id")
+        or head.get("request_sha256") != request.get("request_sha256")
+        or head.get("status") != "completed"
+        or head.get("failure") is not None
+        or not isinstance(completed, list)
+        or not isinstance(request.get("circuits"), list)
+        or len(request["circuits"]) != len(completed)
+        or head.get("generation") != len(completed)
+        or binding.get("head_sha256") != _sha(head_raw)
+        or binding.get("attempt_count") != head.get("attempt_count")
+        or binding.get("point_count") != len(completed)
+    ):
+        raise SpectroscopyReaderVerificationError("spectroscopy runtime batch binding differs")
 
 
 def _verify_evidence_closure(

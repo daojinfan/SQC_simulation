@@ -33,6 +33,7 @@ from sqvm.storage.operations import ExperimentStorageOperations, StorageMutation
 from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
 from sqvm.calibration.spectroscopy_reader import verify_qubit_spectroscopy_scan_evidence
 import sqvm.calibration.spectroscopy as spectroscopy_module
+from sqvm.qcis.canonical import sha256_bytes
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 
 
@@ -84,7 +85,7 @@ def _rebuild(catalog: Path, roots: CatalogRoots, **kwargs) -> int:
 
 
 def _install_v03_runner(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake_run(circuits, _context_value, output_root, _repository_root, **kwargs):
         execution_root = Path(output_root)
         rows = []
         for circuit in circuits:
@@ -93,6 +94,8 @@ def _install_v03_runner(monkeypatch: pytest.MonkeyPatch) -> None:
             (evidence_root / "result.bin").write_bytes(circuit.circuit_id.encode("ascii"))
             rows.append(replace(
                 _result(circuit.circuit_id, 0.8, 0.19, 0.0, 0.0),
+                circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
                 evidence_root=evidence_root,
                 model_evidence_root=evidence_root,
             ))

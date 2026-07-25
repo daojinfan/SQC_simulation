@@ -15,6 +15,7 @@ import pytest
 
 import sqvm.calibration.spectroscopy as spectroscopy_module
 import sqvm.calibration.spectroscopy_run as run_module
+from sqvm.qcis.canonical import sha256_bytes
 from sqvm.calibration.spectroscopy_run import (
     SpectroscopyRunError,
     run_qubit_spectroscopy_scan,
@@ -28,7 +29,7 @@ PARENT = ROOT / "configs/calibration/platform_uncalibrated_v1.json"
 
 
 def _install_runner(monkeypatch):
-    def fake_run(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake_run(circuits, _context_value, output_root, _repository_root, **kwargs):
         execution_root = Path(output_root)
         results = []
         for circuit in circuits:
@@ -38,6 +39,8 @@ def _install_runner(monkeypatch):
             results.append(
                 replace(
                     _result(circuit.circuit_id, 0.8, 0.19, 0.0, 0.0),
+                    circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                    readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
                     evidence_root=evidence_root,
                     model_evidence_root=evidence_root,
                 )

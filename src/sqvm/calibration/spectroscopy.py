@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable
+import uuid
 
 import numpy as np
 
@@ -19,8 +20,11 @@ from sqvm.circuits import (
     QCISCircuit,
     compile_circuit,
     run_circuits,
+    verify_circuit_result,
 )
 from sqvm.qcis.canonical import canonical_float, sha256_bytes, sha256_json
+from sqvm.runtime.batch import CircuitBatchHandle, run_circuit_batch
+from sqvm.runtime.lifecycle import CancellationToken
 
 
 EXPERIMENT_ID = "qubit_spectroscopy_v1"
@@ -176,6 +180,7 @@ class SpectroscopyDataset:
     capability_adapter: QubitCapabilityAdapter
     points: tuple[SpectroscopyPointResult, ...]
     dataset_sha256: str
+    runtime_batch: CircuitBatchHandle | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _dataset_payload(self.request, self.capability_adapter, self.points)
@@ -321,7 +326,12 @@ def run_qubit_spectroscopy(
     repository_root: str | Path | None = None,
     *,
     timeout_s: float = 180.0,
+    batch_deadline_s: float = 3600.0,
+    batch_id: str | None = None,
+    coordinator_root: str | Path | None = None,
+    batch_metadata: Mapping[str, Any] | None = None,
     execution_profile: CircuitExecutionProfile = CircuitExecutionProfile.BOUNDED_SMOKE,
+    cancellation_token: CancellationToken | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> SpectroscopyDataset:
     """Plan and execute a spectroscopy batch through the public circuit facade."""
@@ -339,17 +349,26 @@ def run_qubit_spectroscopy(
                 MappingProxyType({"run_phase": request.run_phase, **dict(event)})
             )
 
-    circuit_results = run_circuits(
+    batch = run_circuit_batch(
         tuple(point.circuit for point in points),
         context,
         output_root,
         repository_root,
+        batch_id=batch_id or str(uuid.uuid4()),
+        experiment_request=_batch_request_payload(request),
+        metadata=batch_metadata,
+        coordinator_root=coordinator_root,
         readout_qubit=readout,
-        timeout_s=timeout_s,
+        point_timeout_s=timeout_s,
+        batch_deadline_s=batch_deadline_s,
         max_circuits=request.max_points,
         execution_profile=execution_profile,
+        cancellation_token=cancellation_token,
         progress_callback=report_progress if progress_callback is not None else None,
+        circuit_runner=run_circuits,
+        result_loader=verify_circuit_result,
     )
+    circuit_results = batch.results
     if len(circuit_results) != len(points):
         _fail(SpectroscopyReasonCode.RESULT_INVALID, "runner result count mismatch")
     point_results = tuple(
@@ -357,7 +376,28 @@ def run_qubit_spectroscopy(
         for point, result in zip(points, circuit_results, strict=True)
     )
     payload = _dataset_payload(request, adapter, point_results)
-    return SpectroscopyDataset(request, adapter, point_results, sha256_json(payload))
+    return SpectroscopyDataset(
+        request,
+        adapter,
+        point_results,
+        sha256_json(payload),
+        batch,
+    )
+
+
+def _batch_request_payload(request: SpectroscopyRequest) -> dict[str, Any]:
+    return {
+        "experiment_id": EXPERIMENT_ID,
+        "execution_mode": str(request.execution_mode),
+        "run_phase": request.run_phase,
+        "targets": list(request.targets),
+        "axes": [
+            {"qagent": axis.qagent, "frequencies_GHz": list(axis.frequencies_GHz)}
+            for axis in request.axes
+        ],
+        "pulse_policies": [policy.to_dict() for policy in request.pulse_policies],
+        "max_points": request.max_points,
+    }
 
 
 def analyze_qubit_spectroscopy(

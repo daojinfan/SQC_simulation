@@ -39,6 +39,8 @@ from sqvm.calibration.spectroscopy_evidence import (
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.qcis.canonical import canonical_json_bytes as dataset_json_bytes
 from sqvm.runtime.journal import utc_now_text
+from sqvm.runtime.batch import CircuitBatchCancelledError, verify_circuit_batch
+from sqvm.runtime.lifecycle import CancellationToken
 from sqvm.runtime.publication import publish_calibration_directory
 from sqvm.runtime.storage import write_canonical_new
 
@@ -102,7 +104,10 @@ def run_qubit_spectroscopy_scan(
     repository_root: str | Path | None = None,
     *,
     timeout_s: float = 600.0,
+    batch_deadline_s: float = 3600.0,
+    operation_id: str | None = None,
     execution_profile: CircuitExecutionProfile = CircuitExecutionProfile.CALIBRATION_SCAN,
+    cancellation_token: CancellationToken | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> SpectroscopyRun:
     """Execute and publish exactly one spectroscopy request."""
@@ -111,33 +116,88 @@ def run_qubit_spectroscopy_scan(
         raise SpectroscopyRunError("a spectroscopy request with run_phase='scan' is required")
     root = _repository_root(repository_root)
     target = _inside(output_root, root, "spectroscopy output")
-    if target.exists():
-        raise FileExistsError(f"spectroscopy output already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     parent_path = _inside(parent_configuration_path, root, "parent configuration")
     if not parent_path.is_file():
         raise SpectroscopyRunError("parent configuration does not exist")
     parent_sha256 = _raw_sha256(parent_path)
-    run_id = str(uuid.uuid4())
+    run_id = _operation_id(operation_id)
     recommendation_id = str(uuid.uuid4())
-    staging = target.parent / f".spectroscopy_{run_id[:8]}"
-    if staging.exists():
+    coordinator = target.parent / ".runtime-v03"
+    if target.exists():
+        if operation_id is None:
+            raise FileExistsError(f"spectroscopy output already exists: {target}")
+        return _reopen_published_scan(
+            target,
+            request,
+            context,
+            parent_sha256,
+            root,
+            coordinator,
+            timeout_s,
+            batch_deadline_s,
+            execution_profile,
+            cancellation_token,
+            progress_callback,
+        )
+    staging = target.parent / f".spectroscopy_{run_id.replace('-', '')}"
+    if staging.exists() and operation_id is None:
         raise FileExistsError(f"spectroscopy staging already exists: {staging}")
-    staging.mkdir()
+    if not staging.exists():
+        staging.mkdir()
+    elif (staging / "workflow.json").exists():
+        _clear_recovery_markers(staging, run_id)
+        verify_qubit_spectroscopy_scan(staging)
+        publish_calibration_directory(staging, target)
+        return _reopen_published_scan(
+            target,
+            request,
+            context,
+            parent_sha256,
+            root,
+            coordinator,
+            timeout_s,
+            batch_deadline_s,
+            execution_profile,
+            cancellation_token,
+            progress_callback,
+        )
     publication_attempted = False
     created_utc = utc_now_text()
     try:
         execution_root = staging / "execution"
-        execution_root.mkdir()
+        execution_root.mkdir(exist_ok=True)
         dataset = run_qubit_spectroscopy(
             request,
             context,
             execution_root,
             root,
             timeout_s=timeout_s,
+            batch_deadline_s=batch_deadline_s,
+            batch_id=run_id,
+            coordinator_root=coordinator,
+            batch_metadata={
+                "run_id": run_id,
+                "recommendation_id": recommendation_id,
+                "created_utc": created_utc,
+                "parent_configuration_sha256": parent_sha256,
+            },
             execution_profile=execution_profile,
+            cancellation_token=cancellation_token,
             progress_callback=progress_callback,
         )
+        if dataset.runtime_batch is None:
+            raise SpectroscopyRunError("runtime batch binding is missing")
+        metadata = dict(dataset.runtime_batch.metadata)
+        if (
+            metadata.get("run_id") != run_id
+            or metadata.get("parent_configuration_sha256") != parent_sha256
+            or not isinstance(metadata.get("recommendation_id"), str)
+            or not isinstance(metadata.get("created_utc"), str)
+        ):
+            raise SpectroscopyRunError("runtime batch metadata binding is invalid")
+        recommendation_id = metadata["recommendation_id"]
+        created_utc = metadata["created_utc"]
         analysis = analyze_qubit_spectroscopy(
             dataset,
             min_contrast=0.01,
@@ -151,6 +211,7 @@ def run_qubit_spectroscopy_scan(
         recommendation_eligible = any(
             candidate["recommendation_eligible"] for candidate in candidates
         )
+        _clear_recovery_markers(staging, run_id)
         workflow = {
             "schema_version": "0.1",
             "artifact_type": "qubit_spectroscopy_scan",
@@ -184,6 +245,7 @@ def run_qubit_spectroscopy_scan(
                 "path": "dataset.json",
                 "sha256": dataset_sha256,
             },
+            "runtime_batch": _runtime_batch_payload(dataset.runtime_batch),
             "analysis": analysis.to_dict(),
             "gates": gates,
             "recommendation_eligible": recommendation_eligible,
@@ -353,7 +415,114 @@ def verify_qubit_spectroscopy_scan(run_root: str | Path) -> bool:
         raise SpectroscopyRunError("legacy spectroscopy archive eligibility is invalid")
     if not (directory / "execution").is_dir():
         raise SpectroscopyRunError("spectroscopy execution evidence is missing")
+    runtime_batch = workflow.get("runtime_batch")
+    if artifact_version == SCAN_ARTIFACT_VERSION and runtime_batch is not None:
+        if not isinstance(runtime_batch, Mapping):
+            raise SpectroscopyRunError("spectroscopy runtime batch binding is invalid")
+        try:
+            batch = verify_circuit_batch(
+                directory / "execution",
+                expected_batch_id=run_id,
+            )
+        except Exception as exc:
+            raise SpectroscopyRunError("spectroscopy runtime batch is invalid") from exc
+        if runtime_batch != _runtime_batch_payload(batch):
+            raise SpectroscopyRunError("spectroscopy runtime batch binding differs")
     return True
+
+
+def _runtime_batch_payload(batch) -> dict[str, Any]:
+    return {
+        "batch_id": batch.batch_id,
+        "request_sha256": batch.request_sha256,
+        "head_sha256": batch.head_sha256,
+        "attempt_count": batch.attempt_count,
+        "point_count": len(batch.results),
+    }
+
+
+def _operation_id(value: str | None) -> str:
+    identifier = value or str(uuid.uuid4())
+    try:
+        parsed = uuid.UUID(identifier)
+    except (ValueError, AttributeError) as exc:
+        raise SpectroscopyRunError("operation_id must be a canonical UUID4") from exc
+    if parsed.version != 4 or str(parsed) != identifier:
+        raise SpectroscopyRunError("operation_id must be a canonical UUID4")
+    return identifier
+
+
+def _reopen_published_scan(
+    target: Path,
+    request: SpectroscopyRequest,
+    context: CircuitExecutionContext,
+    parent_sha256: str,
+    repository_root: Path,
+    coordinator: Path,
+    timeout_s: float,
+    batch_deadline_s: float,
+    execution_profile: CircuitExecutionProfile,
+    cancellation_token: CancellationToken | None,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None,
+) -> SpectroscopyRun:
+    verify_qubit_spectroscopy_scan(target)
+    workflow = _load_canonical(target / "workflow.json", "workflow")
+    parent = workflow.get("parent_configuration")
+    if not isinstance(parent, Mapping) or parent.get("sha256") != parent_sha256:
+        raise SpectroscopyRunError("published spectroscopy parent configuration differs")
+    run_id = _operation_id(workflow.get("run_id"))
+    dataset = run_qubit_spectroscopy(
+        request,
+        context,
+        target / "execution",
+        repository_root,
+        timeout_s=timeout_s,
+        batch_deadline_s=batch_deadline_s,
+        batch_id=run_id,
+        coordinator_root=coordinator,
+        execution_profile=execution_profile,
+        cancellation_token=cancellation_token,
+        progress_callback=progress_callback,
+    )
+    stored_dataset = _load_dataset(target / "dataset.json")
+    analysis = analyze_qubit_spectroscopy(
+        dataset,
+        min_contrast=0.01,
+        quadratic_refinement=True,
+    )
+    if dataset.to_dict() != stored_dataset or analysis.to_dict() != workflow.get("analysis"):
+        raise SpectroscopyRunError("published spectroscopy semantic replay differs")
+    if dataset.runtime_batch is None or workflow.get("runtime_batch") != _runtime_batch_payload(
+        dataset.runtime_batch
+    ):
+        raise SpectroscopyRunError("published spectroscopy runtime batch differs")
+    candidates = workflow.get("candidates")
+    gates = workflow.get("gates")
+    if not isinstance(candidates, list) or not isinstance(gates, list):
+        raise SpectroscopyRunError("published spectroscopy result payload is invalid")
+    receipt_sha256 = _raw_sha256(target / "receipt.json")
+    return SpectroscopyRun(
+        root=target,
+        run_id=run_id,
+        recommendation_id=str(workflow["recommendation_id"]),
+        dataset=dataset,
+        analysis=analysis,
+        recommendation_eligible=workflow.get("recommendation_eligible") is True,
+        candidates=MappingProxyType(
+            {
+                candidate["target"]: MappingProxyType(dict(candidate))
+                for candidate in candidates
+            }
+        ),
+        gates=tuple(MappingProxyType(dict(gate)) for gate in gates),
+        workflow_sha256=_raw_sha256(target / "workflow.json"),
+        receipt_sha256=receipt_sha256,
+    )
+
+
+def _clear_recovery_markers(staging: Path, run_id: str) -> None:
+    (staging / "recovery.json").unlink(missing_ok=True)
+    (staging.parent / f".spectroscopy-recovery-{run_id}.marker").unlink(missing_ok=True)
 
 
 def _request_payload(request: SpectroscopyRequest) -> dict[str, Any]:
@@ -628,7 +797,17 @@ def _relocate_dataset(
             ),
         )
         points.append(replace(point, circuit_result=relocated))
-    return replace(dataset, points=tuple(points))
+    batch = dataset.runtime_batch
+    relocated_batch = (
+        replace(
+            batch,
+            root=_relocate_path(batch.root, source_root, target_root),
+            results=tuple(point.circuit_result for point in points),
+        )
+        if batch is not None
+        else None
+    )
+    return replace(dataset, points=tuple(points), runtime_batch=relocated_batch)
 
 
 def _relocate_path(path: Path, source_root: Path, target_root: Path) -> Path:
@@ -743,7 +922,7 @@ def _recovery_reason(exc: BaseException, publication_attempted: bool) -> str:
         return "publication_failure"
     if isinstance(exc, (KeyboardInterrupt, SystemExit)):
         return "interrupted"
-    if exc.__class__.__name__ == "CancelledError":
+    if isinstance(exc, CircuitBatchCancelledError) or exc.__class__.__name__ == "CancelledError":
         return "cancelled"
     return "failed"
 

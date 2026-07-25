@@ -19,6 +19,7 @@ import sqvm.calibration.spectroscopy as spectroscopy_module
 from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
 from sqvm.calibration.spectroscopy_workflow import run_qubit_spectroscopy_calibration
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_bytes
 from sqvm.web import registrar
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 from tests.support.calibration_requests import spectroscopy_calibration_request as _request
@@ -210,7 +211,7 @@ def test_replace_failure_warns_without_mutating_published_run(
 
 
 def _install_scan_runner(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake_run(circuits, _context_value, output_root, _repository_root, **kwargs):
         execution_root = Path(output_root)
         results = []
         for circuit in circuits:
@@ -222,6 +223,8 @@ def _install_scan_runner(monkeypatch: pytest.MonkeyPatch) -> None:
             results.append(
                 replace(
                     _result(circuit.circuit_id, 0.8, 0.19, 0.0, 0.0),
+                    circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                    readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
                     evidence_root=evidence_root,
                     model_evidence_root=evidence_root,
                 )

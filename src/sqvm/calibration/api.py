@@ -15,6 +15,8 @@ from sqvm.candidate_protocol import (
     normalize_calibration_candidate,
 )
 from sqvm.circuits import CircuitExecutionContext, CircuitExecutionProfile
+from sqvm.runtime.batch import request_circuit_batch_cancellation
+from sqvm.runtime.lifecycle import CancellationToken
 from sqvm.calibration.spectroscopy import (
     SpectroscopyAxis,
     SpectroscopyMode,
@@ -88,6 +90,9 @@ def run_spectroscopy(
     configuration_storage_root: str | Path | None = None,
     repository_root: str | Path | None = None,
     timeout_s: float = 600.0,
+    batch_deadline_s: float = 3600.0,
+    operation_id: str | None = None,
+    cancellation_token: CancellationToken | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> SpectroscopyRun:
     """Run one qubit-spectroscopy experiment from ranges and a shared step.
@@ -148,7 +153,8 @@ def run_spectroscopy(
         binding.root,
         "experiment output root",
     )
-    target = collection / f"qubit_spectroscopy_{uuid.uuid4().hex}"
+    identifier = _canonical_operation_id(operation_id)
+    target = collection / f"qubit_spectroscopy_{identifier.replace('-', '')}"
     return run_qubit_spectroscopy_scan(
         request,
         binding.context,
@@ -156,8 +162,41 @@ def run_spectroscopy(
         target,
         binding.root,
         timeout_s=timeout_s,
+        batch_deadline_s=batch_deadline_s,
+        operation_id=identifier,
         execution_profile=CircuitExecutionProfile.CALIBRATION_SCAN,
+        cancellation_token=cancellation_token,
         progress_callback=progress_callback,
+    )
+
+
+def cancel_spectroscopy(
+    operation_id: str,
+    *,
+    device_id: str = "demo_2q1c2r",
+    output_root: str | Path | None = None,
+    configuration_storage_root: str | Path | None = None,
+    repository_root: str | Path | None = None,
+) -> Path:
+    """Request cooperative cancellation before the next spectroscopy point."""
+
+    identifier = _canonical_operation_id(operation_id)
+    binding = _active_configuration(
+        device_id=device_id,
+        configuration_storage_root=configuration_storage_root,
+        repository_root=repository_root,
+    )
+    collection = _inside_repository(
+        output_root
+        if output_root is not None
+        else binding.root / "output" / "experiments",
+        binding.root,
+        "experiment output root",
+    )
+    return request_circuit_batch_cancellation(
+        collection / ".runtime-v03",
+        identifier,
+        binding.root,
     )
 
 
@@ -516,6 +555,17 @@ def _repository_root(value: str | Path | None) -> Path:
     return Path(value).resolve() if value is not None else Path(__file__).resolve().parents[3]
 
 
+def _canonical_operation_id(value: str | None) -> str:
+    identifier = value or str(uuid.uuid4())
+    try:
+        parsed = uuid.UUID(identifier)
+    except (ValueError, AttributeError) as exc:
+        raise CalibrationExperimentError("operation_id must be a canonical UUID4") from exc
+    if parsed.version != 4 or str(parsed) != identifier:
+        raise CalibrationExperimentError("operation_id must be a canonical UUID4")
+    return identifier
+
+
 def _inside_repository(value: str | Path, root: Path, label: str) -> Path:
     path = Path(value)
     path = (root / path).resolve() if not path.is_absolute() else path.resolve()
@@ -533,6 +583,7 @@ __all__ = [
     "SpectroscopyParameterUpdate",
     "apply_calibration_candidates_to_current_configuration",
     "apply_spectroscopy_candidates_to_current_configuration",
+    "cancel_spectroscopy",
     "run_active_qubit_spectroscopy_calibration",
     "run_spectroscopy",
 ]
