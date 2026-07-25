@@ -6,9 +6,13 @@ pytestmark = _pytest.mark.integration
 
 import copy
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
+import time
 from types import SimpleNamespace
 import uuid
 
@@ -28,6 +32,7 @@ from sqvm.web import (
 )
 from sqvm.web.configuration_schema import validate_editable
 from sqvm.web.configuration_schema import project_wave_indices
+from sqvm.web.configuration_transactions import ConfigurationTransactionManager
 from sqvm.runtime.calibration_model import calibration_model_configuration_sha256
 
 
@@ -181,6 +186,12 @@ def _published_store(tmp_path: Path):
     return store, snapshot
 
 
+def _committed_projection(store: PlatformConfigurationStore) -> Path:
+    return ConfigurationTransactionManager(store.root).committed_view(
+        "demo_2q1c2r"
+    ).projection_root
+
+
 def test_configuration_delete_rejects_real_symlink_without_touching_external_target(platform_root: Path):
     store = PlatformConfigurationStore(ROOT, platform_root / "platform-configurations")
     draft = store.create_draft(
@@ -206,7 +217,7 @@ def test_configuration_delete_rejects_real_symlink_without_touching_external_tar
 
 def test_configuration_snapshot_delete_rejects_real_symlink_without_touching_external_target(platform_root: Path):
     store, snapshot = _published_store(platform_root)
-    snapshot_root = store.snapshots_root / snapshot["snapshot_id"]
+    snapshot_root = _committed_projection(store) / "snapshots" / snapshot["snapshot_id"]
     external = platform_root / "external-snapshot"
     external.mkdir()
     sentinel = external / "sentinel.txt"
@@ -288,7 +299,15 @@ def test_configuration_delete_removes_normal_draft_and_snapshot(platform_root: P
     store.delete_draft(draft["draft_id"], actor_id="project.manager")
     assert not draft_root.exists()
 
-    published_store, snapshot = _published_store(platform_root / "published")
+    published_store, _current_snapshot = _published_store(platform_root / "published")
+    draft = published_store.draft(published_store.drafts()[0]["draft_id"])
+    snapshot = published_store.publish_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        expected_content_sha256=draft["content_sha256"],
+        name="Unreferenced snapshot",
+        reason="exercise snapshot deletion",
+    )
     snapshot_root = published_store.snapshots_root / snapshot["snapshot_id"]
     published_store.delete_snapshot(snapshot["snapshot_id"], actor_id="project.manager")
     assert not snapshot_root.exists()
@@ -407,7 +426,7 @@ def test_uninitialized_is_not_active_and_typed_snapshot_resolves_immutably(platf
 def test_resolver_detects_record_and_pointer_tampering(platform_root: Path):
     store, snapshot = _published_store(platform_root)
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
-    path = store.snapshots_root / snapshot["snapshot_id"] / "snapshot.json"
+    path = _committed_projection(store) / "snapshots" / snapshot["snapshot_id"] / "snapshot.json"
     raw = __import__("json").loads(path.read_text("utf-8"))
     raw["editable"]["calibration_values"]["waveform_registry"]["settings"]["q1_xy"]["setting_hash"] = "0" * 64
     path.write_text(__import__("json").dumps(raw), "utf-8")
@@ -418,7 +437,7 @@ def test_resolver_detects_record_and_pointer_tampering(platform_root: Path):
 def test_resolver_detects_active_pointer_tampering(platform_root: Path):
     store, snapshot = _published_store(platform_root)
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
-    pointer = store.active_root / "demo_2q1c2r.json"
+    pointer = _committed_projection(store) / "active" / "demo_2q1c2r.json"
     raw = __import__("json").loads(pointer.read_text("utf-8"))
     raw["snapshot_content_sha256"] = "0" * 64
     pointer.write_text(__import__("json").dumps(raw), "utf-8")
@@ -516,6 +535,67 @@ def test_current_configuration_saves_snapshots_and_restores_versions(platform_ro
     ]
 
 
+def test_two_processes_with_same_expected_hash_commit_exactly_once(
+    platform_root: Path,
+):
+    store, _snapshot = _published_store(platform_root)
+    before = store.current_configuration("demo_2q1c2r")
+    coordination = platform_root / "concurrency"
+    coordination.mkdir()
+    go = coordination / "go"
+    environment = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    processes = []
+    result_paths = []
+    for index in range(2):
+        ready = coordination / f"ready-{index}"
+        result_path = coordination / f"result-{index}.json"
+        result_paths.append(result_path)
+        processes.append(
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(
+                        ROOT
+                        / "tests"
+                        / "support"
+                        / "configuration_store_concurrent_worker.py"
+                    ),
+                    str(ROOT),
+                    str(store.root),
+                    str(ready),
+                    str(go),
+                    str(result_path),
+                    str(uuid.uuid4()),
+                    f"worker-{index}",
+                ],
+                cwd=ROOT,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
+    deadline = time.monotonic() + 15
+    while not all((coordination / f"ready-{index}").is_file() for index in range(2)):
+        if time.monotonic() >= deadline:
+            for process in processes:
+                process.kill()
+            raise AssertionError("concurrent workers did not become ready")
+        time.sleep(0.02)
+    go.write_text("go", encoding="ascii")
+    diagnostics = [process.communicate(timeout=30) for process in processes]
+
+    assert [process.returncode for process in processes] == [0, 0], diagnostics
+    results = [json.loads(path.read_text("utf-8")) for path in result_paths]
+    assert sorted(row["status"] for row in results) == [200, 409]
+    failure = next(row for row in results if row["status"] == 409)
+    assert "changed since it was loaded" in failure["message"]
+    after = PlatformConfigurationStore(ROOT, store.root).current_configuration(
+        "demo_2q1c2r"
+    )
+    assert after["revision"] == before["revision"] + 1
+
+
 def test_draft_diff_uses_initial_checkpoint_and_groups_editable_changes(platform_root: Path):
     store, snapshot = _published_store(platform_root)
     draft = store.create_draft(snapshot, actor_id="project.manager", name="Workbench diff")
@@ -561,7 +641,7 @@ def test_draft_diff_uses_initial_checkpoint_and_groups_editable_changes(platform
 def test_resolver_detects_readonly_authority_tampering(platform_root: Path, field: str):
     store, snapshot = _published_store(platform_root)
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
-    path = store.snapshots_root / snapshot["snapshot_id"] / "snapshot.json"
+    path = _committed_projection(store) / "snapshots" / snapshot["snapshot_id"] / "snapshot.json"
     raw = __import__("json").loads(path.read_text("utf-8"))
     raw["readonly"]["authority_refs"][field] = "0" * 64
     path.write_text(__import__("json").dumps(raw), "utf-8")

@@ -56,17 +56,17 @@ jobs:
             command: python tools/verify_authority_drift.py
             pytest: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.candidate_sha || github.event.inputs.candidate_sha || github.sha }}
           fetch-depth: 1
       - name: Prepare controlled artifacts directory
         shell: bash
         run: mkdir -p artifacts
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: 3.12.10
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-cp31210-${{ hashFiles('requirements-test-py312-windows-lock.txt', 'pyproject.toml') }}
@@ -115,7 +115,7 @@ jobs:
           git diff --cached --exit-code -- .
       - name: Upload hosted evidence receipts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: evidence-${{ matrix.job }}-${{ github.run_id }}
           path: artifacts/
@@ -129,7 +129,7 @@ jobs:
     runs-on: [self-hosted, stage4-v1-approved-environment]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.candidate_sha || github.sha }}
           fetch-depth: 1
@@ -154,7 +154,7 @@ jobs:
           exit "$count_status"
       - name: Upload approved-environment evidence receipt
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stage4-v1-approved-environment-${{ github.run_id }}
           path: artifacts/

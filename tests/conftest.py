@@ -50,6 +50,8 @@ MODULE_PRIMARY_MARKERS = {
     "test_calibration_scan_execution.py": "physics_slow",
     "test_calibration_web.py": "integration",
     "test_calibration_web_ui.py": "integration",
+    "test_ci_workflows.py": "contract",
+    "test_configuration_transactions.py": "contract",
     "test_control_channel_compatibility.py": "evidence",
     "test_control_signal.py": "evidence",
     "test_device_capacitance.py": "contract",

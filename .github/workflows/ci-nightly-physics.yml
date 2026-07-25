@@ -31,7 +31,7 @@ jobs:
     continue-on-error: ${{ matrix.advisory }}
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
         include:
           - platform: windows
@@ -48,17 +48,17 @@ jobs:
       MKL_NUM_THREADS: '1'
       NUMEXPR_NUM_THREADS: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.candidate_sha || github.event.inputs.candidate_sha || github.sha }}
           fetch-depth: 1
       - name: Prepare controlled artifacts directory
         shell: bash
         run: mkdir -p artifacts
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: 3.12.10
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-cp31210-${{ hashFiles(matrix.lock, 'pyproject.toml') }}
@@ -114,7 +114,7 @@ jobs:
           git diff --cached --exit-code -- .
       - name: Upload physics diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: physics-${{ matrix.platform }}-${{ github.run_id }}
           path: artifacts/

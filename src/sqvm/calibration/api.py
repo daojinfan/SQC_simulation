@@ -321,6 +321,7 @@ def apply_calibration_candidates_to_current_configuration(
     configuration_storage_root: str | Path | None = None,
     repository_root: str | Path | None = None,
     expected_current_content_sha256: str | None = None,
+    operation_id: str | None = None,
 ) -> CalibrationCandidateUpdate:
     """Verify and atomically apply eligible experiment candidates.
 
@@ -404,6 +405,7 @@ def apply_calibration_candidates_to_current_configuration(
             experiment_run_id=run_id,
             recommendation_id=workflow.get("recommendation_id") or run_id,
             candidates=selected_candidates,
+            operation_id=operation_id,
         )
     except ValueError as exc:
         raise CalibrationExperimentError(str(exc)) from exc
@@ -451,6 +453,7 @@ def apply_spectroscopy_candidates_to_current_configuration(
     configuration_storage_root: str | Path | None = None,
     repository_root: str | Path | None = None,
     expected_current_content_sha256: str | None = None,
+    operation_id: str | None = None,
 ) -> SpectroscopyParameterUpdate:
     """Compatibility wrapper for the former spectroscopy-specific update API."""
 
@@ -466,6 +469,7 @@ def apply_spectroscopy_candidates_to_current_configuration(
         configuration_storage_root=configuration_storage_root,
         repository_root=repository_root,
         expected_current_content_sha256=expected_current_content_sha256,
+        operation_id=operation_id,
     )
     values = {
         target: float(value)

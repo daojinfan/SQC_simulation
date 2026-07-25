@@ -19,6 +19,10 @@ from sqvm.web.configuration_schema import (
     project_wave_indices,
     validate_document,
 )
+from sqvm.web.configuration_transactions import (
+    ConfigurationTransactionError,
+    ConfigurationTransactionManager,
+)
 
 
 class PlatformAuthorityResolutionError(ValueError):
@@ -34,13 +38,28 @@ class PlatformAuthorityResolver:
         self.root = (Path(storage_root).resolve() if storage_root else self.repository_root / "output" / "platform-configurations")
 
     def resolve(self, device_id: str = "demo_2q1c2r") -> CircuitExecutionContext:
-        pointer = self._load(self.root / "active" / f"{device_id}.json", "active pointer")
+        authority_root = self.root
+        transactions = ConfigurationTransactionManager(self.root)
+        if transactions.head_exists(device_id):
+            try:
+                authority_root = transactions.committed_view(device_id).projection_root
+            except ConfigurationTransactionError as exc:
+                raise PlatformAuthorityResolutionError(
+                    f"configuration transaction authority is invalid: {exc}"
+                ) from exc
+        pointer = self._load(
+            authority_root / "active" / f"{device_id}.json",
+            "active pointer",
+        )
         if pointer.get("device_id") != device_id:
             raise PlatformAuthorityResolutionError("Active pointer device does not match request")
         snapshot_id = pointer.get("snapshot_id")
         if not isinstance(snapshot_id, str):
             raise PlatformAuthorityResolutionError("Active pointer snapshot id is invalid")
-        snapshot = self._load(self.root / "snapshots" / snapshot_id / "snapshot.json", "active snapshot")
+        snapshot = self._load(
+            authority_root / "snapshots" / snapshot_id / "snapshot.json",
+            "active snapshot",
+        )
         if snapshot.get("snapshot_id") != snapshot_id or snapshot.get("device_id") != device_id:
             raise PlatformAuthorityResolutionError("Active pointer does not resolve its snapshot")
         if snapshot.get("content_sha256") != pointer.get("snapshot_content_sha256") or snapshot.get("content_sha256") != sha256_json(snapshot.get("editable")):
