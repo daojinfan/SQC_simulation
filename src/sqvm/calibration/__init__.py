@@ -45,8 +45,24 @@ from sqvm.calibration.api import (
     apply_calibration_candidates_to_current_configuration,
     apply_spectroscopy_candidates_to_current_configuration,
     cancel_spectroscopy,
+    cancel_rabi,
     run_active_qubit_spectroscopy_calibration,
     run_spectroscopy,
+    run_rabi,
+)
+from sqvm.calibration.rabi import (
+    RABI_SCAN_WORKFLOW_ID,
+    RabiAmplitudeAxis,
+    RabiAnalysis,
+    RabiDataset,
+    RabiError,
+    RabiRequest,
+    RabiRun,
+    amplitude_axis,
+    analyze_rabi,
+    build_rabi_circuits,
+    run_qubit_rabi_scan,
+    verify_rabi_scan,
 )
 
 __all__ = [
@@ -90,4 +106,18 @@ __all__ = [
     "cancel_spectroscopy",
     "run_active_qubit_spectroscopy_calibration",
     "run_spectroscopy",
+    "RABI_SCAN_WORKFLOW_ID",
+    "RabiAmplitudeAxis",
+    "RabiAnalysis",
+    "RabiDataset",
+    "RabiError",
+    "RabiRequest",
+    "RabiRun",
+    "amplitude_axis",
+    "analyze_rabi",
+    "build_rabi_circuits",
+    "run_qubit_rabi_scan",
+    "verify_rabi_scan",
+    "cancel_rabi",
+    "run_rabi",
 ]

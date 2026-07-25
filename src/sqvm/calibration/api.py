@@ -35,6 +35,14 @@ from sqvm.calibration.spectroscopy_run import (
     run_qubit_spectroscopy_scan,
     verify_qubit_spectroscopy_scan,
 )
+from sqvm.calibration.rabi import (
+    RABI_SCAN_WORKFLOW_ID,
+    RabiRun,
+    RabiRequest,
+    amplitude_axis,
+    run_qubit_rabi_scan,
+    verify_rabi_scan,
+)
 from sqvm.web.configuration import PlatformConfigurationStore
 
 
@@ -198,6 +206,66 @@ def cancel_spectroscopy(
         identifier,
         binding.root,
     )
+
+
+def run_rabi(
+    target: str,
+    amplitude_range_GHz: Sequence[float],
+    amplitude_step_GHz: float,
+    *,
+    device_id: str = "demo_2q1c2r",
+    output_root: str | Path | None = None,
+    configuration_storage_root: str | Path | None = None,
+    repository_root: str | Path | None = None,
+    timeout_s: float = 600.0,
+    batch_deadline_s: float = 3600.0,
+    operation_id: str | None = None,
+    cancellation_token: CancellationToken | None = None,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+) -> RabiRun:
+    """Run one first-lobe X2P + X2P amplitude calibration scan.
+
+    The amplitude range and step are mandatory because their physical scale is
+    device-specific.  Each point contains exactly one SET and two X2P lines.
+    """
+    binding = _active_configuration(
+        device_id=device_id, configuration_storage_root=configuration_storage_root,
+        repository_root=repository_root,
+    )
+    axis = amplitude_axis(amplitude_range_GHz, amplitude_step_GHz, target)
+    collection = _inside_repository(
+        output_root if output_root is not None else binding.root / "output" / "experiments",
+        binding.root, "experiment output root",
+    )
+    identifier = _canonical_operation_id(operation_id)
+    return run_qubit_rabi_scan(
+        RabiRequest(target, axis), binding.context, binding.parent_path,
+        collection / f"qubit_rabi_{identifier.replace('-', '')}", binding.root,
+        timeout_s=timeout_s, batch_deadline_s=batch_deadline_s, operation_id=identifier,
+        execution_profile=CircuitExecutionProfile.CALIBRATION_SCAN,
+        cancellation_token=cancellation_token, progress_callback=progress_callback,
+    )
+
+
+def cancel_rabi(
+    operation_id: str,
+    *,
+    device_id: str = "demo_2q1c2r",
+    output_root: str | Path | None = None,
+    configuration_storage_root: str | Path | None = None,
+    repository_root: str | Path | None = None,
+) -> Path:
+    """Request cooperative cancellation before the next Rabi point."""
+    identifier = _canonical_operation_id(operation_id)
+    binding = _active_configuration(
+        device_id=device_id, configuration_storage_root=configuration_storage_root,
+        repository_root=repository_root,
+    )
+    collection = _inside_repository(
+        output_root if output_root is not None else binding.root / "output" / "experiments",
+        binding.root, "experiment output root",
+    )
+    return request_circuit_batch_cancellation(collection / ".runtime-v03", identifier, binding.root)
 
 
 def run_active_qubit_spectroscopy_calibration(
@@ -536,6 +604,8 @@ def _verified_candidate_workflow(run_root: Path) -> dict[str, Any]:
         verify_qubit_spectroscopy_scan(run_root)
     elif workflow_id == "qubit_spectroscopy_calibration_v1":
         verify_qubit_spectroscopy_calibration(run_root)
+    elif workflow_id == RABI_SCAN_WORKFLOW_ID:
+        verify_rabi_scan(run_root)
     else:
         raise CalibrationExperimentError(
             f"calibration workflow has no candidate verifier: {workflow_id!r}"
@@ -580,10 +650,13 @@ __all__ = [
     "CalibrationCandidateUpdate",
     "CalibrationExperimentError",
     "SpectroscopyRun",
+    "RabiRun",
     "SpectroscopyParameterUpdate",
     "apply_calibration_candidates_to_current_configuration",
     "apply_spectroscopy_candidates_to_current_configuration",
     "cancel_spectroscopy",
+    "cancel_rabi",
     "run_active_qubit_spectroscopy_calibration",
     "run_spectroscopy",
+    "run_rabi",
 ]
