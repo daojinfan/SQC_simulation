@@ -143,13 +143,12 @@ def write_sqrun(
         DirectoryEvidenceReader(source, entries).read_bytes("workflow.json"), "workflow"
     )
     run_id, workflow_id, source_artifact_version = _workflow_identity(workflow)
-    from sqvm.storage.workflow_verifiers import hot_alias_prefix, get_workflow_evidence_verifier
+    from sqvm.storage.workflow_verifiers import get_workflow_evidence_verifier, valid_hot_alias_for
     # This generic writer is also used by tests and future verifier owners;
     # operations decide whether a workflow is archivable.  Known production
     # workflows additionally bind their carrier name to the registry.
     if get_workflow_evidence_verifier(workflow_id, source_artifact_version) is not None:
-        prefix = hot_alias_prefix(workflow_id, source_artifact_version)
-        if prefix is None or source.name != f"{prefix}{run_id.replace('-', '')}":
+        if not valid_hot_alias_for(workflow_id, source_artifact_version, run_id, source.name):
             raise ArchiveFormatError("source directory name does not match registered workflow")
     _safe_single_component(source.name, "original directory name")
     manifest = _manifest(run_id, workflow_id, source_artifact_version, source.name, entries)

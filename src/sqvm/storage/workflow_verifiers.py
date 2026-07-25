@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import MappingProxyType
 from typing import Mapping
+import re
+import uuid
 
 from sqvm.storage.archive_format import EvidenceVerifier
 
@@ -44,6 +46,7 @@ _ALIASES = MappingProxyType({
     ("qubit_spectroscopy_scan_v1", "0.3"): "qubit_spectroscopy_",
     ("qubit_rabi_x2p_amplitude_scan_v1", "0.1"): "qubit_rabi_",
 })
+_HEX_UUID = re.compile(r"[0-9a-f]{32}$")
 
 
 def get_workflow_evidence_verifier(
@@ -84,7 +87,38 @@ def hot_alias_prefix(workflow_id: str, artifact_version: str) -> str | None:
 
 
 def valid_hot_alias(value: object) -> bool:
-    return isinstance(value, str) and 1 <= len(value) <= 128 and "\x00" not in value and "/" not in value and "\\" not in value and ":" not in value and value not in {".", ".."} and any(value.startswith(prefix) for prefix in _ALIASES.values())
+    if not isinstance(value, str) or not 1 <= len(value) <= 128 or "\x00" in value or "/" in value or "\\" in value or ":" in value or value in {".", ".."}:
+        return False
+    for (workflow_id, artifact_version), prefix in _ALIASES.items():
+        if value.startswith(prefix):
+            return valid_hot_alias_for(workflow_id, artifact_version, None, value)
+    return False
+
+
+def valid_hot_alias_for(
+    workflow_id: str,
+    artifact_version: str,
+    run_id: str | None,
+    value: object,
+) -> bool:
+    """Validate the registered carrier shape and any workflow-specific binding."""
+    prefix = hot_alias_prefix(workflow_id, artifact_version)
+    if prefix is None or not isinstance(value, str) or not value.startswith(prefix):
+        return False
+    suffix = value.removeprefix(prefix)
+    if workflow_id == "qubit_rabi_x2p_amplitude_scan_v1":
+        return _HEX_UUID.fullmatch(suffix) is not None and (
+            run_id is None or suffix == run_id.replace("-", "")
+        )
+    if workflow_id == "qubit_spectroscopy_scan_v1":
+        if _HEX_UUID.fullmatch(suffix) is not None:
+            return True
+        try:
+            canonical = str(uuid.UUID(suffix))
+        except (ValueError, AttributeError):
+            return False
+        return canonical == suffix and (run_id is None or suffix == run_id)
+    return False
 
 
 def hot_alias_prefixes() -> tuple[str, ...]:
@@ -97,4 +131,5 @@ __all__ = [
     "archive_evidence_verifier_registry", "get_workflow_evidence_verifier",
     "workflow_evidence_verifier_registry", "workflow_hot_verifier_registry",
     "hot_alias_prefix", "hot_alias_prefixes", "valid_hot_alias",
+    "valid_hot_alias_for",
 ]

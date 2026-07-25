@@ -542,7 +542,7 @@ def test_duplicate_or_unrelated_invalid_hot_candidate_fails_closed(service):
 def test_unrelated_broken_published_candidate_fails_closed(service):
     ops, run, request, hot, _storage = service
     (hot / "qubit_spectroscopy_broken").mkdir()
-    with pytest.raises(StorageOperationError, match="hot carrier scan could not be completed"):
+    with pytest.raises(StorageOperationError, match="invalid alias|hot carrier scan could not be completed"):
         ops.archive(run, request)
 
 

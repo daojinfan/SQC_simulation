@@ -821,6 +821,10 @@ def _run_id(value: object) -> str:
 
 def _name_run_id(name: str) -> str | None:
     from sqvm.storage.workflow_verifiers import hot_alias_prefixes
+    try:
+        return _run_id(name)
+    except Exception:
+        pass
     for prefix in hot_alias_prefixes():
         if name.startswith(prefix):
             try:

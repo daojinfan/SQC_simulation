@@ -19,7 +19,7 @@ from sqvm.storage.archive_format import DirectoryEvidenceReader, write_sqrun
 from sqvm.storage.archive_verify import ArchiveLimits, ZipEvidenceReader, verify_sqrun
 from sqvm.storage.lifecycle import LifecycleConflict, LifecycleError, append_event, read_head
 from sqvm.storage.references import build_reference_graph
-from sqvm.storage.workflow_verifiers import archive_evidence_verifier_registry, get_workflow_evidence_verifier, hot_alias_prefix, hot_alias_prefixes, valid_hot_alias, workflow_hot_verifier_registry
+from sqvm.storage.workflow_verifiers import archive_evidence_verifier_registry, get_workflow_evidence_verifier, hot_alias_prefixes, valid_hot_alias, valid_hot_alias_for, workflow_hot_verifier_registry
 
 
 class StorageOperationError(RuntimeError):
@@ -433,8 +433,9 @@ class ExperimentStorageOperations:
         verifier = workflow_hot_verifier_registry().get((workflow.get("workflow_id"), workflow.get("artifact_version")))
         if verifier is None:
             raise StorageOperationError("hot carrier is not explicitly registered")
-        expected_prefix = hot_alias_prefix(workflow.get("workflow_id"), workflow.get("artifact_version"))
-        if require_alias and (expected_prefix is None or path.name != f"{expected_prefix}{run_id.replace('-', '')}"):
+        if require_alias and not valid_hot_alias_for(
+            workflow.get("workflow_id"), workflow.get("artifact_version"), run_id, path.name
+        ):
             raise StorageOperationError("hot carrier alias does not bind run identity")
         try: verifier(path)
         except Exception as exc: raise StorageOperationError("hot carrier verifier rejected run") from exc
