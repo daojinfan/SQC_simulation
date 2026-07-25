@@ -24,7 +24,9 @@ def _run_rabi():
 def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent() -> None:
     run_rabi = _run_rabi()
     operation_id = "8dc263a6-88a4-4f8c-b1b0-567711c3c9f7"
-    isolated_root = ROOT / "tmp" / f"rabi_acceptance_{uuid.uuid4().hex}"
+    # Keep the fixture portable inside deep Codex/Git worktree roots while the
+    # product's Windows evidence-path preflight remains strict.
+    isolated_root = ROOT / "tmp" / f"ra_{uuid.uuid4().hex[:8]}"
     storage = isolated_root / "platform-configurations"
     collection = isolated_root / "experiments"
     try:
@@ -32,7 +34,7 @@ def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent() -> None:
         run = run_rabi(
             target="Q1",
             amplitude_range_GHz=(0.0, 0.03),
-            amplitude_step_GHz=0.01,
+            amplitude_step_GHz=0.0075,
             output_root=collection,
             configuration_storage_root=storage,
             repository_root=ROOT,
@@ -53,7 +55,7 @@ def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent() -> None:
         workflow = json.loads((root / "workflow.json").read_text(encoding="utf-8"))
         dataset = json.loads((root / "dataset.json").read_text(encoding="utf-8"))
         assert workflow["workflow_id"] == "qubit_rabi_x2p_amplitude_scan_v1"
-        assert dataset["axis"]["values"] == [0.0, 0.01, 0.02, 0.03]
+        assert dataset["axis"]["values"] == [0.0, 0.0075, 0.015, 0.0225, 0.03]
         assert list(dataset["series"]["Q1"]) == ["P0", "P1", "leakage", "norm_error"]
         for index, point in enumerate(dataset["points"]):
             assert point["circuit_id"] == f"rabi_q1_{index:04d}"
@@ -73,7 +75,7 @@ def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent() -> None:
         replay = run_rabi(
             target="Q1",
             amplitude_range_GHz=(0.0, 0.03),
-            amplitude_step_GHz=0.01,
+            amplitude_step_GHz=0.0075,
             output_root=collection,
             configuration_storage_root=storage,
             repository_root=ROOT,
