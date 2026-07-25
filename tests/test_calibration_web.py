@@ -6,6 +6,7 @@ pytestmark = _pytest.mark.integration
 
 import copy
 from dataclasses import replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,13 @@ from sqvm.web import (
     create_calibration_web_server,
 )
 from sqvm.web.server import ExperimentStorageWebService, StorageWebError
+from sqvm.web.plotting import build_rabi_amplitude_plot_spec
+from sqvm.web.server import _selected_candidates
+from sqvm.candidate_protocol import (
+    calibration_candidate,
+    parameter_change,
+    set_parameter_value,
+)
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 from tests.support.calibration_requests import spectroscopy_calibration_request as _request
 from tests.support.synthetic_runners import install_synthetic_spectroscopy_runner as _install_synthetic_runner
@@ -38,6 +46,114 @@ PARENT = Path(__file__).resolve().parents[1] / "configs" / "calibration" / "plat
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _rabi_dataset() -> dict[str, object]:
+    return {
+        "experiment_id": "qubit_rabi_x2p_amplitude_v1",
+        "target": "Q1",
+        "axis": {"name": "amplitude_GHz", "unit": "GHz", "values": [0.0, 0.05, 0.1]},
+        "series": {"Q1": {
+            "P0": [1.0, 0.75, 0.1], "P1": [0.0, 0.25, 0.9],
+            "leakage": [0.0, 0.0, 0.01], "norm_error": [0.0, 0.0, 0.0],
+            "P1_fit": [0.0, 0.3, 0.85],
+        }},
+        "points": [{"point_index": 0}, {"point_index": 1}, {"point_index": 2}],
+    }
+
+
+def _rabi_candidate() -> dict[str, object]:
+    return calibration_candidate(
+        "Q1.xy2_amplitude", "Q1", [parameter_change(
+            "calibration_values.waveform_registry.settings.q1_xy2.amplitude_GHz",
+            0.08, 0.091, unit="GHz", configuration_resource={
+                "owner": "Q1", "resource_type": "waveform_setting", "resource_id": "q1_xy2",
+            },
+        )], candidate_type="xy2_amplitude", recommendation_eligible=True,
+        source_dataset_sha256s=["D" * 64],
+    )
+
+
+def test_rabi_plot_adapter_exposes_raw_fit_and_candidate_marker():
+    spec = build_rabi_amplitude_plot_spec("Q1", _rabi_dataset(), candidate_amplitude_GHz=0.091)
+
+    assert spec["plot_id"] == "qubit_rabi_x2p_amplitude"
+    assert [row["id"] for row in spec["objects"]] == ["Q1"]
+    assert [row["id"] for row in spec["metrics"]] == ["P0", "P1", "leakage", "norm_error", "P1_fit"]
+    assert {row["group_id"] for row in spec["series"]} == {"raw", "fit"}
+    assert spec["markers"] == [{"id": "candidate_amplitude", "label": "Candidate X2P amplitude", "x": 0.091}]
+
+
+def test_rabi_candidate_change_updates_only_the_active_waveform_setting_amplitude():
+    editable = {"calibration_values": {"waveform_registry": {"settings": {
+        "q1_xy2": {"amplitude_GHz": 0.08, "length_samples": 32},
+    }}}}
+    change = _rabi_candidate()["changes"][0]
+
+    set_parameter_value(editable, change)
+
+    assert editable["calibration_values"]["waveform_registry"]["settings"]["q1_xy2"] == {
+        "amplitude_GHz": 0.091,
+        "length_samples": 32,
+    }
+
+
+def test_rabi_web_renderer_reuses_the_unified_plot_and_candidate_confirmation():
+    source = (ROOT / "src" / "sqvm" / "web" / "static" / "app.js").read_text("utf-8")
+
+    assert '["qubit_rabi_x2p_amplitude_scan_v1", renderRabiAmplitude]' in source
+    assert "function renderRabiAmplitude(detail, routeContext = null)" in source
+    assert "function rabiCsv(dataset)" in source
+    assert "installUnifiedPlots(detail.plot_specs || [], routeContext)" in source
+    assert "openCandidateUpdate(detail, eligibleCandidates)" in source
+    assert "for (const marker of controller.spec.markers || [])" in source
+
+
+def test_rabi_projection_keeps_evidence_out_of_detail_and_preserves_apply_change(tmp_path):
+    repository = tmp_path / "repository"
+    output = repository / "output"
+    run_root = output / "experiments" / "rabi-run"
+    run_root.mkdir(parents=True)
+    candidate = _rabi_candidate()
+    workflow = {
+        "artifact_version": "0.1", "workflow_id": "qubit_rabi_x2p_amplitude_scan_v1",
+        "run_id": "rabi-run", "status": "completed",
+        "request": {"target": "Q1", "amplitude_range_GHz": [0.0, 0.1]},
+        "analysis": {"x2p_amplitude_GHz": 0.091}, "gates": [{"name": "fit", "passed": True}],
+        "recommendation_eligible": True, "candidates": [candidate],
+    }
+    dataset_raw = json.dumps(_rabi_dataset()).encode("utf-8")
+    dataset_sha256 = hashlib.sha256(dataset_raw).hexdigest().upper()
+    workflow["dataset"] = {"path": "dataset.json", "sha256": dataset_sha256}
+    workflow_raw = json.dumps(workflow).encode("utf-8")
+    workflow_sha256 = hashlib.sha256(workflow_raw).hexdigest().upper()
+    (run_root / "workflow.json").write_bytes(workflow_raw)
+    (run_root / "dataset.json").write_bytes(dataset_raw)
+    receipt = {
+        "run_id": "rabi-run", "status": "completed", "workflow_sha256": workflow_sha256,
+        "dataset_sha256": dataset_sha256,
+    }
+    report = {**receipt, "ok": True}
+    (run_root / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    (run_root / "verification_report.json").write_text(json.dumps(report), encoding="utf-8")
+    evidence = run_root / "execution" / "point-0000"
+    evidence.mkdir(parents=True)
+    (evidence / "must_not_be_read.bin").write_bytes(b"evidence")
+
+    index = CalibrationWebIndex(repository, output)
+    summary = index.experiments()[0]
+    detail = index.experiment("rabi-run")
+
+    assert summary["experiment_kind"] == "qubit_rabi_x2p_amplitude_scan_v1"
+    assert summary["targets"] == ["Q1"]
+    assert summary["recommendation_applicable"] is True
+    assert detail["renderer"] == "qubit_rabi_x2p_amplitude"
+    assert detail["evidence_paths"] == []
+    assert detail["plot_specs"][0]["markers"][0]["x"] == 0.091
+    selected = _selected_candidates(detail, {"candidate_ids": ["Q1.xy2_amplitude"]})
+    assert selected[0]["changes"][0]["parameter_path"] == (
+        "calibration_values.waveform_registry.settings.q1_xy2.amplitude_GHz"
+    )
 
 
 @pytest.fixture

@@ -53,8 +53,10 @@ window.addEventListener("beforeunload", (event) => {
 const renderers = new Map([
   ["qubit_spectroscopy_calibration_v1", renderSpectroscopy],
   ["qubit_spectroscopy_scan_v1", renderSpectroscopyScan],
+  ["qubit_rabi_x2p_amplitude_scan_v1", renderRabiAmplitude],
   ["qubit_spectroscopy", renderSpectroscopy],
   ["qubit_spectroscopy_scan", renderSpectroscopyScan],
+  ["qubit_rabi_x2p_amplitude", renderRabiAmplitude],
 ]);
 
 async function api(path, options = {}) {
@@ -1392,6 +1394,8 @@ function normalizeExperimentDetail(detail, requestedId) {
   } else if (["qubit_spectroscopy_calibration_v1", "qubit_spectroscopy"].includes(rendererKey)) {
     datasets.coarse ||= { points: [] };
     datasets.refined ||= { points: [] };
+  } else if (["qubit_rabi_x2p_amplitude_scan_v1", "qubit_rabi_x2p_amplitude"].includes(rendererKey)) {
+    datasets.scan ||= {};
   }
   const gates = Array.isArray(source.gates) ? source.gates : [];
   const suppliedGateSummary = source.gate_summary && typeof source.gate_summary === "object" ? source.gate_summary : {};
@@ -1462,6 +1466,36 @@ function renderSpectroscopyScan(detail, routeContext = null) {
   document.querySelector("#export-experiment-json").addEventListener("click", () => downloadText(`spectroscopy-${detail.run_id}.json`, JSON.stringify({ request: detail.request, dataset: detail.datasets.scan, analysis: detail.analysis, gates: detail.gates, candidates: detail.candidates }, null, 2), "application/json"));
   document.querySelector("#export-experiment-csv").addEventListener("click", () => downloadText(`spectroscopy-${detail.run_id}.csv`, spectroscopyCsv(detail), "text/csv"));
   if (eligibleCandidates.length) document.querySelector("#apply-candidates").addEventListener("click", () => openCandidateUpdate(detail, eligibleCandidates));
+}
+
+function renderRabiAmplitude(detail, routeContext = null) {
+  const eligibleCandidates = detail.candidates.filter((row) => row.recommendation_eligible);
+  const dataset = detail.datasets.scan || {};
+  const axis = dataset.axis || {};
+  const values = Array.isArray(axis.values) ? axis.values : [];
+  const analysis = detail.analysis || {};
+  const actions = `<button id="export-experiment-json" class="button">导出 JSON</button><button id="export-experiment-csv" class="button">导出 CSV</button>${eligibleCandidates.length ? `<button id="apply-candidates" class="button primary">更新当前配置</button>` : ""}`;
+  app.innerHTML = `
+    ${detailHeader("X2P Rabi 幅度校准", detail.run_id, [detail.verification_status, detail.recommendation_eligible ? "eligible" : "blocked"], actions)}
+    <section class="section"><div class="facts">${fact("运行时间", dateText(detail.created_utc))}${fact("目标", detail.targets.join(", "))}${fact("扫描范围", values.length ? `${plotNumber(values[0])} - ${plotNumber(values.at(-1))} GHz` : "-")}${fact("数据点", values.length)}${fact("活动 XY2 setting", detail.request?.active_xy2_setting || detail.request?.setting_id || "-")}</div></section>
+    <section class="section"><div class="section-head"><div><h2>候选 X2P 幅度</h2></div></div><div class="candidate-band">${detail.candidates.map(candidateHtml).join("")}</div></section>
+    <section class="section"><div class="section-head"><div><h2>实验数据图</h2><p>选择对象和数据指标，点击图中数据点查看坐标</p></div></div>${plotPanels(detail.plot_specs || [])}</section>
+    <section class="section"><div class="section-head"><div><h2>拟合与质量门</h2></div></div><pre>${esc(JSON.stringify(analysis, null, 2))}</pre><div class="gate-list">${detail.gates.map(gateHtml).join("")}</div></section>
+    <section class="section"><details><summary>请求 JSON</summary><pre>${esc(JSON.stringify(detail.request, null, 2))}</pre></details></section>`;
+  requestAnimationFrame(() => installUnifiedPlots(detail.plot_specs || [], routeContext));
+  document.querySelector("#export-experiment-json").addEventListener("click", () => downloadText(`rabi-${detail.run_id}.json`, JSON.stringify({ request: detail.request, dataset, analysis, gates: detail.gates, candidates: detail.candidates }, null, 2), "application/json"));
+  document.querySelector("#export-experiment-csv").addEventListener("click", () => downloadText(`rabi-${detail.run_id}.csv`, rabiCsv(dataset), "text/csv"));
+  if (eligibleCandidates.length) document.querySelector("#apply-candidates").addEventListener("click", () => openCandidateUpdate(detail, eligibleCandidates));
+}
+
+function rabiCsv(dataset) {
+  const axis = Array.isArray(dataset?.axis?.values) ? dataset.axis.values : [];
+  const target = dataset?.target || Object.keys(dataset?.series || {})[0] || "target";
+  const values = dataset?.series?.[target] || {};
+  const columns = ["target", "amplitude_GHz", "P0", "P1", "leakage", "norm_error", "P1_fit"];
+  const rows = [columns];
+  axis.forEach((amplitude, index) => rows.push([target, amplitude, values.P0?.[index], values.P1?.[index], values.leakage?.[index], values.norm_error?.[index], values.P1_fit?.[index]]));
+  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 
 function peakHtml(row) {
@@ -1721,6 +1755,13 @@ function drawXYPlot(ctx, width, height, controller) {
   const py = (value) => height - margin.bottom - ((value - yMin) / (yMax - yMin)) * (height - margin.top - margin.bottom);
   drawPlotAxes(ctx, width, height, margin, xMin, xMax, yMin, yMax, controller.spec.axes);
   const points = [], legend = [];
+  for (const marker of controller.spec.markers || []) {
+    const markerX = Number(marker.x);
+    if (!Number.isFinite(markerX) || markerX < xMin || markerX > xMax) continue;
+    ctx.beginPath(); ctx.moveTo(px(markerX), margin.top); ctx.lineTo(px(markerX), height - margin.bottom);
+    ctx.strokeStyle = "#c45b27"; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
+    legend.push({ color: "#c45b27", dash: [5, 4], label: marker.label || "Marker" });
+  }
   for (const row of series) {
     const color = plotSeriesColor(controller.spec, row.object_id, row.metric_id);
     const group = (controller.spec.groups || []).find((item) => item.id === row.group_id);

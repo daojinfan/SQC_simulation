@@ -58,3 +58,43 @@ def test_qubit_spectroscopy_notebook_uses_the_simple_public_api():
         intervals = round((stop - start) / step)
         assert intervals >= 2
         assert start + intervals * step == pytest.approx(stop)
+
+
+def test_x2p_rabi_notebook_uses_the_public_four_step_api(monkeypatch):
+    path = ROOT / "user" / "02_x2p_rabi_calibration.ipynb"
+    notebook = nbformat.read(path, as_version=4)
+    nbformat.validate(notebook)
+
+    source = "\n".join(
+        cell.source for cell in notebook.cells if cell.cell_type == "code"
+    )
+    assert "from sqvm.calibration import" in source
+    assert "run_rabi" in source
+    assert "sys.path" not in source
+    assert "TARGET = 'Q1'" in source
+    assert "AMPLITUDE_RANGE_GHZ = (0.0, 0.2)" in source
+    assert "AMPLITUDE_STEP_GHZ = 0.005" in source
+    assert "operation_id=OPERATION_ID" in source
+    assert "candidate_ids=[candidate_id]" in source
+    assert "APPLY CALIBRATION CANDIDATES" in source
+
+    import sqvm.calibration as calibration
+
+    # The smoke path deliberately disables execution; core Rabi supplies this export.
+    monkeypatch.setattr(calibration, "run_rabi", lambda **_kwargs: None, raising=False)
+    namespace: dict[str, object] = {"__name__": "__notebook_validation__"}
+    for index, cell in enumerate(notebook.cells):
+        if cell.cell_type != "code":
+            continue
+        source_without_execution = cell.source.replace(
+            "RUN_EXPERIMENT = True", "RUN_EXPERIMENT = False"
+        )
+        exec(
+            compile(source_without_execution, f"{path}:cell-{index}", "exec"),
+            namespace,
+        )
+
+    assert namespace["TARGET"] == "Q1"
+    assert namespace["AMPLITUDE_RANGE_GHZ"] == (0.0, 0.2)
+    assert namespace["AMPLITUDE_STEP_GHZ"] == 0.005
+    assert isinstance(namespace["OPERATION_ID"], str)

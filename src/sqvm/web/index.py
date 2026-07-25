@@ -22,7 +22,11 @@ from sqvm.calibration import (
     verify_qubit_spectroscopy_calibration,
     verify_qubit_spectroscopy_scan,
 )
-from sqvm.web.plotting import build_spectroscopy_plot_spec, validate_plot_spec
+from sqvm.web.plotting import (
+    build_rabi_amplitude_plot_spec,
+    build_spectroscopy_plot_spec,
+    validate_plot_spec,
+)
 from sqvm.web.read_model import (
     ExperimentProjection,
     PersistentExperimentReadModel,
@@ -31,10 +35,12 @@ from sqvm.web.read_model import (
 
 
 SPECTROSCOPY_WORKFLOW_ID = "qubit_spectroscopy_calibration_v1"
+RABI_X2P_WORKFLOW_ID = "qubit_rabi_x2p_amplitude_scan_v1"
 
 _KNOWN_WORKFLOW_VERSIONS = {
     SPECTROSCOPY_WORKFLOW_ID: frozenset({"0.1"}),
     SPECTROSCOPY_SCAN_WORKFLOW_ID: frozenset({"0.1", "0.2", "0.3"}),
+    RABI_X2P_WORKFLOW_ID: frozenset({"0.1"}),
 }
 _V03_RECEIPT_TYPE = "qubit_spectroscopy_scan_receipt"
 _V03_MANIFEST_TYPE = "stage_07_qubit_spectroscopy_scan_manifest"
@@ -547,6 +553,34 @@ class CalibrationWebIndex:
                     ],
                     "assets": [],
                 }
+            if summary["workflow_id"] == RABI_X2P_WORKFLOW_ID:
+                dataset = self._read_json(directory / "dataset.json", "Rabi dataset")
+                candidate_rows = _web_candidates(workflow.get("candidates"))
+                candidate_value = _rabi_candidate_amplitude(candidate_rows)
+                target = _rabi_target(workflow, dataset)
+                analysis = workflow.get("analysis", {})
+                return {
+                    **summary,
+                    "renderer": "qubit_rabi_x2p_amplitude",
+                    "claim": workflow.get("claim", {}),
+                    "request": workflow.get("request", {}),
+                    "datasets": {"scan": dataset},
+                    "plot_specs": [
+                        build_rabi_amplitude_plot_spec(
+                            target,
+                            dataset,
+                            candidate_amplitude_GHz=candidate_value,
+                            fit_curve=_rabi_fit_curve(analysis),
+                        )
+                    ],
+                    "analysis": analysis,
+                    "recommendation_id": workflow.get("recommendation_id"),
+                    "candidates": candidate_rows,
+                    "gates": workflow.get("gates", []),
+                    "decision_refs": decisions,
+                    "evidence_paths": [],
+                    "assets": [],
+                }
             plot_specs = _published_plot_specs(workflow)
             return {
                 **summary,
@@ -668,6 +702,9 @@ class CalibrationWebIndex:
             elif workflow_id == SPECTROSCOPY_SCAN_WORKFLOW_ID:
                 self._verify_published_web_projection(directory, path, workflow)
                 verification_status = "verified"
+            elif workflow_id == RABI_X2P_WORKFLOW_ID:
+                self._verify_rabi_published_web_projection(directory, path, workflow)
+                verification_status = "verified"
             else:
                 _published_plot_specs(workflow)
             request = workflow.get("request")
@@ -679,6 +716,8 @@ class CalibrationWebIndex:
                 if isinstance(request, Mapping)
                 else {}
             )
+            if workflow_id == RABI_X2P_WORKFLOW_ID:
+                scan_request = request if isinstance(request, Mapping) else {}
             gates = workflow.get("gates", [])
             candidates = workflow.get("candidates", [])
             passed = sum(row.get("passed") is True for row in gates if isinstance(row, Mapping))
@@ -688,8 +727,10 @@ class CalibrationWebIndex:
                 "workflow_id": workflow_id,
                 "experiment_kind": (
                     "Qubit spectroscopy"
-                    if workflow_id
-                    in {SPECTROSCOPY_WORKFLOW_ID, SPECTROSCOPY_SCAN_WORKFLOW_ID}
+                    if workflow_id in {
+                        SPECTROSCOPY_WORKFLOW_ID,
+                        SPECTROSCOPY_SCAN_WORKFLOW_ID,
+                    }
                     else workflow_id
                 ),
                 "status": workflow.get("status", "unknown"),
@@ -700,12 +741,18 @@ class CalibrationWebIndex:
                     else None
                 ),
                 "verification_status": verification_status,
-                "targets": scan_request.get("targets", []),
+                "targets": (
+                    [scan_request["target"]]
+                    if workflow_id == RABI_X2P_WORKFLOW_ID
+                    and isinstance(scan_request.get("target"), str)
+                    else scan_request.get("targets", [])
+                ),
                 "execution_mode": scan_request.get("execution_mode"),
                 "recommendation_applicable": (
                     workflow_id == SPECTROSCOPY_WORKFLOW_ID
                     or workflow_id == SPECTROSCOPY_SCAN_WORKFLOW_ID
                     and workflow.get("artifact_version") in {"0.2", "0.3"}
+                    or workflow_id == RABI_X2P_WORKFLOW_ID
                 ),
                 "recommendation_eligible": workflow.get("recommendation_eligible") is True,
                 "parent_calibration": workflow.get("parent_calibration")
@@ -909,6 +956,45 @@ class CalibrationWebIndex:
                 for key, expected in expected_report_fields.items()
             ):
                 raise WebArtifactError("publication verification report is invalid")
+
+    def _verify_rabi_published_web_projection(
+        self,
+        directory: Path,
+        workflow_path: Path,
+        workflow: Mapping[str, Any],
+    ) -> None:
+        """Bind Rabi's compact Web projection to core's verified publication."""
+
+        if workflow.get("artifact_version") not in _KNOWN_WORKFLOW_VERSIONS[
+            RABI_X2P_WORKFLOW_ID
+        ]:
+            raise WebArtifactError("Rabi workflow artifact_version is unsupported")
+        dataset_binding = workflow.get("dataset")
+        if (
+            not isinstance(dataset_binding, Mapping)
+            or dataset_binding.get("path") != "dataset.json"
+            or not isinstance(dataset_binding.get("sha256"), str)
+        ):
+            raise WebArtifactError("Rabi dataset binding is invalid")
+        receipt = self._read_json(directory / "receipt.json", "Rabi receipt")
+        report = self._read_json(
+            directory / "verification_report.json", "Rabi verification report"
+        )
+        workflow_sha256 = _raw_sha256(workflow_path)
+        dataset_sha256 = _raw_sha256(directory / "dataset.json")
+        expected = {
+            "run_id": workflow.get("run_id"),
+            "workflow_sha256": workflow_sha256,
+            "dataset_sha256": dataset_sha256,
+        }
+        if (
+            receipt.get("status") != workflow.get("status")
+            or any(receipt.get(name) != value for name, value in expected.items())
+            or any(report.get(name) != value for name, value in expected.items())
+            or report.get("ok") is not True
+            or dataset_binding.get("sha256") != dataset_sha256
+        ):
+            raise WebArtifactError("Rabi publication binding is invalid")
 
     def _decisions(self) -> list[dict[str, Any]]:
         if not self.output_root.is_dir():
@@ -1166,6 +1252,38 @@ def _web_candidates(value: Any) -> list[dict[str, Any]]:
         return [normalize_calibration_candidate(row) for row in value]
     except CalibrationCandidateProtocolError as exc:
         raise WebArtifactError(f"workflow candidate is invalid: {exc}") from exc
+
+
+def _rabi_target(workflow: Mapping[str, Any], dataset: Mapping[str, Any]) -> str:
+    target = workflow.get("target")
+    if not isinstance(target, str) or not target:
+        request = workflow.get("request")
+        target = request.get("target") if isinstance(request, Mapping) else None
+    if not isinstance(target, str) or not target:
+        target = dataset.get("target")
+    if not isinstance(target, str) or not target:
+        raise WebArtifactError("Rabi target is missing")
+    return target
+
+
+def _rabi_candidate_amplitude(candidates: list[Mapping[str, Any]]) -> float | None:
+    for candidate in candidates:
+        for change in candidate.get("changes", []):
+            if change.get("parameter_path", "").endswith(".amplitude_GHz"):
+                value = change.get("proposed_value")
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return float(value)
+    return None
+
+
+def _rabi_fit_curve(analysis: Any) -> Mapping[str, Any] | None:
+    if not isinstance(analysis, Mapping):
+        return None
+    for name in ("fit_curve", "dense_fit_curve"):
+        value = analysis.get(name)
+        if isinstance(value, Mapping):
+            return value
+    return None
 
 
 def _finite(value: Any, *, depth: int) -> None:
