@@ -297,6 +297,13 @@ def _scan_workflows_and_decisions(root: Path, edges: list[ReferenceEdge]) -> Non
                     if workflow.get("artifact_type") != "qubit_spectroscopy_scan" or workflow.get("artifact_version") not in {"0.1", "0.2", "0.3"}:
                         raise ReferenceScanError(f"scan workflow schema: {base}")
                     verify_qubit_spectroscopy_scan(base)
+                elif workflow_id == "qubit_rabi_x2p_amplitude_scan_v1":
+                    if workflow.get("artifact_type") != "qubit_rabi_x2p_amplitude_scan" or workflow.get("artifact_version") != "0.1":
+                        raise ReferenceScanError(f"Rabi workflow schema: {base}")
+                    # Lazy import avoids making the reference graph depend on
+                    # calibration package initialization order.
+                    from sqvm.calibration.rabi import verify_rabi_evidence_tree
+                    verify_rabi_evidence_tree(base)
                 elif workflow_id == "qubit_spectroscopy_calibration_v1":
                     if workflow.get("artifact_type") != "stage_07_qubit_spectroscopy_calibration" or workflow.get("artifact_version") != "0.1":
                         raise ReferenceScanError(f"calibration workflow schema: {base}")

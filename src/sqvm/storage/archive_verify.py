@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import struct
-from typing import Any, BinaryIO, Mapping
+from typing import Any, BinaryIO, Callable, Mapping
 import uuid
 import zipfile
 
@@ -66,21 +66,32 @@ class ZipEvidenceReader:
         self._archive_path = archive_path
         self._entries = {entry.path: entry for entry in entries}
         self._limits = limits
+        self._carrier: Path | None = None
+        self._identity: _CarrierIdentity | None = None
+        self._archive: zipfile.ZipFile | None = None
+        self._managed = False
 
     def paths(self) -> tuple[str, ...]:
         return tuple(self._entries)
 
     def open_binary(self, path: str) -> BinaryIO:
         entry = self._entry(path)
-        carrier, identity = _prepare_archive_carrier(self._archive_path)
-        archive = _open_zip(carrier)
+        carrier, identity, archive = self._ensure_archive()
         try:
             info = archive.getinfo(f"run/{entry.path}")
             stream = archive.open(info, "r")
         except Exception:
-            archive.close()
+            if not self._managed:
+                self.close()
             raise ArchiveFormatError("cannot open declared archive evidence")
-        return _ArchiveMemberStream(carrier, identity, archive, stream, entry)
+        return _ArchiveMemberStream(
+            carrier,
+            identity,
+            None,
+            stream,
+            entry,
+            close_callback=None if self._managed else self.close,
+        )
 
     def read_bytes(self, path: str, *, maximum_bytes: int = 1024 * 1024) -> bytes:
         entry = self._entry(path)
@@ -94,15 +105,45 @@ class ZipEvidenceReader:
             raise ArchiveFormatError("evidence reader path is not declared")
         return self._entries[path]
 
+    def _ensure_archive(self) -> tuple[Path, _CarrierIdentity, zipfile.ZipFile]:
+        if self._archive is None:
+            carrier, identity = _prepare_archive_carrier(self._archive_path)
+            self._carrier = carrier
+            self._identity = identity
+            self._archive = _open_zip(carrier)
+        assert self._carrier is not None and self._identity is not None
+        return self._carrier, self._identity, self._archive
+
+    def __enter__(self) -> "ZipEvidenceReader":
+        self._managed = True
+        self._ensure_archive()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        archive, carrier, identity = self._archive, self._carrier, self._identity
+        self._archive = None
+        self._carrier = None
+        self._identity = None
+        self._managed = False
+        if archive is None:
+            return
+        archive.close()
+        assert carrier is not None and identity is not None
+        _assert_archive_identity(carrier, identity)
+
 
 class _ArchiveMemberStream:
     def __init__(
         self,
         archive_path: Path,
         archive_identity: _CarrierIdentity,
-        archive: zipfile.ZipFile,
+        archive: zipfile.ZipFile | None,
         stream: BinaryIO,
         entry: ArchiveEntry,
+        close_callback: Callable[[], None] | None = None,
     ) -> None:
         self._archive_path = archive_path
         self._archive_identity = archive_identity
@@ -110,6 +151,7 @@ class _ArchiveMemberStream:
         self._stream = stream
         self._entry = entry
         self._read = 0
+        self._close_callback = close_callback
 
     def read(self, size: int = -1) -> bytes:
         remaining = self._entry.byte_length - self._read
@@ -135,8 +177,13 @@ class _ArchiveMemberStream:
         try:
             self._stream.close()
         finally:
-            self._archive.close()
-        _assert_archive_identity(self._archive_path, self._archive_identity)
+            if self._archive is not None:
+                self._archive.close()
+        if self._close_callback is not None:
+            callback, self._close_callback = self._close_callback, None
+            callback()
+        elif self._archive is not None:
+            _assert_archive_identity(self._archive_path, self._archive_identity)
 
 
 def archive_raw_sha256(path: str | Path) -> str:
@@ -191,7 +238,8 @@ def verify_sqrun(
     source_verified = False
     if verifier is not None:
         try:
-            verifier(ZipEvidenceReader(path, bundle.entries, policy))
+            with ZipEvidenceReader(path, bundle.entries, policy) as reader:
+                verifier(reader)
         except ArchiveFormatError:
             raise
         except Exception as exc:
@@ -228,14 +276,14 @@ def read_sqrun_payload(
 
     bundle = verify_sqrun(archive_path, limits=limits)
     carrier, expected_identity = _prepare_archive_carrier(archive_path)
-    reader = ZipEvidenceReader(carrier, bundle.entries, limits or ArchiveLimits())
     entry = next((row for row in bundle.entries if row.path == path), None)
     if entry is None:
         raise ArchiveFormatError("archive payload path is not declared")
     if type(maximum_bytes) is not int or maximum_bytes < 0 or entry.byte_length > maximum_bytes:
         raise ArchiveFormatError("archive payload byte limit is exceeded")
-    with reader.open_binary(path) as stream:
-        raw = _read_exact(stream, entry.byte_length, entry.raw_sha256)
+    with ZipEvidenceReader(carrier, bundle.entries, limits or ArchiveLimits()) as reader:
+        with reader.open_binary(path) as stream:
+            raw = _read_exact(stream, entry.byte_length, entry.raw_sha256)
     _assert_archive_identity(carrier, expected_identity)
     return raw
 

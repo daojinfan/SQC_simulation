@@ -70,11 +70,11 @@ def archive_evidence_verifier_registry() -> Mapping[tuple[str, str], EvidenceVer
 
 def workflow_hot_verifier_registry():
     """Return registered local path verifiers without making versions implicit."""
-    from sqvm.calibration.rabi import verify_rabi_scan
+    from sqvm.calibration.rabi import verify_rabi_evidence_tree
     from sqvm.calibration.spectroscopy_run import verify_qubit_spectroscopy_scan
     return MappingProxyType({
         ("qubit_spectroscopy_scan_v1", "0.3"): verify_qubit_spectroscopy_scan,
-        ("qubit_rabi_x2p_amplitude_scan_v1", "0.1"): verify_rabi_scan,
+        ("qubit_rabi_x2p_amplitude_scan_v1", "0.1"): verify_rabi_evidence_tree,
     })
 
 

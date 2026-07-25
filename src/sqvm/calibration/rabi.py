@@ -348,6 +348,18 @@ def verify_rabi_scan(run_root: str | Path) -> bool:
     return True
 
 
+def verify_rabi_evidence_tree(run_root: str | Path) -> bool:
+    """Verify the immutable Rabi envelope without replaying Stage 4.1/5.1.
+
+    This is the storage/catalog verifier: the bounded reader checks every
+    declared file hash plus Runtime receipts and Rabi semantics.  Explicit
+    user verification remains ``verify_rabi_scan`` and additionally invokes
+    the Runtime verifier.
+    """
+    _verify_rabi_evidence_root(Path(run_root))
+    return True
+
+
 def _runtime_batch_payload(batch: CircuitBatchHandle) -> dict[str, Any]:
     """Persist stable batch identity only; evidence paths are relative elsewhere."""
     return {
@@ -710,4 +722,4 @@ def _rabi_error_code(detail: str) -> str:
     return "rabi_request_invalid"
 
 
-__all__ = ["RABI_ERROR_CODES", "RABI_EXPERIMENT_ID", "RABI_POLICY_PATH", "RABI_SCAN_WORKFLOW_ID", "RabiAmplitudeAxis", "RabiAnalysis", "RabiDataset", "RabiError", "RabiRequest", "RabiRun", "amplitude_axis", "analyze_rabi", "build_rabi_circuits", "load_rabi_analysis_policy", "run_qubit_rabi_scan", "verify_rabi_scan"]
+__all__ = ["RABI_ERROR_CODES", "RABI_EXPERIMENT_ID", "RABI_POLICY_PATH", "RABI_SCAN_WORKFLOW_ID", "RabiAmplitudeAxis", "RabiAnalysis", "RabiDataset", "RabiError", "RabiRequest", "RabiRun", "amplitude_axis", "analyze_rabi", "build_rabi_circuits", "load_rabi_analysis_policy", "run_qubit_rabi_scan", "verify_rabi_evidence_tree", "verify_rabi_scan"]

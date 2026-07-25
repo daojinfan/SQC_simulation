@@ -63,6 +63,7 @@ from sqvm.calibration.rabi import (
     analyze_rabi,
     build_rabi_circuits,
     run_qubit_rabi_scan,
+    verify_rabi_evidence_tree,
     verify_rabi_scan,
 )
 
@@ -119,6 +120,7 @@ __all__ = [
     "analyze_rabi",
     "build_rabi_circuits",
     "run_qubit_rabi_scan",
+    "verify_rabi_evidence_tree",
     "verify_rabi_scan",
     "cancel_rabi",
     "run_rabi",

@@ -27,7 +27,6 @@ from sqvm.storage.operations import (
     StorageMutationRequest,
     StorageOperationError,
 )
-from sqvm.web.configuration_transactions import ConfigurationTransactionManager
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,18 +139,9 @@ def _commit_applied_reference(config_root: Path, run_id: str) -> None:
         },
     }
 
-    def add_reference(workspace: Path) -> dict[str, str]:
-        (workspace / "audit" / f"{event_id}.json").write_bytes(canonical_json_bytes(event))
-        return {"event_id": event_id}
-
-    ConfigurationTransactionManager(config_root).execute(
-        device_id="demo_2q1c2r",
-        operation_type="rabi_reference_acceptance",
-        operation_id=str(uuid.uuid4()),
-        request={"event_id": event_id},
-        legacy_root=config_root,
-        transform=add_reference,
-    )
+    audit = config_root / "audit"
+    audit.mkdir(exist_ok=True)
+    (audit / f"{event_id}.json").write_bytes(canonical_json_bytes(event))
 
 
 @pytest.fixture(scope="module")
