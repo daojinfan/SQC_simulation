@@ -689,7 +689,10 @@ def _apply_overlays(
             base_hash = touched[str(setting_id)]
         else:
             base_hash = setting.get("setting_hash")
-            if not isinstance(base_hash, str) or base_hash != _setting_hash(setting):
+            if not isinstance(base_hash, str) or base_hash not in {
+                _setting_hash(setting),
+                _legacy_setting_hash(setting),
+            }:
                 _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, f"{setting_id} base setting hash")
             if setting.get("status") != "accepted" or setting.get("target") != target:
                 _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, f"{setting_id} is not an accepted target setting")
@@ -1127,7 +1130,38 @@ def _reject_link(path: Path) -> None:
 
 
 def _setting_hash(setting: Mapping[str, Any]) -> str:
-    return sha256_json({name: _plain(value) for name, value in setting.items() if name != "setting_hash"})
+    """Match QCIS's accepted-record identity after resolver wave-index projection."""
+
+    payload = {
+        str(name): _plain(value)
+        for name, value in setting.items()
+        if name != "setting_hash"
+    }
+    return sha256_json(_without_generated_wave_index(payload))
+
+
+def _legacy_setting_hash(setting: Mapping[str, Any]) -> str:
+    """Accept historical records whose persisted hash predates wave-index projection."""
+
+    return sha256_json({
+        str(name): _plain(value)
+        for name, value in setting.items()
+        if name != "setting_hash"
+    })
+
+
+def _without_generated_wave_index(value: Any) -> Any:
+    """Exclude resolver-only waveform compatibility fields at every nesting level."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(name): _without_generated_wave_index(item)
+            for name, item in value.items()
+            if name != "wave_index"
+        }
+    if isinstance(value, (tuple, list)):
+        return [_without_generated_wave_index(item) for item in value]
+    return value
 
 
 def _plain(value: Any) -> Any:

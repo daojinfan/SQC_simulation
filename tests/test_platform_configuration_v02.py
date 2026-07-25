@@ -23,8 +23,10 @@ from sqvm.candidate_protocol import calibration_candidate, parameter_change
 
 import sqvm.circuits as circuits_module
 import sqvm.web.configuration as configuration_module
-from sqvm.circuits import QCISCircuit, run_circuits
+from sqvm.circuits import CircuitExecutionError, CircuitReasonCode, QCISCircuit, _setting_hash, compile_circuit, run_circuits
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_json
+from sqvm.qcis.compiler import _projected_record_hash
 from sqvm.web import (
     ConfigurationManagementError,
     PlatformAuthorityResolutionError,
@@ -33,6 +35,7 @@ from sqvm.web import (
 from sqvm.web.configuration_schema import validate_editable
 from sqvm.web.configuration_schema import project_wave_indices
 from sqvm.web.configuration_transactions import ConfigurationTransactionManager
+import sqvm.web.configuration_resolver as configuration_resolver_module
 from sqvm.runtime.calibration_model import calibration_model_configuration_sha256
 
 
@@ -421,6 +424,96 @@ def test_uninitialized_is_not_active_and_typed_snapshot_resolves_immutably(platf
     assert context.platform_snapshot_id == snapshot["snapshot_id"]
     with pytest.raises(TypeError):
         context.authorities["clock"]["dt_ns"] = 1.0
+
+
+def test_active_resolver_derives_only_selector_bound_xy2_amplitude_paths(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
+    context = store.resolve_active_context()
+    expected = frozenset({
+        "Q1.setting.active_xy2_setting.amplitude_GHz",
+        "Q2.setting.active_xy2_setting.amplitude_GHz",
+    })
+    assert context.settable_paths == expected
+    assert all("q1_xy2" not in path and "q2_xy2" not in path for path in context.settable_paths)
+    for forbidden in (
+        "Q1.setting.active_xy2_setting.length_samples",
+        "Q1.setting.active_xy2_setting.setting_hash",
+        "Q1.setting.active_xy2_setting.status",
+        "Q1.setting.active_xy2_setting.missing_numeric_field",
+        "Q1.setting.active_f012zbias_mapper.f01max_GHz",
+    ):
+        assert forbidden not in context.settable_paths
+    assert context.authority_context_sha256 == sha256_json({
+        "qcis_authorities": configuration_resolver_module._plain(context.authorities),
+        "calibration_model_configuration": configuration_resolver_module._plain(context.calibration_model_configuration),
+        "settable_paths": sorted(expected),
+    })
+    assert context.authority_context_sha256 != sha256_json({
+        "qcis_authorities": configuration_resolver_module._plain(context.authorities),
+        "calibration_model_configuration": configuration_resolver_module._plain(context.calibration_model_configuration),
+    })
+    for target, amplitude in (("Q1", 0.125), ("Q2", 0.175)):
+        setting_id = context.authorities["gate_configuration"][target]["active_xy2_setting"]
+        base_hash = context.authorities["waveform_registry"]["settings"][setting_id]["setting_hash"]
+        compiled = compile_circuit(
+            QCISCircuit(
+                f"rabi_set_{target.lower()}",
+                f"SET {target} setting.active_xy2_setting.amplitude_GHz {amplitude}\nX2P {target}\nX2P {target}\n",
+            ),
+            context,
+        )
+        assert compiled.overlays[0]["base_setting_hash"] == base_hash
+        assert compiled.overlays[0]["effective_setting_hash"] != base_hash
+        assert len(compiled.compilation.plan.drive_event_inventory) == 2
+        assert {event["setting_evidence"]["setting_hash"] for event in compiled.compilation.plan.drive_event_inventory} == {
+            compiled.overlays[0]["effective_setting_hash"],
+        }
+    for forbidden in (
+        "setting.active_xy2_setting.setting_hash",
+        "setting.active_xy2_setting.length_samples",
+    ):
+        with pytest.raises(CircuitExecutionError) as captured:
+            compile_circuit(
+                QCISCircuit(
+                    f"forbidden_{forbidden.rsplit('.', 1)[-1]}",
+                    f"SET Q1 {forbidden} 1\nX2P Q1\n",
+                ),
+                context,
+            )
+        assert captured.value.code is CircuitReasonCode.SET_PATH_NOT_ALLOWED
+
+
+def test_settable_path_is_selector_semantic_and_rejects_unaccepted_or_nonfinite_selected_records(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
+    context = store.resolve_active_context()
+    authorities = copy.deepcopy(configuration_resolver_module._plain(context.authorities))
+    alternate = copy.deepcopy(authorities["waveform_registry"]["settings"]["q1_xy2"])
+    alternate["setting_id"] = "q1_xy2_alt"
+    authorities["waveform_registry"]["settings"]["q1_xy2_alt"] = alternate
+    authorities["gate_configuration"]["Q1"]["active_xy2_setting"] = "q1_xy2_alt"
+    assert configuration_resolver_module.PlatformAuthorityResolver._settable_paths(authorities) == context.settable_paths
+
+    authorities["waveform_registry"]["settings"]["q1_xy2_alt"]["status"] = "draft"
+    with pytest.raises(PlatformAuthorityResolutionError, match="accepted XY2"):
+        configuration_resolver_module.PlatformAuthorityResolver._settable_paths(authorities)
+    authorities["waveform_registry"]["settings"]["q1_xy2_alt"]["status"] = "accepted"
+    authorities["waveform_registry"]["settings"]["q1_xy2_alt"]["amplitude_GHz"] = True
+    with pytest.raises(PlatformAuthorityResolutionError, match="finite numeric"):
+        configuration_resolver_module.PlatformAuthorityResolver._settable_paths(authorities)
+
+
+def test_circuit_overlay_hash_matches_qcis_projected_record_identity():
+    record = {
+        "setting_id": "q1_xy2",
+        "setting_hash": "A" * 64,
+        "wave_index": 2,
+        "waveforms": {
+            "q0": {"wave_index": 5, "parameters": {"wave_index": 1, "width_samples": 2}},
+        },
+    }
+    assert _setting_hash(record) == _projected_record_hash(record)
 
 
 def test_resolver_detects_record_and_pointer_tampering(platform_root: Path):
