@@ -159,10 +159,8 @@ class _ArchiveMemberStream:
             return b""
         if size is None or size < 0:
             size = remaining
-        # BinaryIO.read(size) may request more bytes than remain.  The
-        # manifest-declared member length is still the hard upper bound; cap
-        # the request instead of rejecting a normal streaming read.
-        size = min(size, remaining)
+        if size > remaining:
+            raise ArchiveFormatError("evidence reader byte limit is exceeded")
         raw = self._stream.read(size)
         self._read += len(raw)
         return raw
@@ -180,8 +178,8 @@ class _ArchiveMemberStream:
             if self._archive is not None:
                 self._archive.close()
         if self._close_callback is not None:
-            callback, self._close_callback = self._close_callback, None
-            callback()
+            self._close_callback()
+            _assert_archive_identity(self._archive_path, self._archive_identity)
         elif self._archive is not None:
             _assert_archive_identity(self._archive_path, self._archive_identity)
 

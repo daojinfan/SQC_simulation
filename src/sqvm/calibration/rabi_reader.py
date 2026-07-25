@@ -312,7 +312,7 @@ def _batch(reader: EvidenceReader, workflow, dataset, request, head, paths) -> N
                 if not isinstance(row, Mapping) or set(row) != {"path", "byte_length", "raw_sha256"} or not isinstance(row["path"], str) or type(row["byte_length"]) is not int or row["byte_length"] < 0 or not _sha_text(row["raw_sha256"]):
                     raise RabiReaderVerificationError("rabi evidence inventory is invalid")
                 evidence_path = f"execution/{item['path'].rstrip('/')}/{row['path']}"
-                if evidence_path not in paths or _digest(reader, evidence_path) != (row["byte_length"], row["raw_sha256"]):
+                if evidence_path not in paths or _digest(reader, evidence_path, row["byte_length"]) != (row["byte_length"], row["raw_sha256"]):
                     raise RabiReaderVerificationError("rabi evidence file differs")
                 used.add(evidence_path)
     if set(paths) != used:
@@ -366,16 +366,23 @@ def _wrap(value: float) -> float:
     return math.remainder(value, 2.0 * math.pi)
 
 
-def _digest(reader: EvidenceReader, path: str) -> tuple[int, str]:
+def _digest(reader: EvidenceReader, path: str, expected_bytes: int) -> tuple[int, str]:
     digest = hashlib.sha256()
     length = 0
     try:
         with reader.open_binary(path) as stream:
-            while chunk := stream.read(64 * 1024):
+            remaining = expected_bytes
+            while remaining:
+                chunk = stream.read(min(64 * 1024, remaining))
+                if not chunk:
+                    raise ValueError("truncated evidence stream")
                 if not isinstance(chunk, bytes):
                     raise ValueError("non-bytes evidence stream")
                 length += len(chunk)
+                remaining -= len(chunk)
                 digest.update(chunk)
+            if stream.read(1):
+                raise ValueError("evidence stream exceeds declared length")
     except Exception as exc:
         raise RabiReaderVerificationError("cannot stream rabi evidence") from exc
     return length, digest.hexdigest().upper()
