@@ -81,6 +81,7 @@ MODULE_PRIMARY_MARKERS = {
     "test_mode_participation.py": "physics_slow",
     "test_platform_configuration_v02.py": "integration",
     "test_qubit_spectroscopy.py": "integration",
+    "test_rabi_phase_audit.py": "contract",
     "test_runtime_publication.py": "integration",
     "test_runtime_v03_batch.py": "integration",
     "test_run_circuits.py": "integration",
