@@ -25,6 +25,7 @@ from sqvm.calibration.spectroscopy_run import verify_qubit_spectroscopy_scan
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.qcis.canonical import sha256_json
 from sqvm.web.configuration_schema import validate_document, validate_editable
+from sqvm.web.configuration_transactions import ConfigurationTransactionManager
 
 
 REFERENCE_TYPES = frozenset({
@@ -99,9 +100,36 @@ def build_reference_graph(
         pin_root = _authority_root(pins_root, required=False, label="pins")
         if lifecycle is not None:
             _check_tree(lifecycle, allow_directories=True)
-        snapshots = _scan_configurations(config, edges)
+        transaction_manager = ConfigurationTransactionManager(config)
+        head_devices = set(transaction_manager.head_devices())
+        projections = tuple(
+            transaction_manager.committed_view(device_id).projection_root
+            for device_id in sorted(head_devices)
+        )
+        snapshots: dict[str, tuple[dict[str, Any], Path]] = {}
+        if projections:
+            for projection in projections:
+                for snapshot_id, value in _scan_configurations(
+                    projection,
+                    edges,
+                    include_drafts=False,
+                ).items():
+                    if snapshot_id in snapshots:
+                        raise ReferenceScanError(
+                            f"duplicate snapshot identity across committed devices: {snapshot_id}"
+                        )
+                    snapshots[snapshot_id] = value
+                _scan_snapshot_pins(projection / "pins")
+            _reject_unmigrated_flat_devices(
+                config,
+                head_devices=head_devices,
+                committed_snapshot_ids=set(snapshots),
+            )
+            _scan_drafts(config, edges)
+        else:
+            snapshots = _scan_configurations(config, edges)
+            _scan_snapshot_pins(config / "pins")
         _scan_workflows_and_decisions(experiments, edges)
-        _scan_snapshot_pins(config / "pins")
         if pin_root is not None:
             _scan_run_pins(pin_root, edges)
         _validate_duplicate_identities(edges)
@@ -115,7 +143,45 @@ def build_reference_graph(
     )
 
 
-def _scan_configurations(root: Path, edges: list[ReferenceEdge]) -> dict[str, tuple[dict[str, Any], Path]]:
+def _reject_unmigrated_flat_devices(
+    root: Path,
+    *,
+    head_devices: set[str],
+    committed_snapshot_ids: set[str],
+) -> None:
+    """Do not miss legacy references while a configuration root is partly migrated."""
+
+    flat_devices: set[str] = set()
+    for directory_name in ("current", "active"):
+        directory = root / directory_name
+        if directory.exists():
+            flat_devices.update(path.stem for path in _json_children(directory))
+    snapshots = root / "snapshots"
+    if snapshots.exists():
+        for directory in _id_directories(snapshots):
+            if directory.name in committed_snapshot_ids:
+                continue
+            path = directory / "snapshot.json"
+            if not path.is_file():
+                raise ReferenceScanError(f"snapshot missing: {path}")
+            device_id = _json(path).get("device_id")
+            if not isinstance(device_id, str) or not device_id:
+                raise ReferenceScanError(f"snapshot device identity is invalid: {path}")
+            flat_devices.add(device_id)
+    missing = sorted(flat_devices - head_devices)
+    if missing:
+        raise ReferenceScanError(
+            "mixed transaction and legacy configuration authority: "
+            f"devices without transaction heads: {', '.join(missing)}"
+        )
+
+
+def _scan_configurations(
+    root: Path,
+    edges: list[ReferenceEdge],
+    *,
+    include_drafts: bool = True,
+) -> dict[str, tuple[dict[str, Any], Path]]:
     allowed = {"current", "drafts", "snapshots", "active", "audit", "pins"}
     _check_children(root, allowed, directories=allowed)
     snapshots: dict[str, tuple[dict[str, Any], Path]] = {}
@@ -145,24 +211,8 @@ def _scan_configurations(root: Path, edges: list[ReferenceEdge]) -> dict[str, tu
             candidate = directory / "source_candidate.json"
             if candidate.exists():
                 _source_edge(_source_candidate(_json(candidate)), "snapshot_configuration", candidate, root, edges)
-    drafts_root = root / "drafts"
-    if drafts_root.exists():
-        for directory in _id_directories(drafts_root):
-            _check_children(directory, {"draft.json", "source_candidate.json", "checkpoints"}, directories={"checkpoints"})
-            path = directory / "draft.json"
-            if not path.exists():
-                raise ReferenceScanError(f"draft missing: {path}")
-            payload = _json(path)
-            _configuration(payload, "platform_configuration_draft", "0.2", path)
-            if directory.name != _uuid(payload.get("draft_id"), "draft_id"):
-                raise ReferenceScanError(f"incorrect draft identity: {path}")
-            checkpoints = directory / "checkpoints"
-            if checkpoints.exists():
-                for checkpoint in _json_children(checkpoints):
-                    _checkpoint(_json(checkpoint), payload, checkpoint)
-            candidate = directory / "source_candidate.json"
-            if candidate.exists():
-                _source_edge(_source_candidate(_json(candidate)), "draft_configuration", candidate, root, edges)
+    if include_drafts:
+        _scan_drafts(root, edges)
     active = root / "active"
     if active.exists():
         for path in _json_children(active):
@@ -196,6 +246,39 @@ def _scan_configurations(root: Path, edges: list[ReferenceEdge]) -> dict[str, tu
                 _hash(details.get("content_sha256"), "content_sha256")
                 edges.append(_edge(run, "applied_audit", path, root, recommendation))
     return snapshots
+
+
+def _scan_drafts(root: Path, edges: list[ReferenceEdge]) -> None:
+    drafts_root = root / "drafts"
+    if not drafts_root.exists():
+        return
+    _check_path(drafts_root, root)
+    for directory in _id_directories(drafts_root):
+        _check_children(
+            directory,
+            {"draft.json", "source_candidate.json", "checkpoints"},
+            directories={"checkpoints"},
+        )
+        path = directory / "draft.json"
+        if not path.exists():
+            raise ReferenceScanError(f"draft missing: {path}")
+        payload = _json(path)
+        _configuration(payload, "platform_configuration_draft", "0.2", path)
+        if directory.name != _uuid(payload.get("draft_id"), "draft_id"):
+            raise ReferenceScanError(f"incorrect draft identity: {path}")
+        checkpoints = directory / "checkpoints"
+        if checkpoints.exists():
+            for checkpoint in _json_children(checkpoints):
+                _checkpoint(_json(checkpoint), payload, checkpoint)
+        candidate = directory / "source_candidate.json"
+        if candidate.exists():
+            _source_edge(
+                _source_candidate(_json(candidate)),
+                "draft_configuration",
+                candidate,
+                root,
+                edges,
+            )
 
 
 def _scan_workflows_and_decisions(root: Path, edges: list[ReferenceEdge]) -> None:

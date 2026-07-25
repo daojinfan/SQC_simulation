@@ -1,0 +1,100 @@
+{
+  "schema_version": "0.1",
+  "artifact_type": "platform_configuration_transaction_contract_vectors",
+  "artifact_version": "0.1",
+  "head_fields": [
+    "artifact_type",
+    "artifact_version",
+    "committed_utc",
+    "device_id",
+    "generation",
+    "manifest_path",
+    "manifest_raw_sha256",
+    "parent_manifest_raw_sha256",
+    "parent_transaction_id",
+    "schema_version",
+    "transaction_id"
+  ],
+  "manifest_fields": [
+    "aggregate_sha256",
+    "artifact_type",
+    "artifact_version",
+    "device_id",
+    "files",
+    "generation",
+    "operation_id",
+    "operation_type",
+    "parent",
+    "request_sha256",
+    "schema_version",
+    "state_refs",
+    "transaction_id",
+    "writer_version"
+  ],
+  "receipt_fields": [
+    "artifact_type",
+    "artifact_version",
+    "device_id",
+    "generation",
+    "operation_id",
+    "operation_type",
+    "request_sha256",
+    "response",
+    "schema_version",
+    "transaction_id"
+  ],
+  "idempotency_entry_fields": [
+    "generation",
+    "operation_id",
+    "receipt_path",
+    "receipt_raw_sha256",
+    "request_sha256",
+    "transaction_id"
+  ],
+  "state_ref_fields": [
+    "active",
+    "audit_head",
+    "current",
+    "idempotency_catalog",
+    "pin_catalog",
+    "projection",
+    "receipt",
+    "snapshot_catalog"
+  ],
+  "transaction_response_fields": [
+    "durability_status",
+    "generation",
+    "operation_id",
+    "projection_status",
+    "superseded",
+    "transaction_id"
+  ],
+  "authoritative_operations": [
+    "apply_candidates_to_current_configuration",
+    "apply_snapshot_to_current",
+    "initialize_current_calibration",
+    "set_active",
+    "set_keep",
+    "snapshot_current_configuration",
+    "update_current_configuration"
+  ],
+  "compatibility_operations": [
+    "delete_snapshot",
+    "publish_draft"
+  ],
+  "stable_errors": {
+    "configuration_committed_recovery_pending": 503,
+    "configuration_recovery_required": 503,
+    "configuration_staging_unavailable": 503,
+    "configuration_transaction_aborted": 500,
+    "configuration_transaction_busy": 503,
+    "idempotency_conflict": 409,
+    "invalid_operation_id": 422
+  },
+  "path_budget": {
+    "maximum_supported_configuration_root_characters": 150,
+    "maximum_tested_committed_file_characters": 320,
+    "staging_directory_component_characters": 8,
+    "windows_extended_length_paths": true
+  }
+}

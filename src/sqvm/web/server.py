@@ -578,9 +578,17 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
             self._json(exc.status, exc.payload())
         except (WebArtifactError, ConfigurationManagementError) as exc:
             payload = {"error": str(exc), "status": exc.status}
+            headers = None
             if isinstance(exc, ConfigurationManagementError):
                 payload["field_errors"] = exc.field_errors
-            self._json(exc.status, payload)
+                if exc.code is not None:
+                    payload["code"] = exc.code
+                if exc.transaction_id is not None:
+                    payload["transaction_id"] = exc.transaction_id
+                if exc.retry_after is not None:
+                    payload["retry_after"] = exc.retry_after
+                    headers = {"Retry-After": str(exc.retry_after)}
+            self._json(exc.status, payload, headers=headers)
         except Exception:
             self._json(500, {"error": "internal server error", "status": 500})
 
@@ -830,9 +838,17 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
             self._json(exc.status, exc.payload())
         except (WebArtifactError, ConfigurationManagementError) as exc:
             payload = {"error": str(exc), "status": exc.status}
+            headers = None
             if isinstance(exc, ConfigurationManagementError):
                 payload["field_errors"] = exc.field_errors
-            self._json(exc.status, payload)
+                if exc.code is not None:
+                    payload["code"] = exc.code
+                if exc.transaction_id is not None:
+                    payload["transaction_id"] = exc.transaction_id
+                if exc.retry_after is not None:
+                    payload["retry_after"] = exc.retry_after
+                    headers = {"Retry-After": str(exc.retry_after)}
+            self._json(exc.status, payload, headers=headers)
         except Exception:
             self._json(500, {"error": "internal server error", "status": 500})
 
@@ -894,6 +910,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                 experiment_run_id=run_id,
                 recommendation_id=detail.get("recommendation_id") or run_id,
                 candidates=candidates,
+                operation_id=payload.get("operation_id"),
             )
             self._json(200, result)
             return
@@ -941,6 +958,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     name=payload.get("name"),
                     note=payload.get("note", ""),
                     editable=payload.get("editable"),
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
@@ -949,6 +967,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     device_id,
                     actor_id=payload.get("actor_id"),
                     expected_content_sha256=payload.get("expected_content_sha256"),
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
@@ -960,6 +979,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     name=payload.get("name"),
                     reason=payload.get("reason"),
                     keep=payload.get("keep") is True,
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(201, result)
                 return
@@ -1000,6 +1020,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     name=payload.get("name"),
                     reason=payload.get("reason"),
                     keep=payload.get("keep") is True,
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(201, result)
                 return
@@ -1016,6 +1037,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     snapshot_id,
                     actor_id=payload.get("actor_id"),
                     confirmation_phrase=payload.get("confirmation_phrase"),
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
@@ -1026,6 +1048,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     expected_current_content_sha256=payload.get(
                         "expected_current_content_sha256"
                     ),
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
@@ -1034,12 +1057,17 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     snapshot_id,
                     actor_id=payload.get("actor_id"),
                     keep=payload.get("keep") is True,
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
             if method == "DELETE" and len(tail) == 1:
                 actor_id = self.headers.get("X-SQVM-Actor")
-                self.server.store.delete_snapshot(snapshot_id, actor_id=actor_id)
+                self.server.store.delete_snapshot(
+                    snapshot_id,
+                    actor_id=actor_id,
+                    operation_id=self.headers.get("X-SQVM-Operation-ID"),
+                )
                 self._json(200, {"deleted": True, "snapshot_id": snapshot_id})
                 return
         self._method_not_allowed()

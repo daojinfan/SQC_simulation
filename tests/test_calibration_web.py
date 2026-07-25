@@ -298,7 +298,8 @@ def test_parent_snapshot_cannot_be_deleted_while_child_exists(web_workspace):
     with pytest.raises(ConfigurationManagementError, match="referenced"):
         store.delete_snapshot(parent["snapshot_id"], actor_id="project.manager")
     store.delete_draft(child["draft_id"], actor_id="project.manager")
-    store.delete_snapshot(parent["snapshot_id"], actor_id="project.manager")
+    with pytest.raises(ConfigurationManagementError, match="referenced"):
+        store.delete_snapshot(parent["snapshot_id"], actor_id="project.manager")
 
 
 def test_http_api_serves_console_and_configuration_mutations(web_workspace):
@@ -423,19 +424,46 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
         )
         assert current["source_candidate"]["experiment_run_id"] == run.run_id
         assert current["source_candidate"]["targets"] == ["Q1"]
+        operation_id = str(uuid.uuid4())
+        update_payload = {
+            "actor_id": "project.manager",
+            "expected_content_sha256": current["content_sha256"],
+            "name": "HTTP current configuration",
+            "note": "saved directly through current API",
+            "editable": current["editable"],
+            "operation_id": operation_id,
+        }
         updated_current = _http_json(
             f"{base_url}/api/v1/current-configurations/demo_2q1c2r",
             method="PUT",
-            payload={
-                "actor_id": "project.manager",
-                "expected_content_sha256": current["content_sha256"],
-                "name": "HTTP current configuration",
-                "note": "saved directly through current API",
-                "editable": current["editable"],
-            },
+            payload=update_payload,
         )
         assert updated_current["revision"] == current["revision"] + 1
         assert updated_current["name"] == "HTTP current configuration"
+        assert updated_current["transaction"] == {
+            "transaction_id": operation_id,
+            "operation_id": operation_id,
+            "generation": updated_current["transaction"]["generation"],
+            "durability_status": "committed",
+            "projection_status": "complete",
+            "superseded": False,
+        }
+        replay = _http_json(
+            f"{base_url}/api/v1/current-configurations/demo_2q1c2r",
+            method="PUT",
+            payload=update_payload,
+        )
+        assert replay == updated_current
+        with pytest.raises(HTTPError) as captured:
+            _http_json(
+                f"{base_url}/api/v1/current-configurations/demo_2q1c2r",
+                method="PUT",
+                payload={**update_payload, "note": "different request"},
+            )
+        assert captured.value.code == 409
+        conflict = json.loads(captured.value.read().decode("utf-8"))
+        assert conflict["code"] == "idempotency_conflict"
+        assert conflict["transaction_id"] == operation_id
 
         stale_payload = {
             "actor_id": "project.manager",

@@ -108,8 +108,10 @@ runner commands: it fails closed unless the approved interpreter and kernelspec 
 ## CI 与 successor 基线
 
 仓库提供四套 GitHub Actions 工作流：PR 资格、夜间物理、hosted evidence 和 main 发布汇总。
-Windows/CPython 3.12.10 是资格平台，Linux job 是跨平台补充。工作流文件存在不代表仓库规则已经将其
-设为 required；在 GitHub Ruleset 配置完成并取得连续稳定运行记录前，Step 4 仍保持 NO-GO。
+Windows/CPython 3.12.10 是资格平台，Linux job 是跨平台补充。`dev` PR 独立运行一次资格矩阵；
+`main` PR 由 Release Gate 复用同一矩阵，不再额外触发一套重复资格任务。物理 Windows/Linux job
+在独立 hosted runner 上并行，产物名和 pip cache 都按平台隔离。工作流使用 Node 24 或更新运行时的
+官方 Actions major，required check 名称保持不变。
 
 旧 Stage 2.1 至 4.0 evidence 的原始字节已经不可恢复。当前 successor fixture 只记录已知旧哈希、
 不可恢复状态和 provisional source closure，不宣称重新完成物理执行。验证开发基线：
@@ -346,13 +348,22 @@ from sqvm.storage.operations import ExperimentStorageOperations, StorageMutation
 
 ```text
 output/platform-configurations/
-├─ current/       Web 中直接编辑的当前工作配置
-├─ snapshots/     不可修改的配置快照
-├─ active/        当前实验入口使用的 Active 快照指针
+├─ transactions/
+│  ├─ heads/      每个设备唯一的事务提交点
+│  ├─ bundles/    不可变的同代 current/Active/snapshot/pin/audit 状态
+│  └─ locks/      Web 与 Notebook/Python 共用的跨进程设备锁
+├─ current/       Web 当前配置的兼容投影
+├─ snapshots/     不可修改快照的兼容投影
+├─ active/        Active 指针的兼容投影
 ├─ drafts/        旧版 Draft 兼容数据
-├─ pins/          用户要求长期保留的快照
-└─ audit/         配置操作审计
+├─ pins/          长期保留标记的兼容投影
+└─ audit/         配置审计的兼容投影
 ```
+
+正式 Store、实验 resolver、引用图、Web 和 Notebook/Python API 都先验证 transaction Head、Manifest、
+完整 Bundle 与 parent chain。平面目录只用于旧脚本兼容，可能在崩溃恢复期间短暂滞后，不应被新代码
+直接读取。事务协议与稳定错误码见
+[`docs/designs/07_1_11_configuration_transaction_v0_1.md`](docs/designs/07_1_11_configuration_transaction_v0_1.md)。
 
 当前 Web 主流程使用“当前配置 + 快照”模型；`run_spectroscopy` 要求设备恰好存在一个
 合法的 Active 运行版本。浏览器内尚未保存的修改不会影响实验；点击“保存并生效”后，
