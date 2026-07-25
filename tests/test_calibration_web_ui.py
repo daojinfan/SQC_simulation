@@ -20,6 +20,21 @@ def test_candidate_update_uses_explicit_confirmation_checkbox() -> None:
     assert 'confirmation_phrase: document.querySelector("#dialog-confirmation").value' not in app_js
 
 
+def test_rabi_detail_renders_published_projection_fields() -> None:
+    app_js = (
+        Path(__file__).parents[1] / "src" / "sqvm" / "web" / "static" / "app.js"
+    ).read_text(encoding="utf-8")
+
+    assert "const rabi = detail.rabi_detail || {};" in app_js
+    assert "扫描步进" in app_js
+    assert "父配置" in app_js
+    assert "QCIS source" in app_js
+    assert "相位审计摘要" in app_js
+    assert "当前 / 候选" in app_js
+    assert "installUnifiedPlots(detail.plot_specs || [], routeContext)" in app_js
+    assert 'calibration_scan: "校准扫描"' in app_js
+
+
 def test_storage_views_have_recoverable_actions_and_mobile_safe_table() -> None:
     root = Path(__file__).parents[1] / "src" / "sqvm" / "web" / "static"
     html = (root / "index.html").read_text(encoding="utf-8")

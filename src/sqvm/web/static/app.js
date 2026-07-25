@@ -1474,13 +1474,25 @@ function renderRabiAmplitude(detail, routeContext = null) {
   const axis = dataset.axis || {};
   const values = Array.isArray(axis.values) ? axis.values : [];
   const analysis = detail.analysis || {};
+  const rabi = detail.rabi_detail || {};
+  const scan = rabi.scan || {};
+  const parent = rabi.parent_configuration || {};
+  const setting = rabi.active_setting || {};
+  const phase = rabi.phase_audit || {};
+  const fit = rabi.fit || analysis;
+  const qualityGates = Array.isArray(rabi.quality_gates) ? rabi.quality_gates : detail.gates;
+  const candidateValues = Array.isArray(rabi.candidate_values) ? rabi.candidate_values : [];
+  const range = Array.isArray(scan.range_GHz) && scan.range_GHz.length === 2 ? `${plotNumber(scan.range_GHz[0])} - ${plotNumber(scan.range_GHz[1])} GHz` : values.length ? `${plotNumber(values[0])} - ${plotNumber(values.at(-1))} GHz` : "-";
+  const step = scan.step_GHz == null ? "-" : `${plotNumber(scan.step_GHz)} GHz`;
   const actions = `<button id="export-experiment-json" class="button">导出 JSON</button><button id="export-experiment-csv" class="button">导出 CSV</button>${eligibleCandidates.length ? `<button id="apply-candidates" class="button primary">更新当前配置</button>` : ""}`;
   app.innerHTML = `
     ${detailHeader("X2P Rabi 幅度校准", detail.run_id, [detail.verification_status, detail.recommendation_eligible ? "eligible" : "blocked"], actions)}
-    <section class="section"><div class="facts">${fact("运行时间", dateText(detail.created_utc))}${fact("目标", detail.targets.join(", "))}${fact("扫描范围", values.length ? `${plotNumber(values[0])} - ${plotNumber(values.at(-1))} GHz` : "-")}${fact("数据点", values.length)}${fact("活动 XY2 setting", detail.request?.active_xy2_setting || detail.request?.setting_id || "-")}</div></section>
-    <section class="section"><div class="section-head"><div><h2>候选 X2P 幅度</h2></div></div><div class="candidate-band">${detail.candidates.map(candidateHtml).join("")}</div></section>
+    <section class="section"><div class="facts">${fact("运行时间", dateText(detail.created_utc))}${fact("目标", detail.targets.join(", "))}${fact("扫描范围", range)}${fact("扫描步进", step)}${fact("数据点", scan.point_count ?? values.length)}${fact("父配置", parent.path || parent.relative_path || "-", true)}${fact("活动 XY2 setting", setting.setting_id || detail.request?.setting_id || "-")}${fact("当前幅度", setting.current_amplitude_GHz == null ? "-" : `${plotNumber(setting.current_amplitude_GHz)} GHz`)}</div></section>
+    <section class="section"><div class="section-head"><div><h2>候选 X2P 幅度</h2></div></div><div class="candidate-band">${detail.candidates.map(candidateHtml).join("")}</div><div class="facts">${candidateValues.map((row) => fact("当前 / 候选", `${plotNumber(row.current_value)} / ${plotNumber(row.proposed_value)} ${row.unit || ""}`)).join("") || fact("当前 / 候选", "-")}</div></section>
     <section class="section"><div class="section-head"><div><h2>实验数据图</h2><p>选择对象和数据指标，点击图中数据点查看坐标</p></div></div>${plotPanels(detail.plot_specs || [])}</section>
-    <section class="section"><div class="section-head"><div><h2>拟合与质量门</h2></div></div><pre>${esc(JSON.stringify(analysis, null, 2))}</pre><div class="gate-list">${detail.gates.map(gateHtml).join("")}</div></section>
+    <section class="section"><div class="section-head"><div><h2>QCIS source</h2></div></div><pre>${esc(rabi.qcis_source || "-")}</pre></section>
+    <section class="section"><div class="section-head"><div><h2>相位审计摘要</h2></div></div><div class="facts">${fact("第一个 start sample", phase.first_start_sample)}${fact("第二个 start sample", phase.second_start_sample)}${fact("实验室相位推进", phase.lab_phase_advance_unwrapped_rad == null ? "-" : `${plotNumber(phase.lab_phase_advance_unwrapped_rad)} rad`)}${fact("相位审计", phase.passed === true ? "通过" : phase.passed === false ? "未通过" : "-")}</div></section>
+    <section class="section"><div class="section-head"><div><h2>拟合与质量门</h2></div></div><div class="facts">${fact("拟合收敛", fit.fit_converged === true ? "是" : fit.fit_converged === false ? "否" : "-")}${fact("X2P 幅度", fit.x2p_amplitude_GHz == null ? "-" : `${plotNumber(fit.x2p_amplitude_GHz)} GHz`)}${fact("offset", fit.offset == null ? "-" : plotNumber(fit.offset))}${fact("contrast", fit.contrast == null ? "-" : plotNumber(fit.contrast))}${fact("R²", fit.r_squared == null ? "-" : plotNumber(fit.r_squared))}${fact("normalized RMSE", fit.normalized_rmse == null ? "-" : plotNumber(fit.normalized_rmse))}</div><div class="gate-list">${qualityGates.map(gateHtml).join("")}</div></section>
     <section class="section"><details><summary>请求 JSON</summary><pre>${esc(JSON.stringify(detail.request, null, 2))}</pre></details></section>`;
   requestAnimationFrame(() => installUnifiedPlots(detail.plot_specs || [], routeContext));
   document.querySelector("#export-experiment-json").addEventListener("click", () => downloadText(`rabi-${detail.run_id}.json`, JSON.stringify({ request: detail.request, dataset, analysis, gates: detail.gates, candidates: detail.candidates }, null, 2), "application/json"));
@@ -2396,6 +2408,7 @@ function statusText(value) {
     "model-derived": "模型生成",
     "synthetic-demo": "合成演示数据",
     parallel_lockstep: "并行同步扫描",
+    calibration_scan: "校准扫描",
     sequential: "顺序扫描",
     coarse: "粗扫",
     refined: "细扫",
