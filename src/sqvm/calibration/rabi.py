@@ -40,9 +40,34 @@ RABI_EXPERIMENT_ID = "qubit_rabi_x2p_amplitude_v1"
 RABI_SCAN_WORKFLOW_ID = "qubit_rabi_x2p_amplitude_scan_v1"
 RABI_POLICY_PATH = "configs/calibration/rabi_x2p_analysis_policy_v1.json"
 
+RABI_ERROR_CODES = frozenset({
+    "rabi_request_invalid",
+    "rabi_axis_invalid",
+    "rabi_target_unsupported",
+    "rabi_reference_frequency_unqualified",
+    "rabi_xy2_setting_invalid",
+    "rabi_set_path_unavailable",
+    "rabi_compilation_invalid",
+    "rabi_phase_audit_failed",
+    "rabi_result_invalid",
+    "rabi_fit_not_converged",
+    "rabi_first_peak_not_bracketed",
+    "rabi_candidate_ineligible",
+    "rabi_publication_failed",
+    "rabi_recovery_required",
+})
+
 
 class RabiError(ValueError):
     """Raised for a Rabi request or published Rabi artifact violation."""
+
+    def __init__(self, code: str, detail: str | None = None) -> None:
+        if code not in RABI_ERROR_CODES:
+            detail = code if detail is None else detail
+            code = _rabi_error_code(detail)
+        self.code = code
+        self.detail = detail
+        super().__init__(code if detail is None else f"{code}: {detail}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +129,7 @@ class RabiAnalysis:
     input_dataset_sha256: str | None = None
     optimizer_nfev: int | None = None
     residual_sum_squares: float | None = None
+    analysis_policy_sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -125,6 +151,7 @@ class RabiAnalysis:
             "input_dataset_sha256": self.input_dataset_sha256,
             "optimizer_nfev": self.optimizer_nfev,
             "residual_sum_squares": self.residual_sum_squares,
+            "analysis_policy_sha256": self.analysis_policy_sha256,
         }
 
 
@@ -242,7 +269,11 @@ def run_qubit_rabi_scan(
     analysis = analyze_rabi(dataset, policy=request.analysis_policy)
     setting_id, setting = _active_setting(request.target, context)
     phase_ok = bool(audits) and all(audit.get("event_count") == 2 for audit in audits)
-    analysis = replace(analysis, phase_audit_passed=phase_ok)
+    analysis = replace(
+        analysis,
+        phase_audit_passed=phase_ok,
+        analysis_policy_sha256=request.analysis_policy_sha256,
+    )
     eligible = bool(request.analysis_policy_approved and phase_ok and analysis.fit_converged and _accepted_frequency(request.target, context) and _policy_gates(request, dataset, analysis))
     candidates = _candidates(request, analysis, dataset_sha, setting_id, setting, eligible)
     workflow = {
@@ -401,9 +432,12 @@ def _static_phase_audits(circuits: Sequence[QCISCircuit], context: CircuitExecut
     not invent an electronics receipt before that artifact exists.
     """
     audits = []
-    try:
-        for circuit, amplitude in zip(circuits, amplitudes, strict=True):
+    for circuit, amplitude in zip(circuits, amplitudes, strict=True):
+        try:
             compilation = compile_circuit(circuit, context).compilation
+        except Exception as exc:
+            raise RabiError("rabi_compilation_invalid", str(exc)) from exc
+        try:
             source_operations = {int(step["index"]): str(step["op"]) for step in compilation.plan.trace["steps"]}
             audit = audit_two_x2p_phase(
                 compilation.plan.drive_event_inventory,
@@ -412,8 +446,8 @@ def _static_phase_audits(circuits: Sequence[QCISCircuit], context: CircuitExecut
                 source_operations=source_operations, require_electronics_schedule=False,
             )
             audits.append(MappingProxyType({"passed": True, **audit.to_dict()}))
-    except (RabiPhaseAuditError, KeyError, TypeError, IndexError, ValueError) as exc:
-        raise RabiError("rabi_phase_audit_failed") from exc
+        except (RabiPhaseAuditError, KeyError, TypeError, IndexError, ValueError) as exc:
+            raise RabiError("rabi_phase_audit_failed") from exc
     return tuple(audits)
 
 
@@ -480,7 +514,7 @@ def _analysis_from_payload(row: Mapping[str, Any]) -> RabiAnalysis:
     bracket = row.get("peak_bracket_GHz")
     dense = row.get("dense_fit_curve")
     curve = MappingProxyType({"amplitude_GHz": tuple(dense["amplitude_GHz"]), "P1": tuple(dense["P1"])}) if isinstance(dense, Mapping) else None
-    return RabiAnalysis(bool(row["fit_converged"]), row.get("offset"), row.get("contrast"), row.get("x2p_amplitude_GHz"), row.get("rmse"), row.get("normalized_rmse"), row.get("r_squared"), row.get("first_peak_index"), tuple(bracket) if bracket else None, tuple(row.get("fitted_P1", ())), curve, row.get("candidate_distance_to_edge_steps"), row.get("candidate_leakage"), row.get("max_norm_error"), row.get("phase_audit_passed"), row.get("reason"), row.get("input_dataset_sha256"), row.get("optimizer_nfev"), row.get("residual_sum_squares"))
+    return RabiAnalysis(bool(row["fit_converged"]), row.get("offset"), row.get("contrast"), row.get("x2p_amplitude_GHz"), row.get("rmse"), row.get("normalized_rmse"), row.get("r_squared"), row.get("first_peak_index"), tuple(bracket) if bracket else None, tuple(row.get("fitted_P1", ())), curve, row.get("candidate_distance_to_edge_steps"), row.get("candidate_leakage"), row.get("max_norm_error"), row.get("phase_audit_passed"), row.get("reason"), row.get("input_dataset_sha256"), row.get("optimizer_nfev"), row.get("residual_sum_squares"), row.get("analysis_policy_sha256"))
 
 
 def _relocate_dataset(dataset: RabiDataset, source: Path, destination: Path) -> RabiDataset:
@@ -644,4 +678,36 @@ def _load(path: Path) -> dict[str, Any]:
     return value
 
 
-__all__ = ["RABI_EXPERIMENT_ID", "RABI_POLICY_PATH", "RABI_SCAN_WORKFLOW_ID", "RabiAmplitudeAxis", "RabiAnalysis", "RabiDataset", "RabiError", "RabiRequest", "RabiRun", "amplitude_axis", "analyze_rabi", "build_rabi_circuits", "load_rabi_analysis_policy", "run_qubit_rabi_scan", "verify_rabi_scan"]
+def _rabi_error_code(detail: str) -> str:
+    """Classify legacy call sites while preserving a stable public code."""
+    lowered = detail.lower()
+    if "axis" in lowered or "range" in lowered or "step" in lowered or "first-lobe" in lowered:
+        return "rabi_axis_invalid"
+    if "target" in lowered or "qagent component" in lowered or "population basis" in lowered:
+        return "rabi_target_unsupported"
+    if "reference frequency" in lowered:
+        return "rabi_reference_frequency_unqualified"
+    if "set path" in lowered or "settable" in lowered:
+        return "rabi_set_path_unavailable"
+    if "active xy2" in lowered or "setting" in lowered:
+        return "rabi_xy2_setting_invalid"
+    if "compil" in lowered:
+        return "rabi_compilation_invalid"
+    if "phase" in lowered:
+        return "rabi_phase_audit_failed"
+    if "first_peak" in lowered or "first peak" in lowered:
+        return "rabi_first_peak_not_bracketed"
+    if "fit" in lowered:
+        return "rabi_fit_not_converged"
+    if "candidate" in lowered or "eligible" in lowered:
+        return "rabi_candidate_ineligible"
+    if "publish" in lowered:
+        return "rabi_publication_failed"
+    if "evidence" in lowered or "artifact" in lowered or "recovery" in lowered or "idempotency" in lowered:
+        return "rabi_recovery_required"
+    if "result" in lowered or "dataset" in lowered:
+        return "rabi_result_invalid"
+    return "rabi_request_invalid"
+
+
+__all__ = ["RABI_ERROR_CODES", "RABI_EXPERIMENT_ID", "RABI_POLICY_PATH", "RABI_SCAN_WORKFLOW_ID", "RabiAmplitudeAxis", "RabiAnalysis", "RabiDataset", "RabiError", "RabiRequest", "RabiRun", "amplitude_axis", "analyze_rabi", "build_rabi_circuits", "load_rabi_analysis_policy", "run_qubit_rabi_scan", "verify_rabi_scan"]

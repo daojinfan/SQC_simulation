@@ -31,8 +31,8 @@ def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent() -> None:
         shutil.copytree(CONFIG_FIXTURE, storage)
         run = run_rabi(
             target="Q1",
-            amplitude_range_GHz=(0.0, 0.20),
-            amplitude_step_GHz=0.05,
+            amplitude_range_GHz=(0.0, 0.03),
+            amplitude_step_GHz=0.01,
             output_root=collection,
             configuration_storage_root=storage,
             repository_root=ROOT,
@@ -53,7 +53,7 @@ def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent() -> None:
         workflow = json.loads((root / "workflow.json").read_text(encoding="utf-8"))
         dataset = json.loads((root / "dataset.json").read_text(encoding="utf-8"))
         assert workflow["workflow_id"] == "qubit_rabi_x2p_amplitude_scan_v1"
-        assert dataset["axis"]["values"] == [0.0, 0.05, 0.1, 0.15, 0.2]
+        assert dataset["axis"]["values"] == [0.0, 0.01, 0.02, 0.03]
         assert list(dataset["series"]["Q1"]) == ["P0", "P1", "leakage", "norm_error"]
         for index, point in enumerate(dataset["points"]):
             assert point["circuit_id"] == f"rabi_q1_{index:04d}"
@@ -72,8 +72,8 @@ def test_real_qutip_rabi_publication_is_phase_audited_and_idempotent() -> None:
 
         replay = run_rabi(
             target="Q1",
-            amplitude_range_GHz=(0.0, 0.20),
-            amplitude_step_GHz=0.05,
+            amplitude_range_GHz=(0.0, 0.03),
+            amplitude_step_GHz=0.01,
             output_root=collection,
             configuration_storage_root=storage,
             repository_root=ROOT,

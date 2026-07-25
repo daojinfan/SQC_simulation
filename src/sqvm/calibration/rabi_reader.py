@@ -82,8 +82,13 @@ def _workflow(workflow, dataset, receipt, report, manifest, workflow_sha, datase
     run_id = workflow.get("run_id")
     if (workflow.get("workflow_id") != _WORKFLOW_ID or workflow.get("artifact_type") != "qubit_rabi_x2p_amplitude_scan" or workflow.get("artifact_version") != "0.1" or workflow.get("status") != "completed" or workflow.get("archive_eligible") is not True or not isinstance(run_id, str) or not run_id or not isinstance(request, Mapping) or not isinstance(analysis, Mapping)):
         raise RabiReaderVerificationError("rabi workflow identity is invalid")
-    if request.get("workflow_id") != _WORKFLOW_ID or request.get("experiment_id") != "qubit_rabi_x2p_amplitude_v1" or request.get("gate_sequence") != ["X2P", "X2P"] or request.get("setting_selector") != "active_xy2_setting" or not isinstance(request.get("analysis_policy_id"), str) or not request["analysis_policy_id"] or not _sha_text(request.get("analysis_policy_sha256")):
+    if request.get("workflow_id") != _WORKFLOW_ID or request.get("experiment_id") != "qubit_rabi_x2p_amplitude_v1" or request.get("gate_sequence") != ["X2P", "X2P"] or request.get("setting_selector") != "active_xy2_setting" or not isinstance(request.get("analysis_policy_id"), str) or not request["analysis_policy_id"] or type(request.get("analysis_policy_approved")) is not bool or not _sha_text(request.get("analysis_policy_sha256")) or not isinstance(request.get("setting_id"), str) or not request["setting_id"] or not _sha_text(request.get("setting_hash")) or not _number(request.get("setting_amplitude_GHz")):
         raise RabiReaderVerificationError("rabi request policy binding is invalid")
+    eligible = workflow.get("recommendation_eligible")
+    claim = workflow.get("claim")
+    phase = workflow.get("phase_audit")
+    if type(eligible) is not bool or (eligible and request["analysis_policy_approved"] is not True) or phase != {"passed": True, "implementation": "rabi_x2p_phase_v1"} or not isinstance(claim, Mapping) or claim.get("recommendation_eligible") is not eligible or claim.get("execution_profile") not in {"calibration_scan", "bounded_smoke"}:
+        raise RabiReaderVerificationError("rabi recommendation authority is invalid")
     if workflow.get("dataset") != {"path": "dataset.json", "sha256": dataset_sha} or analysis.get("input_dataset_sha256") != dataset_sha:
         raise RabiReaderVerificationError("rabi analysis dataset binding is invalid")
     expected_receipt = {"artifact_type": "rabi_scan_receipt", "status": "completed", "run_id": run_id, "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha, "recommendation_id": workflow.get("recommendation_id")}
@@ -93,7 +98,7 @@ def _workflow(workflow, dataset, receipt, report, manifest, workflow_sha, datase
     if dict(manifest) != {"artifact_type": "rabi_scan_manifest", "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha, "receipt_sha256": _sha(canonical_json_bytes(receipt))}:
         raise RabiReaderVerificationError("rabi manifest binding is invalid")
     _dataset(workflow, dataset)
-    _analysis(analysis, dataset_sha)
+    _analysis(analysis, dataset_sha, request, dataset)
     _candidate(workflow, dataset_sha)
 
 
@@ -141,18 +146,99 @@ def _phase(audit: Any, amplitude: float, setting_id: Any) -> None:
         raise RabiReaderVerificationError("rabi phase reconstruction differs")
 
 
-def _analysis(analysis: Mapping[str, Any], dataset_sha: str) -> None:
-    required = ("algorithm_version", "input_dataset_sha256", "optimizer_nfev", "residual_sum_squares", "candidate_distance_to_edge_steps", "candidate_leakage", "max_norm_error", "phase_audit_passed", "dense_fit_curve")
-    if any(key not in analysis for key in required) or analysis.get("input_dataset_sha256") != dataset_sha or not isinstance(analysis.get("algorithm_version"), str) or not analysis["algorithm_version"] or analysis.get("phase_audit_passed") is not True:
+def _analysis(
+    analysis: Mapping[str, Any],
+    dataset_sha: str,
+    request: Mapping[str, Any],
+    dataset: Mapping[str, Any],
+) -> None:
+    expected_keys = {
+        "algorithm_version", "fit_converged", "offset", "contrast",
+        "x2p_amplitude_GHz", "rmse", "normalized_rmse", "r_squared",
+        "first_peak_index", "peak_bracket_GHz", "fitted_P1", "reason",
+        "dense_fit_curve", "candidate_distance_to_edge_steps",
+        "candidate_leakage", "max_norm_error", "phase_audit_passed",
+        "input_dataset_sha256", "optimizer_nfev", "residual_sum_squares",
+        "analysis_policy_sha256",
+    }
+    if (
+        set(analysis) != expected_keys
+        or analysis.get("algorithm_version") != "rabi_x2p_bounded_least_squares_v1"
+        or analysis.get("input_dataset_sha256") != dataset_sha
+        or analysis.get("analysis_policy_sha256") != request.get("analysis_policy_sha256")
+        or not _sha_text(analysis.get("analysis_policy_sha256"))
+        or type(analysis.get("fit_converged")) is not bool
+        or analysis.get("phase_audit_passed") is not True
+    ):
         raise RabiReaderVerificationError("rabi analysis identity is invalid")
-    if analysis["optimizer_nfev"] is not None and (type(analysis["optimizer_nfev"]) is not int or analysis["optimizer_nfev"] < 0):
-        raise RabiReaderVerificationError("rabi optimizer evidence is invalid")
-    for key in ("residual_sum_squares", "candidate_leakage", "max_norm_error"):
-        if analysis[key] is not None and (not _number(analysis[key]) or analysis[key] < 0.0):
-            raise RabiReaderVerificationError("rabi quality metric is invalid")
-    curve = analysis["dense_fit_curve"]
-    if not isinstance(curve, Mapping) or not isinstance(curve.get("amplitude_GHz"), list) or not isinstance(curve.get("P1"), list) or len(curve["amplitude_GHz"]) != 201 or len(curve["P1"]) != 201 or any(not _number(value) for value in curve["amplitude_GHz"] + curve["P1"]):
-        raise RabiReaderVerificationError("rabi dense fit curve is invalid")
+
+    axis = dataset["axis"]["values"]
+    series = dataset["series"][dataset["target"]]
+    peaks = [
+        index for index in range(1, len(axis) - 1)
+        if series["P1"][index] > series["P1"][index - 1]
+        and series["P1"][index] >= series["P1"][index + 1]
+    ]
+    expected_max_norm = max(float(value) for value in series["norm_error"])
+    if not _number(analysis.get("max_norm_error")) or not _close(analysis["max_norm_error"], expected_max_norm):
+        raise RabiReaderVerificationError("rabi maximum norm error differs")
+
+    model_fields = ("offset", "contrast", "x2p_amplitude_GHz", "rmse", "normalized_rmse", "r_squared", "residual_sum_squares")
+    has_model = all(_number(analysis.get(key)) for key in model_fields)
+    if has_model:
+        if not peaks or analysis.get("first_peak_index") != peaks[0]:
+            raise RabiReaderVerificationError("rabi first peak differs")
+        peak = peaks[0]
+        bracket = [axis[peak - 1], axis[peak + 1]]
+        amplitude = float(analysis["x2p_amplitude_GHz"])
+        if analysis.get("peak_bracket_GHz") != bracket or not float(bracket[0]) <= amplitude <= float(bracket[1]):
+            raise RabiReaderVerificationError("rabi fit bracket differs")
+        fitted = analysis.get("fitted_P1")
+        if not isinstance(fitted, list) or len(fitted) != len(axis):
+            raise RabiReaderVerificationError("rabi fitted series is invalid")
+        offset, contrast = float(analysis["offset"]), float(analysis["contrast"])
+        expected_fitted = [offset + contrast * math.sin(math.pi * float(value) / (2.0 * amplitude)) ** 2 for value in axis]
+        if any(not _number(actual) or not _close(actual, expected) for actual, expected in zip(fitted, expected_fitted)):
+            raise RabiReaderVerificationError("rabi fitted series differs")
+        residual = [actual - float(observed) for actual, observed in zip(expected_fitted, series["P1"])]
+        rss = sum(value * value for value in residual)
+        rmse = math.sqrt(rss / len(residual))
+        spread = max(series["P1"]) - min(series["P1"])
+        normalized = rmse / max(float(spread), 1e-12)
+        mean = sum(float(value) for value in series["P1"]) / len(series["P1"])
+        total = sum((float(value) - mean) ** 2 for value in series["P1"])
+        r_squared = 1.0 - rss / total if total else 1.0
+        if not all((_close(analysis["residual_sum_squares"], rss), _close(analysis["rmse"], rmse), _close(analysis["normalized_rmse"], normalized), _close(analysis["r_squared"], r_squared))):
+            raise RabiReaderVerificationError("rabi fit metrics differ")
+        candidate_index = min(range(len(axis)), key=lambda item: abs(float(axis[item]) - amplitude))
+        if analysis.get("candidate_distance_to_edge_steps") != min(candidate_index, len(axis) - candidate_index - 1) or not _number(analysis.get("candidate_leakage")) or not _close(analysis["candidate_leakage"], series["leakage"][candidate_index]):
+            raise RabiReaderVerificationError("rabi candidate quality differs")
+        curve = analysis.get("dense_fit_curve")
+        if not isinstance(curve, Mapping) or set(curve) != {"amplitude_GHz", "P1"} or not isinstance(curve["amplitude_GHz"], list) or not isinstance(curve["P1"], list) or len(curve["amplitude_GHz"]) != 201 or len(curve["P1"]) != 201:
+            raise RabiReaderVerificationError("rabi dense fit curve is invalid")
+        expected_dense_x = [float(axis[0]) + (float(axis[-1]) - float(axis[0])) * index / 200.0 for index in range(201)]
+        expected_dense_y = [offset + contrast * math.sin(math.pi * value / (2.0 * amplitude)) ** 2 for value in expected_dense_x]
+        if any(not _number(actual) or not _close(actual, expected) for actual, expected in zip(curve["amplitude_GHz"], expected_dense_x)) or any(not _number(actual) or not _close(actual, expected) for actual, expected in zip(curve["P1"], expected_dense_y)):
+            raise RabiReaderVerificationError("rabi dense fit curve differs")
+        if type(analysis.get("optimizer_nfev")) is not int or analysis["optimizer_nfev"] <= 0:
+            raise RabiReaderVerificationError("rabi optimizer evidence is invalid")
+        expected_reason = None if analysis["fit_converged"] else "fit_not_converged"
+        if analysis.get("reason") != expected_reason:
+            raise RabiReaderVerificationError("rabi fit status differs")
+        return
+
+    failure_fields = ("offset", "contrast", "x2p_amplitude_GHz", "rmse", "normalized_rmse", "r_squared", "candidate_distance_to_edge_steps", "candidate_leakage", "optimizer_nfev", "residual_sum_squares")
+    if analysis["fit_converged"] or any(analysis.get(key) is not None for key in failure_fields) or analysis.get("fitted_P1") != [] or analysis.get("dense_fit_curve") is not None:
+        raise RabiReaderVerificationError("rabi failed fit payload is invalid")
+    reason = analysis.get("reason")
+    if reason == "first_peak_not_found":
+        if peaks or analysis.get("first_peak_index") is not None or analysis.get("peak_bracket_GHz") is not None:
+            raise RabiReaderVerificationError("rabi missing-peak evidence differs")
+    elif reason in {"fit_bounds_do_not_intersect_peak_bracket", "fit_failed"}:
+        if not peaks or analysis.get("first_peak_index") != peaks[0] or analysis.get("peak_bracket_GHz") != [axis[peaks[0] - 1], axis[peaks[0] + 1]]:
+            raise RabiReaderVerificationError("rabi failed fit bracket differs")
+    else:
+        raise RabiReaderVerificationError("rabi failed fit reason is invalid")
 
 
 def _candidate(workflow: Mapping[str, Any], dataset_sha: str) -> None:
@@ -260,6 +346,12 @@ def _finite(value: Any) -> None:
 
 def _number(value: Any) -> bool:
     return type(value) in {int, float} and math.isfinite(float(value))
+
+
+def _close(left: Any, right: Any) -> bool:
+    return _number(left) and _number(right) and math.isclose(
+        float(left), float(right), rel_tol=1e-10, abs_tol=1e-12
+    )
 
 
 def _sha_text(value: Any) -> bool:

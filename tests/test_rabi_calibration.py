@@ -59,8 +59,17 @@ def test_approved_policy_requires_complete_integer_thresholds_and_bounds():
     [((0.01, 0.1), 0.01, "start"), ((0, 0.1), 0.03, "divisible"), ((0, 3.2), 0.05, "between 3 and 64")],
 )
 def test_rabi_axis_rejects_non_first_lobe_or_invalid_grid(bounds, step, message):
-    with pytest.raises(RabiError, match=message):
+    with pytest.raises(RabiError, match=message) as caught:
         amplitude_axis(bounds, step, "Q1")
+    assert caught.value.code == "rabi_axis_invalid"
+
+
+def test_rabi_error_exposes_a_stable_machine_code_without_losing_detail():
+    error = RabiError("rabi_candidate_ineligible", "analysis policy is not approved")
+
+    assert error.code == "rabi_candidate_ineligible"
+    assert error.detail == "analysis policy is not approved"
+    assert str(error) == "rabi_candidate_ineligible: analysis policy is not approved"
 
 
 def test_rabi_analysis_fits_first_peak_and_builds_common_candidate():
@@ -82,6 +91,7 @@ def test_rabi_analysis_fits_first_peak_and_builds_common_candidate():
 
 
 def test_approved_policy_bounds_drive_fit_and_analysis_payload_round_trips():
+    from dataclasses import replace
     from sqvm.calibration import rabi
     amplitudes = tuple(index * 0.01 for index in range(11))
     p1 = tuple(0.03 + 0.8 * __import__("math").sin(__import__("math").pi * value / 0.1) ** 2 for value in amplitudes)
@@ -95,8 +105,9 @@ def test_approved_policy_bounds_drive_fit_and_analysis_payload_round_trips():
     assert analysis.input_dataset_sha256 == "C" * 64
     assert analysis.optimizer_nfev is not None
     assert analysis.residual_sum_squares is not None
-    restored = rabi._analysis_from_payload(analysis.to_dict())
-    assert restored.to_dict() == analysis.to_dict()
+    bound = replace(analysis, analysis_policy_sha256="E" * 64)
+    restored = rabi._analysis_from_payload(bound.to_dict())
+    assert restored.to_dict() == bound.to_dict()
     impossible = {"approved": True, "fit_parameter_bounds": {**policy["fit_parameter_bounds"], "x2p_amplitude_GHz": [0.07, 0.08]}}
     assert analyze_rabi(dataset, policy=impossible).reason == "fit_bounds_do_not_intersect_peak_bracket"
 

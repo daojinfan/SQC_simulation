@@ -51,6 +51,7 @@ from sqvm.calibration.api import (
     run_rabi,
 )
 from sqvm.calibration.rabi import (
+    RABI_ERROR_CODES,
     RABI_SCAN_WORKFLOW_ID,
     RabiAmplitudeAxis,
     RabiAnalysis,
@@ -106,6 +107,7 @@ __all__ = [
     "cancel_spectroscopy",
     "run_active_qubit_spectroscopy_calibration",
     "run_spectroscopy",
+    "RABI_ERROR_CODES",
     "RABI_SCAN_WORKFLOW_ID",
     "RabiAmplitudeAxis",
     "RabiAnalysis",
