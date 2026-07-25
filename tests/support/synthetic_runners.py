@@ -24,7 +24,7 @@ def install_synthetic_spectroscopy_runner(monkeypatch, calls, *, cross_excitatio
             q1 = 0.02 + 0.33 * math.exp(-((frequencies["Q1"] - centers["Q1"]) / 0.055) ** 2) if "Q1" in driven else cross_excitation
             q2 = 0.02 + 0.33 * math.exp(-((frequencies["Q2"] - centers["Q2"]) / 0.055) ** 2) if "Q2" in driven else cross_excitation
             result = spectroscopy_result(circuit.circuit_id, 1.0 - 0.001 - q1 - q2, q1, q2, 0.0)
-            circuit_evidence = evidence_root / "circuit-execution-evidence" / circuit.circuit_id; model_evidence = evidence_root / circuit.circuit_id
+            circuit_evidence = evidence_root / "circuit_execution" / circuit.circuit_id; model_evidence = evidence_root / circuit.circuit_id
             circuit_evidence.mkdir(parents=True, exist_ok=True); model_evidence.mkdir(parents=True, exist_ok=True)
             (circuit_evidence / "result.bin").write_bytes(circuit.circuit_id.encode("ascii")); (model_evidence / "model.bin").write_bytes(b"synthetic")
             results.append(

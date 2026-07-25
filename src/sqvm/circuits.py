@@ -10,6 +10,7 @@ import hashlib
 from itertools import product
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -77,6 +78,8 @@ _RESULT_ARRAYS = {
 _MAX_CIRCUITS_PER_CALL = 64
 _EXECUTION_EVIDENCE_DIR = "circuit_execution"
 _EXECUTION_SCHEMA_VERSION = "0.2"
+_WINDOWS_DIRECTORY_PATH_LIMIT = 248
+_STAGING_UUID_HEX = "f" * 32
 
 
 class CircuitReasonCode(StrEnum):
@@ -93,6 +96,7 @@ class CircuitReasonCode(StrEnum):
     CONFIG_AUTHORITY_INVALID = "CIRCUIT_CONFIG_AUTHORITY_INVALID"
     READOUT_QUBIT_INVALID = "CIRCUIT_READOUT_QUBIT_INVALID"
     RESULT_EVIDENCE_INVALID = "CIRCUIT_RESULT_EVIDENCE_INVALID"
+    OUTPUT_PATH_TOO_LONG = "CIRCUIT_OUTPUT_PATH_TOO_LONG"
 
 
 class CircuitExecutionProfile(StrEnum):
@@ -349,6 +353,8 @@ def run_circuits(
     if any(not isinstance(circuit, QCISCircuit) for circuit in circuits):
         _fail(CircuitReasonCode.INVALID_ID, "each item must be QCISCircuit")
     ids = [circuit.circuit_id for circuit in circuits]
+    for circuit_id in ids:
+        _validate_circuit_id(circuit_id)
     if len(ids) != len(set(ids)):
         _fail(CircuitReasonCode.DUPLICATE_ID, "circuit_id values must be unique")
     if (
@@ -367,6 +373,7 @@ def run_circuits(
     if progress_callback is not None and not callable(progress_callback):
         _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "progress callback is invalid")
     readout_selection = _normalize_readout_qubit(readout_qubit, context)
+    _preflight_windows_path_budget(output_root, ids, execution_profile)
     compiled_circuits = tuple(compile_circuit(circuit, context) for circuit in circuits)
     results: list[CircuitResult] = []
     for index, compiled in enumerate(compiled_circuits):
@@ -863,6 +870,75 @@ def _validate_dressed_populations(populations: DressedPopulations, leakage: floa
         _fail(CircuitReasonCode.RESULT_EVIDENCE_INVALID, "computational population normalization")
 
 
+def _preflight_windows_path_budget(
+    output_root: str | Path,
+    circuit_ids: Sequence[str],
+    execution_profile: CircuitExecutionProfile,
+    *,
+    platform_name: str | None = None,
+) -> None:
+    """Reject legacy-Windows output roots before compilation starts."""
+
+    if (os.name if platform_name is None else platform_name) != "nt":
+        return
+    root = Path(output_root).resolve()
+    longest = max(
+        (
+            path
+            for circuit_id in circuit_ids
+            for path in _planned_execution_paths(root, circuit_id, execution_profile)
+        ),
+        key=lambda path: len(str(path)),
+    )
+    if len(str(longest)) >= _WINDOWS_DIRECTORY_PATH_LIMIT:
+        _fail(
+            CircuitReasonCode.OUTPUT_PATH_TOO_LONG,
+            "shorten output_root; planned execution path exceeds the Windows "
+            f"{_WINDOWS_DIRECTORY_PATH_LIMIT}-character directory budget: {longest}",
+        )
+
+
+def _planned_execution_paths(
+    root: Path,
+    circuit_id: str,
+    execution_profile: CircuitExecutionProfile,
+) -> tuple[Path, ...]:
+    if execution_profile is CircuitExecutionProfile.CALIBRATION_SCAN:
+        point_staging = root / f".cs_{'0' * 8}"
+        worker = ".calibration-worker"
+    else:
+        point_staging = root / f".{circuit_id}.staging.{_STAGING_UUID_HEX}"
+        worker = ".stage51-worker"
+    return (
+        point_staging
+        / "stage41"
+        / f".control.staging.{_STAGING_UUID_HEX}"
+        / "arrays"
+        / "logical.xy_delta_GHz.q1.i.bin",
+        point_staging
+        / "stage51"
+        / f".coefficient.staging.{_STAGING_UUID_HEX}"
+        / "arrays"
+        / "absolute_flux_q2.bin",
+        point_staging
+        / "stage51"
+        / f"{worker}.{_STAGING_UUID_HEX}"
+        / "result"
+        / "observables"
+        / "population_000.bin",
+        root
+        / _EXECUTION_EVIDENCE_DIR
+        / f".p.{_STAGING_UUID_HEX}"
+        / "verification_report.json",
+        root / circuit_id / "stage51" / "evolution" / "observables" / "population_000.bin",
+        root / _EXECUTION_EVIDENCE_DIR / circuit_id / "receipt.json",
+    )
+
+
+def _circuit_execution_staging(root: Path, token: str) -> Path:
+    return root / f".p.{token}"
+
+
 def _publish_circuit_execution_evidence(
     output_root: Path,
     compiled: CompiledCircuit,
@@ -879,7 +955,7 @@ def _publish_circuit_execution_evidence(
     if target.exists():
         _fail(CircuitReasonCode.RESULT_EVIDENCE_INVALID, "circuit execution evidence already exists")
     root.mkdir(parents=True, exist_ok=True)
-    staging = root / f".{compiled.circuit.circuit_id}.staging.{uuid.uuid4().hex}"
+    staging = _circuit_execution_staging(root, uuid.uuid4().hex)
     try:
         staging.mkdir()
         model_manifest = _raw_sha256(handle.artifact_root / "manifest.json")

@@ -190,7 +190,7 @@ def test_active_spectroscopy_api_publishes_web_visible_data(monkeypatch):
 
 
 def test_run_spectroscopy_builds_the_scan_from_ranges_and_step(monkeypatch):
-    base = ROOT / "tmp" / f"simple_spectroscopy_api_{uuid.uuid4().hex}"
+    base = ROOT / "tmp" / f"sp_{uuid.uuid4().hex}"
     calls = []
     _install_synthetic_runner(monkeypatch, calls)
     store = _active_store(base)
@@ -276,7 +276,7 @@ def test_run_spectroscopy_builds_the_scan_from_ranges_and_step(monkeypatch):
 
 
 def test_run_spectroscopy_replays_the_same_operation_without_execution(monkeypatch):
-    base = ROOT / "tmp" / f"simple_spectroscopy_replay_{uuid.uuid4().hex}"
+    base = ROOT / "tmp" / f"sp_{uuid.uuid4().hex}"
     calls = []
     _install_synthetic_runner(monkeypatch, calls)
     store = _active_store(base)
@@ -307,7 +307,7 @@ def test_run_spectroscopy_replays_the_same_operation_without_execution(monkeypat
 
 
 def test_run_spectroscopy_rejects_a_range_not_divisible_by_the_step():
-    base = ROOT / "tmp" / f"simple_spectroscopy_invalid_{uuid.uuid4().hex}"
+    base = ROOT / "tmp" / f"sp_{uuid.uuid4().hex}"
     store = _active_store(base)
     try:
         with pytest.raises(CalibrationExperimentError, match="not exactly divisible"):
@@ -323,7 +323,7 @@ def test_run_spectroscopy_rejects_a_range_not_divisible_by_the_step():
 
 
 def test_run_spectroscopy_accepts_a_single_target_with_an_even_point_count(monkeypatch):
-    base = ROOT / "tmp" / f"simple_spectroscopy_single_{uuid.uuid4().hex}"
+    base = ROOT / "tmp" / f"sp_{uuid.uuid4().hex}"
     calls = []
     _install_synthetic_runner(monkeypatch, calls)
     store = _active_store(base)

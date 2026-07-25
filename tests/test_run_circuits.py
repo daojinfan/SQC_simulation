@@ -3,8 +3,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
+import tempfile
 from types import SimpleNamespace
 import uuid
 
@@ -25,6 +27,15 @@ from sqvm.qcis.canonical import canonical_json_bytes, sha256_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def short_tmp_path():
+    root = Path(tempfile.mkdtemp(prefix="sqvm_")).resolve()
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _reference(frequency: float, source: str = "accepted_simulation") -> dict:
@@ -231,7 +242,7 @@ def test_direct_waveform_parameters_remain_qcis_operands_without_set():
 
 
 @pytest.mark.integration
-def test_batch_is_fully_compiled_before_first_model_point(monkeypatch, tmp_path: Path):
+def test_batch_is_fully_compiled_before_first_model_point(monkeypatch, short_tmp_path: Path):
     calls = []
     monkeypatch.setattr(circuits_module, "run_bounded_model_point", lambda *args, **kwargs: calls.append(args))
     circuits = (
@@ -239,7 +250,7 @@ def test_batch_is_fully_compiled_before_first_model_point(monkeypatch, tmp_path:
         QCISCircuit("invalid_second", "X2P Q1\nSET Q1 setting.active_xy2_setting.amplitude_GHz 0.2\n"),
     )
     with pytest.raises(CircuitExecutionError) as captured:
-        run_circuits(circuits, _context("Q1.setting.active_xy2_setting.amplitude_GHz"), tmp_path, ROOT)
+        run_circuits(circuits, _context("Q1.setting.active_xy2_setting.amplitude_GHz"), short_tmp_path, ROOT)
     assert captured.value.code == CircuitReasonCode.SET_POSITION_INVALID
     assert calls == []
 
@@ -253,6 +264,38 @@ def test_batch_limit_can_only_be_tightened(tmp_path: Path):
     with pytest.raises(CircuitExecutionError) as captured:
         run_circuits(circuits, _context(), tmp_path, ROOT, max_circuits=1)
     assert captured.value.code == CircuitReasonCode.BATCH_LIMIT_EXCEEDED
+
+
+@pytest.mark.integration
+@pytest.mark.windows
+def test_windows_path_preflight_rejects_deep_output_before_compilation(monkeypatch, tmp_path: Path):
+    if os.name != "nt":
+        pytest.skip("Windows-only path budget")
+    compiled = []
+    monkeypatch.setattr(
+        circuits_module,
+        "compile_circuit",
+        lambda *_args, **_kwargs: compiled.append(True),
+    )
+    deep_output = tmp_path / ("d" * 180)
+
+    with pytest.raises(CircuitExecutionError) as captured:
+        run_circuits(
+            (QCISCircuit("path_budget", "X2P Q1\n"),),
+            _context(),
+            deep_output,
+            ROOT,
+        )
+
+    assert captured.value.code is CircuitReasonCode.OUTPUT_PATH_TOO_LONG
+    assert "shorten output_root" in captured.value.detail
+    assert compiled == []
+
+
+@pytest.mark.integration
+def test_circuit_evidence_staging_name_is_short_and_uses_the_full_uuid():
+    token = "a" * 32
+    assert circuits_module._circuit_execution_staging(Path("output"), token).name == f".p.{token}"
 
 
 @pytest.mark.integration
@@ -308,7 +351,7 @@ def test_readout_qubit_rejects_invalid_nested_groups_before_execution(
 
 
 @pytest.mark.integration
-def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, tmp_path: Path):
+def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, short_tmp_path: Path):
     handles = {}
 
     def fake_run(_compilation, point_id, output_root, _repository_root, *, timeout_s):
@@ -352,7 +395,7 @@ def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, tmp_path: 
     result = run_circuits(
         (QCISCircuit("evidence_case", source),),
         _context("Q1.setting.active_xy2_setting.amplitude_GHz"),
-        tmp_path,
+        short_tmp_path,
         ROOT,
         timeout_s=10.0,
     )[0]
@@ -361,7 +404,7 @@ def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, tmp_path: 
     assert result.readout_qubit == (("Q1",), ("Q2",))
     assert result.probabilities["Q1"].p1 == pytest.approx(0.17)
     assert result.probabilities["Q2"].p1 == pytest.approx(0.13)
-    assert result.evidence_root == tmp_path / "circuit_execution" / "evidence_case"
+    assert result.evidence_root == short_tmp_path.resolve() / "circuit_execution" / "evidence_case"
     evidence = json.loads((result.evidence_root / "evidence.json").read_text("utf-8"))
     assert evidence["schema_version"] == "0.2"
     assert evidence["qcis"]["source"] == source
@@ -386,7 +429,7 @@ def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, tmp_path: 
     joint = run_circuits(
         (QCISCircuit("joint_case", "X2P Q1\n"),),
         _context(),
-        tmp_path,
+        short_tmp_path,
         ROOT,
         readout_qubit=[["Q1", "Q2"]],
         timeout_s=10.0,
@@ -406,7 +449,7 @@ def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, tmp_path: 
     combined = run_circuits(
         (QCISCircuit("combined_case", "X2P Q1\n"),),
         _context(),
-        tmp_path,
+        short_tmp_path,
         ROOT,
         readout_qubit=[["Q1"], ["Q2"], ["Q1", "Q2"]],
         timeout_s=10.0,
@@ -423,7 +466,7 @@ def test_run_circuits_publishes_outer_execution_evidence(monkeypatch, tmp_path: 
     reversed_joint = run_circuits(
         (QCISCircuit("reversed_joint", "X2P Q1\n"),),
         _context(),
-        tmp_path,
+        short_tmp_path,
         ROOT,
         readout_qubit=[["Q2", "Q1"]],
         timeout_s=10.0,
