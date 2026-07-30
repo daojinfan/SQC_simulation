@@ -109,6 +109,7 @@ class ParameterizedControlContext:
     compiler_source_snapshot: Mapping[str, Any]
     environment_snapshot: Mapping[str, Any]
     publication_policy: Mapping[str, Any]
+    runtime_control_values: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

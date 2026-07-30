@@ -24,6 +24,7 @@ from sqvm.circuits import (
     run_circuits,
 )
 from sqvm.qcis.canonical import canonical_json_bytes, sha256_json
+from sqvm.qcis.errors import QCISCompilationError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -184,6 +185,33 @@ def test_multiple_set_fields_on_one_setting_share_one_base_and_effective_hash():
     assert first["base_setting_hash"] == second["base_setting_hash"]
     assert first["effective_setting_hash"] == second["effective_setting_hash"]
     assert compiled.compilation.q1_xy.size == 4
+
+
+@pytest.mark.integration
+def test_active_platform_sample_budget_admits_two_long_x2p_gates():
+    context = CircuitExecutionContext(
+        _authorities(),
+        {"q1": 0.1, "q2": 0.0, "c": 0.27},
+        frozenset({"Q1.setting.active_xy2_setting.length_samples"}),
+        platform_configuration={
+            "control_values": {
+                "acceptance": {"max_formal_samples_per_scenario": 10_000}
+            },
+            "calibration_values": {},
+        },
+    )
+    circuit = QCISCircuit(
+        "long_two_x2p",
+        "SET Q1 setting.active_xy2_setting.length_samples 40\n"
+        "X2P Q1\n"
+        "X2P Q1\n",
+    )
+
+    compiled = compile_circuit(circuit, context)
+
+    assert compiled.compilation.q1_xy.size == 80
+    with pytest.raises(QCISCompilationError, match="sample 80 exceeds budget"):
+        compile_circuit(circuit, context, max_samples=64)
 
 
 @pytest.mark.parametrize(
@@ -486,6 +514,24 @@ def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
 ):
     handles = {}
     progress = []
+    expected_control_values = {
+        "clock": {"sample_rate_Hz": 2_000_000_000, "dt_ns": 0.5},
+        "dac": {
+            "bits": 16,
+            "full_scale_min_V": -3.0,
+            "full_scale_max_exclusive_V": 3.0,
+            "rounding": "half_even",
+        },
+    }
+    context = CircuitExecutionContext(
+        _authorities(),
+        {"q1": 0.1, "q2": 0.0, "c": 0.27},
+        frozenset(),
+        platform_configuration={
+            "control_values": expected_control_values,
+            "calibration_values": {},
+        },
+    )
 
     def fake_scan(
         _compilation,
@@ -496,9 +542,11 @@ def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
         timeout_s,
         model_configuration,
         idle_flux_phi0,
+        control_values,
     ):
         assert model_configuration is None
         assert idle_flux_phi0 == {"q1": 0.1, "q2": 0.0, "c": 0.27}
+        assert control_values == expected_control_values
         assert timeout_s == 600.0
         root = Path(output_root) / point_id
         root.mkdir()
@@ -541,7 +589,7 @@ def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
     )
     result = run_circuits(
         (QCISCircuit("scan_case", "X2P Q1\n"),),
-        _context(),
+        context,
         tmp_path,
         ROOT,
         timeout_s=600.0,
@@ -555,18 +603,21 @@ def test_calibration_scan_profile_uses_scan_executor_and_structural_verifier(
     ]
     assert progress[-1]["completed"] == progress[-1]["total"] == 1
 
-    monkeypatch.setattr(
-        circuits_module,
-        "verify_calibration_scan_point",
-        lambda artifact_root, _compilation, _repository_root, **_kwargs: handles[Path(artifact_root).name],
-    )
+    verifier_calls = []
+
+    def fake_verify(artifact_root, _compilation, _repository_root, **kwargs):
+        verifier_calls.append(kwargs)
+        return handles[Path(artifact_root).name]
+
+    monkeypatch.setattr(circuits_module, "verify_calibration_scan_point", fake_verify)
     monkeypatch.setattr(
         circuits_module,
         "verify_bounded_model_point",
         lambda *_args, **_kwargs: pytest.fail("bounded verifier must not run"),
     )
-    verified = circuits_module.verify_circuit_result(result.evidence_root, _context(), ROOT)
+    verified = circuits_module.verify_circuit_result(result.evidence_root, context, ROOT)
     assert verified.to_dict() == result.to_dict()
+    assert verifier_calls[0]["control_values"] == expected_control_values
 
 
 @pytest.mark.physics_slow

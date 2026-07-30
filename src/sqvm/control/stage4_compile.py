@@ -189,16 +189,23 @@ def _quantize(values: np.ndarray, dac: Mapping[str, Any]) -> tuple[np.ndarray, n
     codes = np.empty(values.size, dtype=np.int64)
     reconstructed = np.empty(values.size, dtype=float)
     lsb: Decimal = dac["lsb_V"]
+    lower = Decimal(dac["full_scale_min_V"])
+    code_min = int(dac["code_min"])
     with localcontext() as context:
         context.prec = 80
         context.rounding = ROUND_HALF_EVEN
         for index, value in enumerate(values):
             number = float(np.float64(value))
             if not math.isfinite(number): raise ValueError("requested AWG voltage is non-finite")
-            code = int((Decimal.from_float(number) / lsb).to_integral_value(rounding=ROUND_HALF_EVEN))
+            level = int(
+                ((Decimal.from_float(number) - lower) / lsb).to_integral_value(
+                    rounding=ROUND_HALF_EVEN
+                )
+            )
+            code = code_min + level
             if code < dac["code_min"] or code > dac["code_max"]: raise ValueError(f"DAC code out of range at sample {index}")
             codes[index] = code
-            reconstructed[index] = float(Decimal(code) * lsb)
+            reconstructed[index] = float(lower + Decimal(code - code_min) * lsb)
             if abs(reconstructed[index] - number) > 0.5 * float(lsb) + 1e-15: raise ValueError("DAC quantization error exceeds half-LSB bound")
     return codes, reconstructed
 

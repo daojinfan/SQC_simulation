@@ -11,7 +11,9 @@ import uuid
 from typing import Any, Sequence
 
 from sqvm.candidate_protocol import (
+    CandidateApplicationDecisionError,
     CalibrationCandidateProtocolError,
+    normalize_candidate_application_decision,
     normalize_calibration_candidate,
 )
 from sqvm.circuits import CircuitExecutionContext, CircuitExecutionProfile
@@ -48,6 +50,10 @@ from sqvm.web.configuration import PlatformConfigurationStore
 
 class CalibrationExperimentError(ValueError):
     """Raised when an experiment cannot be bound to an Active configuration."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        self.code = code
+        super().__init__(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,6 +429,9 @@ def apply_calibration_candidates_to_current_configuration(
     confirmation_phrase: str,
     candidate_ids: Sequence[str] | None = None,
     targets: Sequence[str] | None = None,
+    decision_mode: str = "recommended_only",
+    decision_source: str = "automation",
+    decision_reason: str | None = None,
     device_id: str = "demo_2q1c2r",
     actor_id: str = "notebook.user",
     configuration_storage_root: str | Path | None = None,
@@ -430,11 +439,11 @@ def apply_calibration_candidates_to_current_configuration(
     expected_current_content_sha256: str | None = None,
     operation_id: str | None = None,
 ) -> CalibrationCandidateUpdate:
-    """Verify and atomically apply eligible experiment candidates.
+    """Verify and atomically apply candidates under an explicit decision.
 
-    This updates the mutable current configuration only. It deliberately does not
-    publish or activate a snapshot; those remain explicit configuration lifecycle
-    operations.
+    A successful update writes the mutable current configuration, creates its
+    automatic snapshot, and activates that snapshot through the configuration
+    transaction used by :class:`PlatformConfigurationStore`.
     """
 
     run_root_value = getattr(run, "root", None)
@@ -446,60 +455,115 @@ def apply_calibration_candidates_to_current_configuration(
     workflow = _verified_candidate_workflow(run_root)
     if workflow.get("claim", {}).get("evidence_class") == "synthetic_demo":
         raise CalibrationExperimentError(
-            "synthetic demo candidates cannot update configuration"
+            "synthetic demo candidates cannot update configuration",
+            code="candidate_update_invalid",
         )
     if workflow.get("run_id") != run_id:
-        raise CalibrationExperimentError("calibration run identity does not match workflow")
+        raise CalibrationExperimentError(
+            "calibration run identity does not match workflow",
+            code="candidate_update_invalid",
+        )
     expected_phrase = f"APPLY CALIBRATION CANDIDATES {run_id}"
     if confirmation_phrase != expected_phrase:
         raise CalibrationExperimentError("candidate update confirmation phrase is invalid")
+    try:
+        decision = normalize_candidate_application_decision(
+            mode=decision_mode,
+            source=decision_source,
+            reason=decision_reason,
+        )
+    except CandidateApplicationDecisionError as exc:
+        raise CalibrationExperimentError(str(exc), code=exc.code) from exc
     candidate_rows = workflow.get("candidates")
     if not isinstance(candidate_rows, list):
-        raise CalibrationExperimentError("calibration workflow candidates are invalid")
+        raise CalibrationExperimentError(
+            "calibration workflow candidates are invalid",
+            code="candidate_update_invalid",
+        )
     try:
         normalized = [normalize_calibration_candidate(row) for row in candidate_rows]
     except CalibrationCandidateProtocolError as exc:
-        raise CalibrationExperimentError(str(exc)) from exc
+        raise CalibrationExperimentError(
+            str(exc), code="candidate_update_invalid"
+        ) from exc
     candidate_map = {row["candidate_id"]: row for row in normalized}
     if len(candidate_map) != len(normalized):
-        raise CalibrationExperimentError("calibration candidate_ids are not unique")
+        raise CalibrationExperimentError(
+            "calibration candidate_ids are not unique",
+            code="candidate_update_invalid",
+        )
     if candidate_ids is not None and targets is not None:
-        raise CalibrationExperimentError("select candidates by candidate_ids or targets, not both")
-    selected_ids = tuple(
-        candidate_ids
-        if candidate_ids is not None
-        else [
-            row["candidate_id"]
-            for row in normalized
-            if row.get("recommendation_eligible") is True
-            and (
-                targets is None
-                or any(subject in targets for subject in row["calibration_subjects"])
-            )
-        ]
+        raise CalibrationExperimentError(
+            "select candidates by candidate_ids or targets, not both",
+            code="candidate_update_invalid",
+        )
+    if decision.mode == "override_recommendation" and not candidate_ids:
+        raise CalibrationExperimentError(
+            "candidate override requires explicit candidate_ids",
+            code="candidate_override_selection_required",
+        )
+    try:
+        selected_ids = tuple(
+            candidate_ids
+            if candidate_ids is not None
+            else [
+                row["candidate_id"]
+                for row in normalized
+                if row.get("recommendation_eligible") is True
+                and (
+                    targets is None
+                    or any(subject in targets for subject in row["calibration_subjects"])
+                )
+            ]
+        )
+    except TypeError:
+        selected_ids = ()
+    invalid_candidate_ids = any(
+        not isinstance(candidate_id, str) or not candidate_id
+        for candidate_id in selected_ids
+    )
+    duplicate_ids = (
+        False if invalid_candidate_ids else len(selected_ids) != len(set(selected_ids))
     )
     if (
         not selected_ids
-        or len(selected_ids) != len(set(selected_ids))
+        or duplicate_ids
+        or invalid_candidate_ids
         or any(candidate_id not in candidate_map for candidate_id in selected_ids)
     ):
-        raise CalibrationExperimentError("candidate update selection is invalid")
-    if targets is not None and (
-        not targets
-        or len(targets) != len(set(targets))
+        raise CalibrationExperimentError(
+            "candidate update selection is invalid", code="candidate_update_invalid"
+        )
+    try:
+        target_values = tuple(targets) if targets is not None else None
+    except TypeError:
+        target_values = ()
+    invalid_targets = target_values is not None and (
+        not target_values
+        or any(not isinstance(target, str) or not target for target in target_values)
+        or len(target_values) != len(set(target_values))
         or any(
             target not in {
                 subject
                 for row in normalized
                 for subject in row["calibration_subjects"]
             }
-            for target in targets
+            for target in target_values
         )
-    ):
-        raise CalibrationExperimentError("candidate update targets are invalid")
+    )
+    if invalid_targets:
+        raise CalibrationExperimentError(
+            "candidate update targets are invalid", code="candidate_update_invalid"
+        )
     selected_candidates = [candidate_map[candidate_id] for candidate_id in selected_ids]
-    if any(row.get("recommendation_eligible") is not True for row in selected_candidates):
-        raise CalibrationExperimentError("selected calibration candidate is not eligible")
+    if (
+        decision.mode == "recommended_only"
+        and any(row.get("recommendation_eligible") is not True for row in selected_candidates)
+    ):
+        raise CalibrationExperimentError(
+            "selected calibration candidate is not recommended",
+            code="candidate_not_recommended",
+        )
 
     store = PlatformConfigurationStore(root, configuration_storage_root)
     current = store.current_configuration(device_id)
@@ -512,10 +576,13 @@ def apply_calibration_candidates_to_current_configuration(
             experiment_run_id=run_id,
             recommendation_id=workflow.get("recommendation_id") or run_id,
             candidates=selected_candidates,
+            decision=decision,
             operation_id=operation_id,
         )
     except ValueError as exc:
-        raise CalibrationExperimentError(str(exc)) from exc
+        raise CalibrationExperimentError(
+            str(exc), code=getattr(exc, "code", None)
+        ) from exc
     calibration_subjects = tuple(
         dict.fromkeys(
             subject
@@ -598,18 +665,30 @@ def _verified_candidate_workflow(run_root: Path) -> dict[str, Any]:
     try:
         workflow = json.loads((run_root / "workflow.json").read_text("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CalibrationExperimentError("cannot read calibration candidate workflow") from exc
-    workflow_id = workflow.get("workflow_id")
-    if workflow_id == "qubit_spectroscopy_scan_v1":
-        verify_qubit_spectroscopy_scan(run_root)
-    elif workflow_id == "qubit_spectroscopy_calibration_v1":
-        verify_qubit_spectroscopy_calibration(run_root)
-    elif workflow_id == RABI_SCAN_WORKFLOW_ID:
-        verify_rabi_scan(run_root)
-    else:
         raise CalibrationExperimentError(
-            f"calibration workflow has no candidate verifier: {workflow_id!r}"
-        )
+            "cannot read calibration candidate workflow",
+            code="candidate_update_invalid",
+        ) from exc
+    workflow_id = workflow.get("workflow_id")
+    try:
+        if workflow_id == "qubit_spectroscopy_scan_v1":
+            verify_qubit_spectroscopy_scan(run_root)
+        elif workflow_id == "qubit_spectroscopy_calibration_v1":
+            verify_qubit_spectroscopy_calibration(run_root)
+        elif workflow_id == RABI_SCAN_WORKFLOW_ID:
+            verify_rabi_scan(run_root)
+        else:
+            raise CalibrationExperimentError(
+                f"calibration workflow has no candidate verifier: {workflow_id!r}",
+                code="candidate_update_invalid",
+            )
+    except CalibrationExperimentError:
+        raise
+    except Exception as exc:
+        raise CalibrationExperimentError(
+            "calibration candidate workflow verification failed",
+            code="candidate_update_invalid",
+        ) from exc
     return workflow
 
 

@@ -110,6 +110,89 @@ def test_source_candidate_optional_candidate_values_is_strict(tmp_path):
     assert build_reference_graph(configuration_root=config, experiment_output_root=experiments).scan_incomplete
 
 
+def test_source_candidate_accepts_strict_decision_provenance_and_keeps_legacy_compatible(tmp_path):
+    _graph0, config, experiments = _graph(tmp_path)
+    path = config / "current" / "demo_2q1c2r.json"
+    value = json.loads(path.read_text("utf-8"))
+    source = value["source_candidate"]
+    source.update(
+        {
+            "decision": {
+                "mode": "recommended_only",
+                "source": "automation",
+                "reason": "verified default application",
+                "overrode_recommendation": False,
+            },
+            "recommendation_snapshot": [
+                {
+                    "candidate_id": candidate_id,
+                    "recommendation_eligible": True,
+                    "reason": None,
+                }
+                for candidate_id in source["candidate_ids"]
+            ],
+            "old_content_sha256": "A" * 64,
+            "new_content_sha256": "B" * 64,
+        }
+    )
+    path.write_text(json.dumps(value), "utf-8")
+
+    graph = build_reference_graph(
+        configuration_root=config,
+        experiment_output_root=experiments,
+    )
+
+    assert graph.scan_incomplete is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda source: source["decision"].update(overrode_recommendation=True),
+        lambda source: source["recommendation_snapshot"][0].update(
+            candidate_id="different-candidate"
+        ),
+        lambda source: source.update(unrecognized_decision_field=True),
+    ],
+)
+def test_source_candidate_decision_provenance_fails_closed_on_inconsistency(
+    tmp_path, mutate
+):
+    _graph0, config, experiments = _graph(tmp_path)
+    path = config / "current" / "demo_2q1c2r.json"
+    value = json.loads(path.read_text("utf-8"))
+    source = value["source_candidate"]
+    source.update(
+        {
+            "decision": {
+                "mode": "override_recommendation",
+                "source": "web_user",
+                "reason": "explicit review",
+                "overrode_recommendation": False,
+            },
+            "recommendation_snapshot": [
+                {
+                    "candidate_id": candidate_id,
+                    "recommendation_eligible": True,
+                    "reason": None,
+                }
+                for candidate_id in source["candidate_ids"]
+            ],
+            "old_content_sha256": "A" * 64,
+            "new_content_sha256": "B" * 64,
+        }
+    )
+    mutate(source)
+    path.write_text(json.dumps(value), "utf-8")
+
+    graph = build_reference_graph(
+        configuration_root=config,
+        experiment_output_root=experiments,
+    )
+
+    assert graph.scan_incomplete is True
+
+
 def test_link_or_hardlink_source_fails_closed(tmp_path):
     _graph0, config, experiments = _graph(tmp_path)
     path = config / "current" / "demo_2q1c2r.json"

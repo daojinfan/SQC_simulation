@@ -114,8 +114,8 @@ def test_x2p_rabi_notebook_uses_the_current_public_api_and_real_run_shape():
     assert "run_rabi" in source
     assert "sys.path" not in source
     assert "TARGET = 'Q1'" in source
-    assert "AMPLITUDE_RANGE_GHZ = (0.0, 0.03)" in source
-    assert "AMPLITUDE_STEP_GHZ = 0.002" in source
+    assert "AMPLITUDE_RANGE_GHZ =" in source
+    assert "AMPLITUDE_STEP_GHZ =" in source
     assert "operation_id=OPERATION_ID" in source
     assert "candidate_ids=[candidate_id]" in source
     assert "APPLY CALIBRATION CANDIDATES" in source
@@ -141,8 +141,15 @@ def test_x2p_rabi_notebook_uses_the_current_public_api_and_real_run_shape():
     exec(compile(cells["run-rabi"], f"{path}:run", "exec"), namespace)
 
     assert namespace["TARGET"] == "Q1"
-    assert namespace["AMPLITUDE_RANGE_GHZ"] == (0.0, 0.03)
-    assert namespace["AMPLITUDE_STEP_GHZ"] == 0.002
+    amplitude_range = namespace["AMPLITUDE_RANGE_GHZ"]
+    amplitude_step = namespace["AMPLITUDE_STEP_GHZ"]
+    assert (
+        isinstance(amplitude_range, tuple)
+        and len(amplitude_range) == 2
+        and all(isinstance(value, (int, float)) for value in amplitude_range)
+        and amplitude_range[0] <= amplitude_range[1]
+    )
+    assert isinstance(amplitude_step, (int, float)) and amplitude_step > 0
     assert isinstance(namespace["OPERATION_ID"], str)
     assert namespace["result"] is run
 

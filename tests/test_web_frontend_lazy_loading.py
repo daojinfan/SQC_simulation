@@ -152,22 +152,24 @@ function responsePayload(path, options = {}) {
     reclaimable_now_bytes: 0,
     refreshing: options.storageRefreshing === true,
     refresh_error: options.storageRefreshError === true,
-    items: options.storageItem ? [{
-      run_id: "run-storage", workflow_id: "workflow-v1", storage_state: "hot",
-      retention_state: "normal", allocated_bytes: 4096, reference_count: 0,
-      blockers: [], allowed_actions: ["archive", "trash"], catalog_revision: 1,
+    items: Array.from({ length: options.storageItemCount ?? (options.storageItem ? 1 : 0) }, (_unused, index) => ({
+      run_id: `run-storage-${String(index + 1).padStart(2, "0")}`, workflow_id: "workflow-v1", storage_state: "hot",
+      retention_state: options.storageMixed && index === 1 ? "referenced" : "normal", allocated_bytes: 4096,
+      reference_count: options.storageMixed && index === 1 ? 1 : 0,
+      blockers: [], allowed_actions: options.storageMixed && index === 1 ? ["archive"] : ["archive", "trash"], catalog_revision: 1,
       workflow_sha256: "A".repeat(64),
-    }] : [],
+    })),
   };
   if (path === "/api/v1/experiment-trash") return {
     refreshing: options.trashRefreshing === true,
     refresh_error: options.trashRefreshError === true,
-    items: options.trashItem ? [{
-      run_id: "run-trash", workflow_id: "workflow-v1", storage_state: "trash",
+    catalog_revision: 1,
+    items: Array.from({ length: options.trashItemCount ?? (options.trashItem ? 1 : 0) }, (_unused, index) => ({
+      run_id: `run-trash-${String(index + 1).padStart(2, "0")}`, workflow_id: "workflow-v1", storage_state: "trash",
       retention_state: "normal", allocated_bytes: 4096, reference_count: 0,
       blockers: [], allowed_actions: ["restore"], catalog_revision: 1,
       workflow_sha256: "B".repeat(64), carrier: { read_preference: "trash" },
-    }] : [],
+    })),
   };
   throw new Error(`unexpected request: ${path}`);
 }
@@ -253,7 +255,62 @@ async function boot(hash, options = {}) {
     confirm() { return true; },
   };
   vm.createContext(context);
-  vm.runInContext(`${source}\nglobalThis.__contractApi = api;`, context, { filename: "app.js" });
+  vm.runInContext(`${source}
+globalThis.__contractApi = api;
+globalThis.__contractStorage = {
+  page(view, value) {
+    state[view === "trash" ? "trashPage" : "storagePage"] = value;
+    view === "trash" ? renderTrash() : renderStorage();
+  },
+  selectCurrent(view, selected) {
+    const catalog = view === "trash" ? state.trash : state.storage;
+    const rows = view === "trash" ? catalog.items : catalog.items.filter((item) => state.storageFilter === "all" || item.storage_state === state.storageFilter);
+    const page = storagePageData(view, rows);
+    setStoragePageSelection(view, page.items.filter((item) => storageBatchSelectable(view, item)), selected);
+    view === "trash" ? renderTrash() : renderStorage();
+  },
+  openBatch(view, action) { openStorageBatchAction(view, action); },
+  selectionSize(view) { return storageSelectionFor(view).size; },
+  async mutationChain() {
+    const originalMutate = mutate;
+    const calls = [];
+    mutate = async (path, payload) => {
+      calls.push({ path, payload: { ...payload } });
+      return { catalog_revision: payload.expected_catalog_revision + 1 };
+    };
+    try {
+      const items = [
+        { run_id: "batch-1", workflow_sha256: "C".repeat(64) },
+        { run_id: "batch-2", workflow_sha256: "D".repeat(64) },
+      ];
+      const completed = await mutateStorageBatch(items, "archive", "contract test", 10);
+      return { calls, completed };
+    } finally {
+      mutate = originalMutate;
+    }
+  },
+  async trashMutation() {
+    const originalMutate = mutate;
+    const calls = [];
+    mutate = async (path, payload) => {
+      calls.push({ path, payload: structuredClone(payload) });
+      return {
+        catalog_revision: payload.expected_catalog_revision + 1,
+        items: payload.items.map((item) => ({ run_id: item.run_id })),
+      };
+    };
+    try {
+      const items = [
+        { run_id: "batch-1", workflow_sha256: "C".repeat(64) },
+        { run_id: "batch-2", workflow_sha256: "D".repeat(64) },
+      ];
+      const completed = await mutateStorageBatch(items, "trash", "ignored", 10);
+      return { calls, completed };
+    } finally {
+      mutate = originalMutate;
+    }
+  },
+};`, context, { filename: "app.js" });
   await settle();
   return {
     requests,
@@ -261,6 +318,7 @@ async function boot(hash, options = {}) {
     location,
     html() { return node("#app").innerHTML; },
     nodeHtml(selector) { return node(selector).innerHTML; },
+    nodeText(selector) { return node(selector).textContent; },
     setValue(selector, value) { node(selector).value = value; },
     release(path) { delayedResponses.get(path)?.(); },
     async click(selector) {
@@ -289,6 +347,21 @@ async function boot(hash, options = {}) {
       await settle();
       return payload;
     },
+    async storagePage(view, page) {
+      context.__contractStorage.page(view, page);
+      await settle();
+    },
+    async selectCurrentStoragePage(view, selected) {
+      context.__contractStorage.selectCurrent(view, selected);
+      await settle();
+    },
+    storageSelectionSize(view) { return context.__contractStorage.selectionSize(view); },
+    async openStorageBatch(view, action) {
+      context.__contractStorage.openBatch(view, action);
+      await settle();
+    },
+    async storageMutationChain() { return context.__contractStorage.mutationChain(); },
+    async storageTrashMutation() { return context.__contractStorage.trashMutation(); },
   };
 }
 
@@ -339,6 +412,26 @@ async function boot(hash, options = {}) {
   await refreshingStorage.navigate("#/overview");
   const failedTrash = await boot("#/trash", { trashRefreshError: true, trashItem: true });
   const failedTrashHtml = failedTrash.html();
+
+  const storagePages = await boot("#/storage", { storageItemCount: 23 });
+  const storagePageOneHtml = storagePages.html();
+  await storagePages.selectCurrentStoragePage("storage", true);
+  const storagePageOneSelected = storagePages.storageSelectionSize("storage");
+  await storagePages.storagePage("storage", 2);
+  const storagePageTwoHtml = storagePages.html();
+  await storagePages.selectCurrentStoragePage("storage", true);
+  const storagePageTwoSelected = storagePages.storageSelectionSize("storage");
+  await storagePages.storagePage("storage", 1);
+  const storagePageOneRevisitedHtml = storagePages.html();
+  const storageMutationChain = await storagePages.storageMutationChain();
+  const storageTrashMutation = await storagePages.storageTrashMutation();
+
+  const batchTrashDialog = await boot("#/storage", { storageItemCount: 2, storageMixed: true });
+  await batchTrashDialog.selectCurrentStoragePage("storage", true);
+  const batchTrashToolbarHtml = batchTrashDialog.html();
+  await batchTrashDialog.openStorageBatch("storage", "trash");
+  const batchTrashDialogBody = batchTrashDialog.nodeHtml("#dialog-body");
+  const batchTrashConfirmText = batchTrashDialog.nodeText("#dialog-confirm");
 
   const pagination = await boot("#/experiments", { paginatedExperiments: true });
   const initialPaginationHtml = pagination.html();
@@ -435,6 +528,16 @@ async function boot(hash, options = {}) {
     afterLateError,
     refreshingStorageHtml,
     failedTrashHtml,
+    storagePageOneHtml,
+    storagePageOneSelected,
+    storagePageTwoHtml,
+    storagePageTwoSelected,
+    storagePageOneRevisitedHtml,
+    storageMutationChain,
+    storageTrashMutation,
+    batchTrashDialogBody,
+    batchTrashConfirmText,
+    batchTrashToolbarHtml,
     paginationRequests: pagination.requests,
     initialPaginationHtml,
     appendedExperimentTableHtml,
@@ -545,6 +648,66 @@ def test_storage_actions_are_disabled_while_catalog_is_unreliable():
     assert "data-storage-action" in refreshing and "disabled" in refreshing
     assert "存储目录更新失败，请刷新后重试" in failed
     assert "data-storage-action" in failed and "disabled" in failed
+
+
+def test_storage_pagination_selects_current_page_and_preserves_cross_page_selection():
+    result = _run_contract()
+    first = result["storagePageOneHtml"]
+    second = result["storagePageTwoHtml"]
+    revisited = result["storagePageOneRevisitedHtml"]
+    assert "1-10 / 共 23 条" in first
+    assert "1 / 3" in first
+    assert "run-storage-01" in first
+    assert "run-storage-11" not in first
+    assert result["storagePageOneSelected"] == 10
+    assert "11-20 / 共 23 条" in second
+    assert "2 / 3" in second
+    assert "已选择 <strong>10</strong> 项" in second
+    assert "run-storage-11" in second
+    assert "run-storage-01" not in second
+    assert result["storagePageTwoSelected"] == 20
+    assert "已选择 <strong>20</strong> 项" in revisited
+    assert revisited.count('data-storage-select="run-storage-') == 10
+    assert revisited.count('data-storage-select="run-storage-01" aria-label="选择实验 run-storage-01" checked') == 1
+
+
+def test_storage_batch_chains_each_returned_catalog_revision_into_the_next_request():
+    chain = _run_contract()["storageMutationChain"]
+    assert chain["completed"] == ["batch-1", "batch-2"]
+    assert [call["path"] for call in chain["calls"]] == [
+        "/api/v1/experiments/batch-1/archive",
+        "/api/v1/experiments/batch-2/archive",
+    ]
+    assert [call["payload"]["expected_catalog_revision"] for call in chain["calls"]] == [10, 11]
+
+
+def test_storage_batch_trash_uses_one_native_request_and_one_catalog_revision():
+    result = _run_contract()["storageTrashMutation"]
+    assert result["completed"] == ["batch-1", "batch-2"]
+    assert len(result["calls"]) == 1
+    call = result["calls"][0]
+    assert call["path"] == "/api/v1/experiment-storage/batch-trash"
+    assert call["payload"] == {
+        "actor_id": "project.manager",
+        "expected_catalog_revision": 10,
+        "items": [
+            {"run_id": "batch-1", "expected_workflow_sha256": "C" * 64},
+            {"run_id": "batch-2", "expected_workflow_sha256": "D" * 64},
+        ],
+    }
+
+
+def test_batch_trash_dialog_only_requires_the_dialog_confirmation():
+    result = _run_contract()
+    body = result["batchTrashDialogBody"]
+    assert "将处理 <strong>1</strong> 个实验" in body
+    assert "另有 <strong>1</strong> 个受引用、长期保留或状态受限的已选实验不会处理" in body
+    assert "原因" not in body
+    assert "dialog-storage-reason" not in body
+    assert "checkbox" not in body
+    assert result["batchTrashConfirmText"] == "确认移入回收站"
+    button = result["batchTrashToolbarHtml"].split('data-storage-batch="trash"', 1)[1].split(">", 1)[0]
+    assert "disabled" not in button
 
 
 def test_archived_detail_renderer_and_optional_fields_are_defensive():

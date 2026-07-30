@@ -97,6 +97,44 @@ def test_rabi_precompile_failure_starts_no_runtime_point(monkeypatch, tmp_path):
     assert calls == []
 
 
+def test_rabi_control_preflight_failure_is_public_and_leaves_no_staging(
+    monkeypatch,
+    tmp_path,
+):
+    operation = str(uuid.uuid4())
+
+    def reject(*_args, **_kwargs):
+        raise CircuitBatchError(
+            "circuit_control_preflight_failed",
+            422,
+            "rabi_q1_0007: DAC range exceeded",
+            batch_id=operation,
+        )
+
+    monkeypatch.setattr(rabi, "run_circuit_batch", reject)
+    parent = tmp_path / "parent.json"
+    parent.write_text("{}", encoding="utf-8")
+    policy = tmp_path / rabi.RABI_POLICY_PATH
+    policy.parent.mkdir(parents=True)
+    shutil.copyfile(Path(__file__).resolve().parents[1] / rabi.RABI_POLICY_PATH, policy)
+
+    with pytest.raises(rabi.RabiError) as captured:
+        rabi.run_qubit_rabi_scan(
+            _request(),
+            circuit_execution_context(
+                "Q1.setting.active_xy2_setting.amplitude_GHz"
+            ),
+            parent,
+            tmp_path / "published",
+            tmp_path,
+            operation_id=operation,
+        )
+
+    assert captured.value.code == "rabi_control_preflight_failed"
+    assert "rabi_q1_0007" in str(captured.value)
+    assert not (tmp_path / f".rabi_{operation.replace('-', '')}").exists()
+
+
 def test_rabi_cancelled_before_first_point_starts_no_runtime_point(monkeypatch, tmp_path):
     token = CancellationToken(); token.request()
     calls: list[str] = []

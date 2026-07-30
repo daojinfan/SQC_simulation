@@ -1698,3 +1698,37 @@ Next:
 Commit and push the reviewed compiler tranche.
 Continue Stage 7.0 with fake-only evidence ledger and runtime-schema 0.2 integration without opening physics gates.
 ```
+
+## 2026-07-29: Calibration candidate decision override completed
+
+Stage:
+
+```text
+Stage 7 calibration candidate application policy
+```
+
+Completed work:
+
+```text
+Separated experiment recommendation from the final candidate-application decision.
+Added recommended-only and explicit-override decisions to Python, Store, transaction, audit, and Web paths.
+Kept workflow, receipt, hash, synthetic, stale, schema, resource, concurrency, and atomicity boundaries fail-closed.
+Added strict old/new source-candidate reference validation and candidate-provenance retention handling.
+Added Web warning, failed-gate evidence, explicit override reason, and two confirmation controls.
+```
+
+Verification:
+
+```text
+Independent candidate/API/configuration/transaction, Web, references, Rabi, spectroscopy, and Notebook tests passed.
+Published recommended spectroscopy and non-recommended Rabi artifacts passed isolated end-to-end application.
+Current, snapshot sidecar, active pointer, audit, transaction request SHA, and references were mutually consistent.
+Independent review conclusion: GO.
+```
+
+Result:
+
+```text
+docs/results/2026-07-29-candidate-decision-override.md
+docs/reviews/07_1_14_candidate_decision_override_acceptance_matrix.md
+```

@@ -24,6 +24,7 @@ from sqvm.web.configuration_transactions import (
     ConfigurationTransactionError,
     ConfigurationTransactionManager,
 )
+from sqvm.web.runtime_contract import assert_runtime_configuration_covered
 
 
 # The selector remains part of the public SET path.  Its chosen record is
@@ -82,8 +83,15 @@ class PlatformAuthorityResolver:
         calibration = snapshot["editable"]["calibration_values"]
         if not calibration:
             raise PlatformAuthorityResolutionError("uninitialized snapshot cannot resolve a compiler authority")
+        try:
+            assert_runtime_configuration_covered(snapshot["editable"])
+        except ValueError as exc:
+            raise PlatformAuthorityResolutionError(
+                f"Active snapshot runtime contract is invalid: {exc}"
+            ) from exc
         authorities = self._authorities(snapshot, device, calibration)
         frozen = _freeze(authorities)
+        frozen_configuration = _freeze(copy.deepcopy(snapshot["editable"]))
         simulation = snapshot["editable"]["control_values"].get(
             "simulation",
             initial_simulation_configuration(),
@@ -96,7 +104,7 @@ class PlatformAuthorityResolver:
         context_hash = sha256_json(
             {
                 "qcis_authorities": _plain(frozen),
-                "calibration_model_configuration": _plain(frozen_model_configuration),
+                "platform_configuration": _plain(frozen_configuration),
                 "settable_paths": sorted(settable_paths),
             }
         )
@@ -108,6 +116,7 @@ class PlatformAuthorityResolver:
             platform_snapshot_content_sha256=snapshot["content_sha256"],
             authority_context_sha256=context_hash,
             calibration_model_configuration=frozen_model_configuration,
+            platform_configuration=frozen_configuration,
         )
 
     def _device(self, snapshot: Mapping[str, Any]) -> Mapping[str, Any]:

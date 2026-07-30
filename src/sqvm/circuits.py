@@ -76,6 +76,7 @@ _RESULT_ARRAYS = {
     "norm_error": ("<f8", "observables/norm_error.bin"),
 }
 _MAX_CIRCUITS_PER_CALL = 64
+_DEFAULT_CIRCUIT_SAMPLE_BUDGET = 64
 _EXECUTION_EVIDENCE_DIR = "circuit_execution"
 _EXECUTION_SCHEMA_VERSION = "0.2"
 _WINDOWS_DIRECTORY_PATH_LIMIT = 248
@@ -128,6 +129,7 @@ class CircuitExecutionContext:
     platform_snapshot_content_sha256: str | None = None
     authority_context_sha256: str | None = None
     calibration_model_configuration: Mapping[str, Any] | None = None
+    platform_configuration: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,7 +268,7 @@ def compile_circuit(
     circuit: QCISCircuit,
     context: CircuitExecutionContext,
     *,
-    max_samples: int = 64,
+    max_samples: int | None = None,
 ) -> CompiledCircuit:
     """Compile one QCIS circuit after applying its non-persistent SET preamble."""
 
@@ -311,7 +313,7 @@ def compile_circuit(
         program,
         authorities,
         idle_flux={name: float(context.idle_flux_phi0[name]) for name in ("q1", "q2", "c")},
-        max_samples=max_samples,
+        max_samples=_circuit_sample_budget(context, max_samples),
     )
     return CompiledCircuit(
         circuit,
@@ -330,6 +332,11 @@ def compile_circuit(
             "calibration_model_configuration_sha256": calibration_model_configuration_sha256(
                 context.calibration_model_configuration
             ) if context.calibration_model_configuration is not None else None,
+            "platform_configuration_sha256": (
+                sha256_json(_plain(context.platform_configuration))
+                if context.platform_configuration is not None
+                else None
+            ),
         }) if context.platform_snapshot_id is not None else None,
     )
 
@@ -398,6 +405,9 @@ def run_circuits(
         if execution_profile is CircuitExecutionProfile.CALIBRATION_SCAN:
             runner_kwargs["model_configuration"] = context.calibration_model_configuration
             runner_kwargs["idle_flux_phi0"] = context.idle_flux_phi0
+            control_values = _platform_control_values(context)
+            if control_values is not None:
+                runner_kwargs["control_values"] = control_values
         handle = runner(
             compiled.compilation,
             circuit.circuit_id,
@@ -485,6 +495,9 @@ def verify_circuit_result(
         if qualification_scope == CALIBRATION_SCAN_SCOPE:
             verifier_kwargs["model_configuration"] = context.calibration_model_configuration
             verifier_kwargs["idle_flux_phi0"] = context.idle_flux_phi0
+            control_values = _platform_control_values(context)
+            if control_values is not None:
+                verifier_kwargs["control_values"] = control_values
         handle = verifier(
             model_root,
             compiled.compilation,
@@ -566,10 +579,70 @@ def _validate_context(context: CircuitExecutionContext) -> None:
                 CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
                 str(exc),
             ) from exc
+    if context.platform_configuration is not None:
+        configuration = context.platform_configuration
+        if (
+            not isinstance(configuration, Mapping)
+            or set(configuration) != {"control_values", "calibration_values"}
+            or not isinstance(configuration.get("control_values"), Mapping)
+            or not isinstance(configuration.get("calibration_values"), Mapping)
+        ):
+            _fail(
+                CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
+                "platform_configuration must contain control_values and calibration_values",
+            )
+        if (
+            context.platform_snapshot_content_sha256 is not None
+            and sha256_json(_plain(configuration))
+            != context.platform_snapshot_content_sha256
+        ):
+            _fail(
+                CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
+                "platform configuration hash does not match the Active snapshot",
+            )
     platform = (context.platform_snapshot_id, context.platform_snapshot_content_sha256, context.authority_context_sha256)
     if any(value is not None for value in platform):
         if not all(isinstance(value, str) and re.fullmatch(r"[0-9A-Fa-f]{64}", value) is not None for value in platform[1:]) or not isinstance(platform[0], str) or not platform[0]:
             _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "platform context binding is invalid")
+
+
+def _platform_control_values(
+    context: CircuitExecutionContext,
+) -> Mapping[str, Any] | None:
+    configuration = context.platform_configuration
+    if configuration is None:
+        return None
+    control = configuration.get("control_values")
+    if not isinstance(control, Mapping):
+        _fail(
+            CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
+            "Active platform control_values are unavailable",
+        )
+    return control
+
+
+def _circuit_sample_budget(
+    context: CircuitExecutionContext, override: int | None
+) -> int:
+    value: Any = override
+    if value is None:
+        value = _DEFAULT_CIRCUIT_SAMPLE_BUDGET
+        configuration = context.platform_configuration
+        if configuration is not None:
+            control = configuration.get("control_values")
+            acceptance = (
+                control.get("acceptance") if isinstance(control, Mapping) else None
+            )
+            if isinstance(acceptance, Mapping) and (
+                "max_formal_samples_per_scenario" in acceptance
+            ):
+                value = acceptance["max_formal_samples_per_scenario"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        _fail(
+            CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
+            "circuit sample budget must be a positive integer",
+        )
+    return value
 
 
 def _normalize_readout_qubit(

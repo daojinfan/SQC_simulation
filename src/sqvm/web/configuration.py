@@ -17,8 +17,11 @@ import uuid
 import yaml
 
 from sqvm.candidate_protocol import (
+    CandidateApplicationDecision,
+    CandidateApplicationDecisionError,
     CalibrationCandidateProtocolError,
     candidate_values_equal,
+    normalize_candidate_application_decision,
     normalize_calibration_candidate,
     set_parameter_value,
     value_at_parameter_path,
@@ -482,10 +485,15 @@ class PlatformConfigurationStore:
         experiment_run_id: str,
         recommendation_id: str,
         candidates: Sequence[Mapping[str, Any]],
+        decision: CandidateApplicationDecision | Mapping[str, Any] | None = None,
         operation_id: str | None = None,
     ) -> dict[str, Any]:
         """Apply verified calibration candidates to the mutable current configuration."""
 
+        try:
+            normalized_decision = normalize_candidate_application_decision(decision)
+        except CandidateApplicationDecisionError as exc:
+            raise ConfigurationManagementError(str(exc), code=exc.code) from exc
         if self._transactions_enabled:
             candidate_request = [copy.deepcopy(dict(row)) for row in candidates]
             return self._transactional(
@@ -498,6 +506,7 @@ class PlatformConfigurationStore:
                     "experiment_run_id": experiment_run_id,
                     "recommendation_id": recommendation_id,
                     "candidates": candidate_request,
+                    "decision": normalized_decision.to_dict(),
                 },
                 action=lambda store: store.apply_candidates_to_current_configuration(
                     device_id,
@@ -506,31 +515,43 @@ class PlatformConfigurationStore:
                     experiment_run_id=experiment_run_id,
                     recommendation_id=recommendation_id,
                     candidates=candidates,
+                    decision=normalized_decision,
                 ),
             )
 
         self._actor(actor_id)
         self._device(device_id)
         if not candidates:
-            raise ConfigurationManagementError("at least one candidate is required")
+            raise ConfigurationManagementError(
+                "at least one candidate is required", code="candidate_update_invalid"
+            )
         payload = self._load_json(self._current_path(device_id), "current configuration")
         if payload["content_sha256"] != expected_content_sha256:
             raise ConfigurationManagementError(
-                "current configuration changed since it was loaded", status=409
+                "current configuration changed since it was loaded",
+                status=409,
+                code="candidate_configuration_conflict",
             )
         editable = copy.deepcopy(payload["editable"])
-        normalized_candidates = _apply_candidate_groups(editable, candidates)
+        old_content_sha256 = payload["content_sha256"]
+        normalized_candidates = _apply_candidate_groups(
+            editable, candidates, normalized_decision
+        )
         errors = validate_editable(editable, published=False)
         if errors:
             raise ConfigurationManagementError(
                 "candidate update would make current configuration invalid",
                 field_errors=errors,
+                code="candidate_update_invalid",
             )
         source_candidate = _candidate_source(
             experiment_run_id,
             recommendation_id,
             normalized_candidates,
             editable,
+            normalized_decision,
+            old_content_sha256=old_content_sha256,
+            new_content_sha256=sha256_json(editable),
         )
         payload.update(
             {
@@ -559,7 +580,10 @@ class PlatformConfigurationStore:
                 "recommendation_id": recommendation_id,
                 "candidate_ids": source_candidate["candidate_ids"],
                 "targets": source_candidate["targets"],
-                "content_sha256": payload["content_sha256"],
+                "decision": source_candidate["decision"],
+                "recommendation_snapshot": source_candidate["recommendation_snapshot"],
+                "old_content_sha256": old_content_sha256,
+                "new_content_sha256": payload["content_sha256"],
             },
         )
         self.snapshot_current_configuration(
@@ -964,11 +988,19 @@ class PlatformConfigurationStore:
         experiment_run_id: str,
         recommendation_id: str,
         candidates: Sequence[Mapping[str, Any]],
+        decision: CandidateApplicationDecision | Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._actor(actor_id)
+        try:
+            normalized_decision = normalize_candidate_application_decision(decision)
+        except CandidateApplicationDecisionError as exc:
+            raise ConfigurationManagementError(str(exc), code=exc.code) from exc
         if not candidates:
-            raise ConfigurationManagementError("at least one candidate is required")
+            raise ConfigurationManagementError(
+                "at least one candidate is required", code="candidate_update_invalid"
+            )
         payload = self._load_json(self._draft_path(draft_id), "draft")
+        old_content_sha256 = payload["content_sha256"]
         editable = copy.deepcopy(payload["editable"])
         initializing_calibration = editable.get("calibration_values") == {}
         if initializing_calibration:
@@ -978,18 +1010,24 @@ class PlatformConfigurationStore:
             if initializing_calibration
             else candidates
         )
-        normalized_candidates = _apply_candidate_groups(editable, candidate_rows)
+        normalized_candidates = _apply_candidate_groups(
+            editable, candidate_rows, normalized_decision
+        )
         errors = validate_editable(editable, published=False)
         if errors:
             raise ConfigurationManagementError(
                 "candidate update would make draft invalid",
                 field_errors=errors,
+                code="candidate_update_invalid",
             )
         source_candidate = _candidate_source(
             experiment_run_id,
             recommendation_id,
             normalized_candidates,
             editable,
+            normalized_decision,
+            old_content_sha256=old_content_sha256,
+            new_content_sha256=sha256_json(editable),
         )
         payload["editable"] = editable
         payload["updated_utc"] = utc_now_text()
@@ -1011,6 +1049,10 @@ class PlatformConfigurationStore:
                 "experiment_run_id": experiment_run_id,
                 "candidate_ids": source_candidate["candidate_ids"],
                 "targets": source_candidate["targets"],
+                "decision": source_candidate["decision"],
+                "recommendation_snapshot": source_candidate["recommendation_snapshot"],
+                "old_content_sha256": old_content_sha256,
+                "new_content_sha256": payload["content_sha256"],
             },
         )
         return self.draft(draft_id)
@@ -2774,6 +2816,28 @@ def _retained_candidate_source(
             )
         )
         result["targets"] = result["configuration_targets"]
+        recommendation_snapshot = result.get("recommendation_snapshot")
+        if recommendation_snapshot is not None:
+            retained_ids = set(result["candidate_ids"])
+            if not isinstance(recommendation_snapshot, list):
+                return None
+            retained_snapshot = [
+                copy.deepcopy(dict(row))
+                for row in recommendation_snapshot
+                if isinstance(row, Mapping) and row.get("candidate_id") in retained_ids
+            ]
+            if [row.get("candidate_id") for row in retained_snapshot] != result["candidate_ids"]:
+                return None
+            decision = result.get("decision")
+            if not isinstance(decision, Mapping):
+                return None
+            retained_decision = copy.deepcopy(dict(decision))
+            retained_decision["overrode_recommendation"] = any(
+                row.get("recommendation_eligible") is False
+                for row in retained_snapshot
+            )
+            result["recommendation_snapshot"] = retained_snapshot
+            result["decision"] = retained_decision
         frequency_values = _frequency_candidate_values(retained)
         if frequency_values:
             result["candidate_values_GHz"] = frequency_values
@@ -2811,14 +2875,21 @@ def _retained_candidate_source(
 def _apply_candidate_groups(
     editable: dict[str, Any],
     candidates: Sequence[Mapping[str, Any]],
+    decision: CandidateApplicationDecision,
 ) -> list[dict[str, Any]]:
+    if any(not isinstance(candidate, Mapping) for candidate in candidates):
+        raise ConfigurationManagementError(
+            "candidate update is invalid", code="candidate_update_invalid"
+        )
     try:
         normalized = [
             normalize_calibration_candidate(_with_legacy_current_value(editable, row))
             for row in candidates
         ]
     except CalibrationCandidateProtocolError as exc:
-        raise ConfigurationManagementError(str(exc)) from exc
+        raise ConfigurationManagementError(
+            str(exc), code="candidate_update_invalid"
+        ) from exc
     candidate_ids = [row["candidate_id"] for row in normalized]
     paths = [
         change["parameter_path"]
@@ -2826,11 +2897,21 @@ def _apply_candidate_groups(
         for change in candidate["changes"]
     ]
     if len(candidate_ids) != len(set(candidate_ids)):
-        raise ConfigurationManagementError("candidate_ids must be unique")
+        raise ConfigurationManagementError(
+            "candidate_ids must be unique", code="candidate_update_invalid"
+        )
     if len(paths) != len(set(paths)):
-        raise ConfigurationManagementError("candidate parameter paths must be unique")
-    if any(row.get("recommendation_eligible") is not True for row in normalized):
-        raise ConfigurationManagementError("candidate is not eligible")
+        raise ConfigurationManagementError(
+            "candidate parameter paths must be unique",
+            code="candidate_update_invalid",
+        )
+    if (
+        decision.mode == "recommended_only"
+        and any(row.get("recommendation_eligible") is not True for row in normalized)
+    ):
+        raise ConfigurationManagementError(
+            "candidate is not recommended", code="candidate_not_recommended"
+        )
     try:
         for candidate in normalized:
             for change in candidate["changes"]:
@@ -2838,8 +2919,12 @@ def _apply_candidate_groups(
                 set_parameter_value(editable, change)
                 _apply_parameter_metadata(editable, change["parameter_path"])
     except CalibrationCandidateProtocolError as exc:
-        status = 409 if "stale" in str(exc) else 422
-        raise ConfigurationManagementError(str(exc), status=status) from exc
+        stale = "stale" in str(exc)
+        raise ConfigurationManagementError(
+            str(exc),
+            status=409 if stale else 422,
+            code="candidate_stale" if stale else "candidate_update_invalid",
+        ) from exc
     return normalized
 
 
@@ -2905,6 +2990,10 @@ def _candidate_source(
     recommendation_id: str,
     candidates: Sequence[Mapping[str, Any]],
     editable: Mapping[str, Any],
+    decision: CandidateApplicationDecision,
+    *,
+    old_content_sha256: str,
+    new_content_sha256: str,
 ) -> dict[str, Any]:
     rows = []
     for candidate in candidates:
@@ -2951,11 +3040,30 @@ def _candidate_source(
     result = {
         "experiment_run_id": experiment_run_id,
         "recommendation_id": recommendation_id,
+        # These identify the original candidate-application event. Retention
+        # deliberately preserves them when later manual edits leave a candidate
+        # value intact, rather than relabeling that event with a later hash.
+        "old_content_sha256": old_content_sha256,
+        "new_content_sha256": new_content_sha256,
         "candidate_ids": [row["candidate_id"] for row in rows],
         "calibration_subjects": calibration_subjects,
         "configuration_targets": configuration_targets,
         "targets": configuration_targets,
         "candidates": rows,
+        "decision": decision.to_dict(
+            overrode_recommendation=any(
+                candidate["recommendation_eligible"] is False
+                for candidate in candidates
+            )
+        ),
+        "recommendation_snapshot": [
+            {
+                "candidate_id": candidate["candidate_id"],
+                "recommendation_eligible": candidate["recommendation_eligible"],
+                "reason": candidate.get("reason"),
+            }
+            for candidate in candidates
+        ],
     }
     frequency_values = _frequency_candidate_values(rows)
     if frequency_values:

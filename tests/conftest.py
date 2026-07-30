@@ -134,6 +134,7 @@ MODULE_PRIMARY_MARKERS = {
     "test_web_publication_registrar.py": "integration",
     "test_web_storage_catalog_refresh.py": "integration",
     "test_web_visualization_read_model.py": "integration",
+    "test_web_waveforms.py": "integration",
 }
 
 # Mixed modules retain a module-level audit owner, with these exact nodeids

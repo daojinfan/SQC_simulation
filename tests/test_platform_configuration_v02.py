@@ -35,11 +35,43 @@ from sqvm.web import (
 from sqvm.web.configuration_schema import validate_editable
 from sqvm.web.configuration_schema import project_wave_indices
 from sqvm.web.configuration_transactions import ConfigurationTransactionManager
+from sqvm.web.runtime_contract import (
+    RUNTIME_CONFIGURATION_CONSUMERS,
+    assert_runtime_configuration_covered,
+)
 import sqvm.web.configuration_resolver as configuration_resolver_module
 from sqvm.runtime.calibration_model import calibration_model_configuration_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _reference_editable() -> dict:
+    current = json.loads(
+        (
+            ROOT
+            / "tests/fixtures/platform_configuration_reference_v1/platform-configurations/current/demo_2q1c2r.json"
+        ).read_text("utf-8")
+    )
+    return current["editable"]
+
+
+def test_every_active_editable_section_has_a_runtime_consumer() -> None:
+    editable = _reference_editable()
+    assert_runtime_configuration_covered(editable)
+    assert set(RUNTIME_CONFIGURATION_CONSUMERS) == {
+        f"{partition}.{name}"
+        for partition, values in editable.items()
+        for name in values
+    }
+    assert all(RUNTIME_CONFIGURATION_CONSUMERS.values())
+
+
+def test_new_unowned_editable_section_fails_closed() -> None:
+    editable = copy.deepcopy(_reference_editable())
+    editable["control_values"]["unowned_future_section"] = {}
+    with pytest.raises(ValueError, match="consumer coverage mismatch"):
+        assert_runtime_configuration_covered(editable)
 
 
 @pytest.fixture
@@ -444,9 +476,10 @@ def test_active_resolver_derives_only_selector_bound_xy2_amplitude_paths(platfor
         "Q1.setting.active_f012zbias_mapper.f01max_GHz",
     ):
         assert forbidden not in context.settable_paths
+    assert context.platform_configuration is not None
     assert context.authority_context_sha256 == sha256_json({
         "qcis_authorities": configuration_resolver_module._plain(context.authorities),
-        "calibration_model_configuration": configuration_resolver_module._plain(context.calibration_model_configuration),
+        "platform_configuration": configuration_resolver_module._plain(context.platform_configuration),
         "settable_paths": sorted(expected),
     })
     assert context.authority_context_sha256 != sha256_json({
@@ -893,6 +926,119 @@ def test_cz_q1_phase_candidate_separates_subject_from_configuration_owner(platfo
         )
 
 
+def test_candidate_override_only_bypasses_recommendation_gate(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    draft = store.create_draft(
+        snapshot, actor_id="project.manager", name="Ineligible candidate"
+    )
+    path = (
+        "calibration_values.qagents.Q1.reference_frequency_authority."
+        "reference_frequency_GHz"
+    )
+    current = draft["editable"]["calibration_values"]["qagents"]["Q1"][
+        "reference_frequency_authority"
+    ]["reference_frequency_GHz"]
+    candidate = calibration_candidate(
+        "Q1.override_frequency",
+        "Q1",
+        [parameter_change(path, current, current + 0.001, unit="GHz")],
+        recommendation_eligible=False,
+        candidate_type="qubit_reference_frequency",
+        reason="quality policy rejected this otherwise complete candidate",
+    )
+    arguments = {
+        "actor_id": "project.manager",
+        "experiment_run_id": str(uuid.uuid4()),
+        "recommendation_id": str(uuid.uuid4()),
+        "candidates": [candidate],
+    }
+    with pytest.raises(ConfigurationManagementError) as captured:
+        store.apply_candidates_to_draft(draft["draft_id"], **arguments)
+    assert captured.value.code == "candidate_not_recommended"
+
+    updated = store.apply_candidates_to_draft(
+        draft["draft_id"],
+        **arguments,
+        decision={
+            "mode": "override_recommendation",
+            "source": "web_user",
+            "reason": "Expert review approved the complete candidate.",
+        },
+    )
+    assert updated["source_candidate"]["decision"]["overrode_recommendation"] is True
+    assert updated["source_candidate"]["recommendation_snapshot"] == [
+        {
+            "candidate_id": candidate["candidate_id"],
+            "recommendation_eligible": False,
+            "reason": candidate["reason"],
+        }
+    ]
+    assert updated["source_candidate"]["old_content_sha256"] == draft["content_sha256"]
+    assert updated["source_candidate"]["new_content_sha256"] != draft["content_sha256"]
+
+
+def test_candidate_provenance_retention_filters_recommendation_snapshot(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    draft = store.create_draft(
+        snapshot, actor_id="project.manager", name="Mixed candidate retention"
+    )
+    candidates = []
+    original_values = {}
+    for target, eligible in (("Q1", False), ("Q2", True)):
+        path = (
+            f"calibration_values.qagents.{target}.reference_frequency_authority."
+            "reference_frequency_GHz"
+        )
+        current = draft["editable"]["calibration_values"]["qagents"][target][
+            "reference_frequency_authority"
+        ]["reference_frequency_GHz"]
+        original_values[path] = current
+        candidates.append(
+            calibration_candidate(
+                f"{target}.retained_frequency",
+                target,
+                [parameter_change(path, current, current + 0.001, unit="GHz")],
+                recommendation_eligible=eligible,
+                candidate_type="qubit_reference_frequency",
+                reason=None if eligible else "quality gate rejected Q1",
+            )
+        )
+    updated = store.apply_candidates_to_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        experiment_run_id=str(uuid.uuid4()),
+        recommendation_id=str(uuid.uuid4()),
+        candidates=candidates,
+        decision={
+            "mode": "override_recommendation",
+            "source": "web_user",
+            "reason": "Reviewed the mixed candidate group.",
+        },
+    )
+    editable = copy.deepcopy(updated["editable"])
+    q1_path = next(path for path in original_values if ".Q1." in path)
+    current = editable
+    for part in q1_path.split(".")[:-1]:
+        current = current[part]
+    current[q1_path.split(".")[-1]] = original_values[q1_path]
+
+    retained = store.update_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        expected_content_sha256=updated["content_sha256"],
+        name=updated["name"],
+        note="Q1 candidate reverted",
+        editable=editable,
+    )["source_candidate"]
+
+    assert retained["candidate_ids"] == ["Q2.retained_frequency"]
+    assert [row["candidate_id"] for row in retained["recommendation_snapshot"]] == [
+        "Q2.retained_frequency"
+    ]
+    assert retained["decision"]["mode"] == "override_recommendation"
+    assert retained["decision"]["overrode_recommendation"] is False
+
+
 def test_active_context_binds_circuit_execution_evidence(platform_root: Path, monkeypatch):
     store, snapshot = _published_store(platform_root)
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
@@ -916,5 +1062,8 @@ def test_active_context_binds_circuit_execution_evidence(platform_root: Path, mo
         "authority_context_sha256": context.authority_context_sha256,
         "calibration_model_configuration_sha256": calibration_model_configuration_sha256(
             context.calibration_model_configuration
+        ),
+        "platform_configuration_sha256": sha256_json(
+            configuration_resolver_module._plain(context.platform_configuration)
         ),
     }

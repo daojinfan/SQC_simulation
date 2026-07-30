@@ -88,7 +88,10 @@ API 自动构造底层请求并选择 `CALIBRATION_SCAN`。一次调用只执行
 ## 4. 超时语义
 
 `timeout_s` 是每个隔离 QuTiP worker 的 watchdog，不是整个实验的总超时。扫描 policy
-位于 `configs/runtime/calibration_scan/execution_policy_v1.json`，第一版上限为 600 秒。
+采用版本化文件：v1 保留用于验证历史 64 点产物；新实验使用
+`configs/runtime/calibration_scan/execution_policy_v2.json`，单线路硬上限为 10000 个逻辑采样点、
+5000 ns 和 600 秒。Active 配置可通过 `max_formal_samples_per_scenario` 进一步收紧采样点上限，
+但不能扩大 v2 policy 的硬上限。
 
 调用者不能通过传参扩大 policy。后续批次总 deadline、取消和恢复由 Runtime batch
 manifest 负责，不与单点 watchdog 混用。

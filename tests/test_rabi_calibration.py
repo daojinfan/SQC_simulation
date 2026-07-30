@@ -157,7 +157,10 @@ def test_rabi_publishes_and_replays_same_operation_without_second_batch(monkeypa
     replay = rabi.run_qubit_rabi_scan(request, context, parent, tmp_path / "run", tmp_path, operation_id=operation_id)
     assert first.run_id == replay.run_id == operation_id
     assert len(calls) == 1
-    assert first.candidates["Q1"]["recommendation_eligible"] is False
+    assert first.candidates == {}
+    workflow = json.loads((first.root / "workflow.json").read_text("utf-8"))
+    assert workflow["created_utc"] == first.dataset.runtime_batch.metadata["created_utc"]
+    assert workflow["candidates"] == []
     assert first.dataset.runtime_batch.root == first.root / "execution"
     monkeypatch.undo()
     for name, key, replacement in (

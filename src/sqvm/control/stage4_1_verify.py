@@ -500,14 +500,24 @@ def _check(name: str, passed: bool) -> dict[str, Any]:
 
 
 def _quantize(values: np.ndarray, dac: Any) -> tuple[np.ndarray, np.ndarray]:
-    lsb, minimum, maximum = Decimal(str(_field(dac, "lsb_V"))), int(_field(dac, "code_min")), int(_field(dac, "code_max"))
+    lsb = Decimal(str(_field(dac, "lsb_V")))
+    lower = Decimal(str(_field(dac, "full_scale_min_V")))
+    minimum, maximum = int(_field(dac, "code_min")), int(_field(dac, "code_max"))
     codes = np.empty(values.size, dtype="<i8")
     for index, value in enumerate(values):
-        code = int((Decimal.from_float(float(value)) / lsb).to_integral_value(rounding=ROUND_HALF_EVEN))
+        level = int(
+            ((Decimal.from_float(float(value)) - lower) / lsb).to_integral_value(
+                rounding=ROUND_HALF_EVEN
+            )
+        )
+        code = minimum + level
         if code < minimum or code > maximum:
             _fail("DAC_RANGE_EXCEEDED", str(index))
         codes[index] = code
-    return codes, np.asarray([float(Decimal(int(code)) * lsb) for code in codes], dtype="<f8")
+    return codes, np.asarray(
+        [float(lower + Decimal(int(code) - minimum) * lsb) for code in codes],
+        dtype="<f8",
+    )
 
 
 def _latency(row: Any) -> int:

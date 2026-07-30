@@ -23,6 +23,8 @@ from sqvm.storage.inventory import _allocated_bytes, _is_link_or_reparse, _windo
 
 _MIGRATION_VERSION = 1
 _SHA256 = set("0123456789ABCDEF")
+_LOWER_HEX = set("0123456789abcdef")
+_CALIBRATION_STAGING_PREFIXES = (".rabi_", ".spectroscopy_")
 _TOMBSTONE_FIELDS = frozenset({"schema_version", "artifact_type", "artifact_version", "run_id", "workflow_id", "workflow_sha256", "receipt_sha256", "last_bundle_sha256", "original_created_utc", "purged_utc", "actor_id", "reason", "last_lifecycle_event_sha256", "tombstone_sha256"})
 _TRASH_FIELDS = frozenset({"schema_version", "artifact_type", "artifact_version", "run_id", "workflow_id", "workflow_sha256", "receipt_sha256", "operation_id", "actor_id", "reason", "previous_storage_state", "original_carrier_kind", "original_carrier_alias", "original_carrier_sha256", "payload_kind", "payload_sha256", "payload_logical_bytes", "trashed_utc", "purge_after_utc", "trash_started_event_sha256", "record_sha256"})
 
@@ -203,6 +205,164 @@ def rebuild_catalog(
                 raise
 
 
+def publish_trash_catalog(
+    catalog_path: str | Path,
+    roots: CatalogRoots,
+    run_ids: tuple[str, ...],
+    *,
+    expected_revision: int,
+) -> int:
+    """Publish completed trash transitions without rescanning unrelated runs."""
+
+    if (
+        type(expected_revision) is not int
+        or expected_revision < 1
+        or not isinstance(run_ids, tuple)
+        or not run_ids
+        or len(run_ids) > 100
+        or len(set(run_ids)) != len(run_ids)
+    ):
+        raise StorageError("incremental catalog publication request is invalid")
+    try:
+        run_ids = tuple(_run_id(run_id) for run_id in run_ids)
+    except Exception as exc:
+        raise StorageError("incremental catalog publication request is invalid") from exc
+
+    catalog = _safe_existing_catalog(catalog_path)
+    trash_root = _safe_directory(roots.trash_root, "trash root") if roots.trash_root is not None else None
+    lifecycle_root = _safe_directory(roots.lifecycle_root, "lifecycle root")
+    if trash_root is None:
+        raise StorageError("trash root is required for incremental publication")
+
+    lock = _acquire_rebuild_lock(catalog)
+    temporary: Path | None = None
+    primary_error: BaseException | None = None
+    try:
+        if _existing_revision(catalog) != expected_revision:
+            raise StorageError("catalog revision changed before incremental publication")
+        temporary = catalog.parent / f".{catalog.name}.incremental.{uuid.uuid4().hex}"
+        source = sqlite3.connect(f"file:{catalog.as_posix()}?mode=ro", uri=True)
+        destination = sqlite3.connect(temporary)
+        destination.row_factory = sqlite3.Row
+        try:
+            source.backup(destination)
+            destination.execute("PRAGMA foreign_keys=ON")
+            _validate_database(destination)
+            revision_row = destination.execute(
+                "SELECT value FROM catalog_meta WHERE key='revision'"
+            ).fetchone()
+            if revision_row is None or revision_row[0] != str(expected_revision):
+                raise StorageError("catalog revision changed before incremental publication")
+
+            from sqvm.storage.lifecycle import read_head
+
+            for run_id in run_ids:
+                row = destination.execute(
+                    "SELECT runs.*, retention.manual_keep, retention.latest_hold, "
+                    "retention.reference_status, retention.delete_after_utc "
+                    "FROM runs JOIN retention USING(run_id) WHERE runs.run_id=?",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    raise StorageError("incremental catalog run is missing")
+                reference_count = destination.execute(
+                    "SELECT COUNT(*) FROM 'references' WHERE run_id=?", (run_id,)
+                ).fetchone()[0]
+                if (
+                    row["storage_state"] not in {"hot", "archived"}
+                    or row["blockers"]
+                    or bool(row["manual_keep"])
+                    or row["reference_status"] != "unreferenced"
+                    or reference_count != 0
+                ):
+                    raise StorageError("incremental catalog run is not trash eligible")
+
+                directory = _safe_directory(trash_root / run_id, "trash carrier")
+                if directory.parent != trash_root or directory.name != run_id:
+                    raise StorageError("trash carrier is outside the trusted root")
+                record = _validate_trash_record(
+                    _canonical_trash_json(directory / "trash-record.json")
+                )
+                if (
+                    record["run_id"] != run_id
+                    or record["workflow_id"] != row["workflow_id"]
+                    or record["workflow_sha256"] != row["workflow_sha256"]
+                    or record["receipt_sha256"] != row["receipt_sha256"]
+                    or record["previous_storage_state"] != row["storage_state"]
+                ):
+                    raise StorageError("trash record does not bind the catalog row")
+                expected_kind = "hot_directory" if row["storage_state"] == "hot" else "sqrun"
+                if record["payload_kind"] != expected_kind:
+                    raise StorageError("trash payload kind does not bind the catalog row")
+                payload = directory / "payload"
+                if expected_kind == "hot_directory":
+                    _safe_directory(payload, "trash payload")
+                    if record["payload_logical_bytes"] != row["logical_bytes"]:
+                        raise StorageError("trash payload size does not bind the catalog row")
+                else:
+                    _regular_file_info(payload, "trash payload")
+
+                original = Path(row["hot_path"] or row["archive_path"])
+                if os.path.lexists(original):
+                    raise StorageError("original carrier still exists after trash transition")
+                head = read_head(lifecycle_root, run_id)
+                if (
+                    head.state != "trash"
+                    or head.pending_event_type is not None
+                    or head.manual_keep
+                    or head.tail_sha256 is None
+                ):
+                    raise StorageError("trash lifecycle transition is incomplete")
+
+                destination.execute(
+                    "UPDATE runs SET storage_state='trash', hot_path=NULL, archive_path=NULL, "
+                    "trash_path=?, read_preference='trash', archive_bytes=0, blockers='' "
+                    "WHERE run_id=?",
+                    (str(payload), run_id),
+                )
+                destination.execute(
+                    "UPDATE retention SET manual_keep=0, latest_hold=0, "
+                    "reference_status='unreferenced', delete_after_utc=? WHERE run_id=?",
+                    (record["purge_after_utc"], run_id),
+                )
+                destination.execute(
+                    "INSERT INTO lifecycle_heads(run_id, sequence, event_sha256) VALUES (?,?,?) "
+                    "ON CONFLICT(run_id) DO UPDATE SET sequence=excluded.sequence, "
+                    "event_sha256=excluded.event_sha256",
+                    (run_id, head.revision, head.tail_sha256),
+                )
+
+            revision = max(expected_revision, _ledger_revision(catalog)) + 1
+            destination.execute(
+                "UPDATE catalog_meta SET value=? WHERE key='revision'", (str(revision),)
+            )
+            _validate_database(destination)
+            destination.commit()
+            _checkpoint_database(destination)
+            destination.commit()
+        finally:
+            source.close()
+            destination.close()
+        _fsync_file(temporary)
+        _write_ledger_revision(catalog, revision)
+        _atomic_replace(temporary, catalog)
+        _fsync_directory(catalog.parent)
+        return revision
+    except Exception as exc:
+        primary_error = exc
+        if temporary is not None:
+            _remove_temporary(temporary)
+        if isinstance(exc, StorageError):
+            raise
+        raise StorageError("incremental catalog publication failed") from exc
+    finally:
+        try:
+            _release_rebuild_lock(lock)
+        except Exception:
+            if primary_error is None:
+                raise
+
+
 def query_catalog(catalog_path: str | Path, run_id: str | None = None) -> tuple[CatalogRun, ...]:
     if run_id is not None:
         try:
@@ -309,6 +469,10 @@ def _discover_runs(
     rows: dict[str, _Found] = {}
     global_blockers: set[str] = set()
     for entry in _safe_entries(hot_root, "hot root"):
+        if _is_calibration_staging_alias(entry.name):
+            if not stat.S_ISDIR(entry.stat(follow_symlinks=False).st_mode):
+                global_blockers.add("calibration_staging_invalid")
+            continue
         if entry.name == ".runtime-v03":
             if not stat.S_ISDIR(entry.stat(follow_symlinks=False).st_mode):
                 global_blockers.add("runtime_coordinator_invalid")
@@ -317,10 +481,12 @@ def _discover_runs(
             global_blockers.add("unknown_hot_root_entry")
             continue
         directory = Path(entry.path)
+        known_run_id: str | None = None
         try:
             inventory = inventory_tree(directory, confinement_root=hot_root)
             workflow = _identity_json(directory / "workflow.json")
             run_id = _run_id(workflow.get("run_id"))
+            known_run_id = run_id
             workflow_id = workflow.get("workflow_id")
             artifact_version = workflow.get("artifact_version", workflow.get("workflow_version"))
             if not isinstance(workflow_id, str) or not workflow_id or not isinstance(artifact_version, str) or not artifact_version:
@@ -336,7 +502,7 @@ def _discover_runs(
                 raise ValueError("hot source verifier rejected run")
             _bind_hot(item, directory, workflow, inventory)
         except Exception:
-            guessed = _name_run_id(directory.name)
+            guessed = known_run_id or _name_run_id(directory.name)
             if guessed is not None:
                 rows.setdefault(guessed, _Found(guessed)).blockers.add("hot_carrier_invalid")
             else:
@@ -834,6 +1000,14 @@ def _name_run_id(name: str) -> str | None:
     return None
 
 
+def _is_calibration_staging_alias(name: str) -> bool:
+    for prefix in _CALIBRATION_STAGING_PREFIXES:
+        if name.startswith(prefix):
+            token = name.removeprefix(prefix)
+            return len(token) == 32 and set(token) <= _LOWER_HEX
+    return False
+
+
 def _is_sha(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _SHA256
 
@@ -1132,5 +1306,5 @@ def _remove_temporary(path: Path) -> None:
 
 __all__ = [
     "CatalogLifecycleHead", "CatalogReference", "CatalogRoots", "CatalogRun", "CatalogStorageSummary",
-    "rebuild_catalog", "query_catalog", "storage_summary",
+    "publish_trash_catalog", "rebuild_catalog", "query_catalog", "storage_summary",
 ]

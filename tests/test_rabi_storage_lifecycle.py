@@ -18,6 +18,7 @@ from sqvm.calibration.rabi_reader import (
     RabiReaderVerificationError,
     verify_qubit_rabi_scan_evidence,
 )
+from sqvm.candidate_protocol import calibration_candidate, parameter_change
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.storage.archive_format import DirectoryEvidenceReader
 from sqvm.storage.inventory import inventory_tree
@@ -107,9 +108,47 @@ def _complete_unpublished_fit_fixture(root: Path) -> None:
         "amplitude_GHz": [axis[-1] * index / 200.0 for index in range(201)],
         "P1": [0.0 for _ in range(201)],
     }
-    workflow["candidates"][0]["quality_metrics"] = analysis
+    if workflow["candidates"]:
+        workflow["candidates"][0]["quality_metrics"] = analysis
     (root / "workflow.json").write_bytes(canonical_json_bytes(workflow))
     _refresh_top_level_bindings(root)
+
+
+def _add_legacy_fallback_candidate(root: Path) -> None:
+    """Recreate the pre-fix no-fit candidate for compatibility checks."""
+
+    workflow = _json(root / "workflow.json")
+    request = workflow["request"]
+    target = request["target"]
+    setting_id = request["setting_id"]
+    current = request["setting_amplitude_GHz"]
+    dataset_sha = workflow["dataset"]["sha256"]
+    resource = {
+        "owner": target,
+        "resource_type": "waveform_setting",
+        "resource_id": setting_id,
+    }
+    workflow["candidates"] = [
+        calibration_candidate(
+            f"{target}:xy2_amplitude:{dataset_sha[:16]}",
+            target,
+            [
+                parameter_change(
+                    f"calibration_values.waveform_registry.settings.{setting_id}.amplitude_GHz",
+                    current,
+                    current,
+                    unit="GHz",
+                    configuration_resource=resource,
+                )
+            ],
+            recommendation_eligible=False,
+            candidate_type="xy2_amplitude",
+            source_dataset_sha256s=[dataset_sha],
+            quality_metrics=workflow["analysis"],
+            reason="legacy no-fit fallback candidate",
+        )
+    ]
+    (root / "workflow.json").write_bytes(canonical_json_bytes(workflow))
 
 
 def _mutation_request(root: Path) -> StorageMutationRequest:
@@ -242,12 +281,14 @@ def test_rabi_archive_restore_hot_trash_restore_keep_and_reference_rules(storage
 
 
 def _tamper_candidate_path(root: Path) -> None:
+    _add_legacy_fallback_candidate(root)
     workflow = _json(root / "workflow.json")
     workflow["candidates"][0]["changes"][0]["parameter_path"] = "calibration_values.waveform_registry.settings.other.amplitude_GHz"
     (root / "workflow.json").write_bytes(canonical_json_bytes(workflow))
 
 
 def _tamper_candidate_value(root: Path) -> None:
+    _add_legacy_fallback_candidate(root)
     workflow = _json(root / "workflow.json")
     workflow["candidates"][0]["changes"][0]["proposed_value"] += 0.001
     (root / "workflow.json").write_bytes(canonical_json_bytes(workflow))
@@ -316,6 +357,15 @@ def test_rabi_reader_fails_closed_for_bound_evidence_tampering(real_rabi_tree, t
     _refresh_top_level_bindings(root)
     with pytest.raises(RabiReaderVerificationError):
         _verify(root)
+
+
+def test_rabi_reader_keeps_legacy_no_fit_candidate_compatible(real_rabi_tree, tmp_path) -> None:
+    root = tmp_path / real_rabi_tree["root"].name
+    shutil.copytree(real_rabi_tree["root"], root)
+    _add_legacy_fallback_candidate(root)
+    _refresh_top_level_bindings(root)
+
+    _verify(root)
 
 
 def test_corrupted_rabi_staging_and_idempotency_conflict_do_not_publish(real_rabi_tree) -> None:

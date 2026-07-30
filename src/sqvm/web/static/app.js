@@ -13,6 +13,12 @@ const state = {
   storage: null,
   trash: null,
   storageFilter: "all",
+  storageSelection: new Set(),
+  trashSelection: new Set(),
+  storagePage: 1,
+  trashPage: 1,
+  storagePageSize: 10,
+  trashPageSize: 10,
   storageRefreshTimer: null,
   detail: null,
   configTab: "current",
@@ -81,6 +87,10 @@ async function api(path, options = {}) {
     error.status = response.status;
     error.code = payload?.code;
     error.retryable = payload?.details?.retryable === true;
+    error.details = payload?.details || {};
+    error.storageBatchCompleted = Array.isArray(payload?.details?.completed_run_ids)
+      ? payload.details.completed_run_ids
+      : [];
     error.fieldErrors = payload?.field_errors || payload?.validation?.field_errors || [];
     throw error;
   }
@@ -148,8 +158,16 @@ function resetResource(name) {
     state.experimentAppliedFilterKey = null;
     state.experimentLoadGeneration += 1;
   }
-  else if (name === "storage") state.storage = null;
-  else if (name === "trash") state.trash = null;
+  else if (name === "storage") {
+    state.storage = null;
+    state.storageSelection.clear();
+    state.storagePage = 1;
+  }
+  else if (name === "trash") {
+    state.trash = null;
+    state.trashSelection.clear();
+    state.trashPage = 1;
+  }
 }
 
 function invalidateResources(...names) {
@@ -1259,7 +1277,7 @@ function renderExperiments(routeContext = null) {
   const selected = (value) => state.experimentFilters.status === value ? "selected" : "";
   app.innerHTML = `
     <section><div class="section-head"><div><h2>实验运行记录</h2><p>已发布的模型仿真证据</p></div></div>
-      <div class="toolbar"><input id="experiment-search" type="search" maxlength="256" value="${esc(state.experimentFilters.q)}" placeholder="按目标、运行 ID 或工作流筛选"><select id="experiment-status"><option value="" ${selected("")}>全部状态</option><option value="data-only" ${selected("data-only")}>基础数据</option><option value="eligible" ${selected("eligible")}>可生成候选</option><option value="blocked" ${selected("blocked")}>已阻止</option><option value="invalid" ${selected("invalid")}>无效</option></select></div>
+      <div class="toolbar"><input id="experiment-search" type="search" maxlength="256" value="${esc(state.experimentFilters.q)}" placeholder="按目标、运行 ID 或工作流筛选"><select id="experiment-status"><option value="" ${selected("")}>全部状态</option><option value="data-only" ${selected("data-only")}>基础数据</option><option value="eligible" ${selected("eligible")}>可生成候选</option><option value="blocked" ${selected("blocked")}>不推荐，可人工确认</option><option value="invalid" ${selected("invalid")}>无效</option></select></div>
       <div id="experiment-table">${experimentTable(state.experiments)}</div>
       <div id="experiment-pagination">${experimentPagination()}</div>
     </section>`;
@@ -1426,50 +1444,49 @@ function normalizeExperimentDetail(detail, requestedId) {
 }
 
 function renderSpectroscopy(detail, routeContext = null) {
-  const eligibleCandidates = detail.candidates.filter((row) => row.recommendation_eligible);
   const isSyntheticDemo = detail.claim?.evidence_class === "synthetic_demo";
   const originStatus = isSyntheticDemo ? "synthetic-demo" : "model-derived";
   const originNotice = isSyntheticDemo
     ? `<section class="section"><div class="warning-band">该记录仅用于验证实验数据链路与界面，不包含 QuTiP 或硬件测量证据，不能用于更新校准配置。</div></section>`
     : "";
-  const actions = `<button id="export-experiment-json" class="button">导出 JSON</button><button id="export-experiment-csv" class="button">导出 CSV</button>${eligibleCandidates.length && !isSyntheticDemo ? `<button id="apply-candidates" class="button primary">更新当前配置</button>` : ""}`;
+  const actions = `<button id="export-experiment-json" class="button">导出 JSON</button><button id="export-experiment-csv" class="button">导出 CSV</button>${canApplyCandidateUpdate(detail) ? `<button id="apply-candidates" class="button primary">更新当前配置</button>` : ""}`;
   app.innerHTML = `
-    ${detailHeader("比特频谱", detail.run_id, [detail.verification_status, detail.recommendation_eligible ? "eligible" : "blocked", originStatus], actions)}
+    ${detailHeader("比特频谱", detail.run_id, [detail.verification_status, recommendationStatus(detail), originStatus], actions)}
     <section class="section"><div class="facts">${fact("运行时间", dateText(detail.created_utc))}${fact("执行模式", statusText(detail.execution_mode))}${fact("目标", detail.targets.join(", "))}${fact("通过门限", `${detail.gate_summary.passed}/${detail.gate_summary.total}`)}${fact("证据路径", detail.relative_path, true)}</div></section>
     ${originNotice}
     <section class="section"><div class="section-head"><div><h2>频率候选值</h2></div></div><div class="candidate-band">${detail.candidates.map(candidateHtml).join("")}</div></section>
     <section class="section"><div class="section-head"><div><h2>实验数据图</h2><p>选择对象和数据指标，点击图中数据点查看坐标</p></div></div>${plotPanels(detail.plot_specs || [])}</section>
+    ${waveformExplorerSection(detail)}
     <section class="section"><div class="section-head"><div><h2>硬门限检查</h2></div></div><div class="gate-list">${detail.gates.map(gateHtml).join("")}</div></section>
     <section class="section"><div class="section-head"><div><h2>数据点</h2><p>按目标量子比特分别展示</p></div></div>${pointLists(detail)}</section>
     ${detail.plot_url ? `<section class="section"><div class="section-head"><div><h2>已发布证据图</h2></div></div><img class="evidence-image" src="${esc(detail.plot_url)}" alt="已发布的频谱证据图"></section>` : ""}
     <section class="section"><details><summary>证据路径</summary><pre>${esc(detail.evidence_paths.join("\n"))}</pre></details><details><summary>请求 JSON</summary><pre>${esc(JSON.stringify(detail.request, null, 2))}</pre></details></section>`;
-  requestAnimationFrame(() => installUnifiedPlots(detail.plot_specs || [], routeContext));
+  requestAnimationFrame(() => installExperimentPlots(detail, routeContext));
   document.querySelector("#export-experiment-json").addEventListener("click", () => downloadText(`spectroscopy-${detail.run_id}.json`, JSON.stringify({ request: detail.request, datasets: detail.datasets, analyses: detail.analyses, gates: detail.gates, candidates: detail.candidates }, null, 2), "application/json"));
   document.querySelector("#export-experiment-csv").addEventListener("click", () => downloadText(`spectroscopy-${detail.run_id}.csv`, spectroscopyCsv(detail), "text/csv"));
-  if (eligibleCandidates.length && !isSyntheticDemo) document.querySelector("#apply-candidates").addEventListener("click", () => openCandidateUpdate(detail, eligibleCandidates));
+  if (canApplyCandidateUpdate(detail)) document.querySelector("#apply-candidates").addEventListener("click", () => openCandidateUpdate(detail, detail.candidates));
 }
 
 function renderSpectroscopyScan(detail, routeContext = null) {
   const originStatus = detail.claim?.hardware_measurement ? "hardware" : "model-derived";
-  const eligibleCandidates = detail.candidates.filter((row) => row.recommendation_eligible);
-  const actions = `<button id="export-experiment-json" class="button">导出 JSON</button><button id="export-experiment-csv" class="button">导出 CSV</button>${eligibleCandidates.length ? `<button id="apply-candidates" class="button primary">更新当前配置</button>` : ""}`;
+  const actions = `<button id="export-experiment-json" class="button">导出 JSON</button><button id="export-experiment-csv" class="button">导出 CSV</button>${canApplyCandidateUpdate(detail) ? `<button id="apply-candidates" class="button primary">更新当前配置</button>` : ""}`;
   const peaks = Object.values(detail.analysis?.peaks || {});
   app.innerHTML = `
-    ${detailHeader("比特频谱", detail.run_id, [detail.verification_status, "single-scan", detail.recommendation_applicable ? (detail.recommendation_eligible ? "eligible" : "blocked") : "data-only", originStatus], actions)}
+    ${detailHeader("比特频谱", detail.run_id, [detail.verification_status, "single-scan", detail.recommendation_applicable ? recommendationStatus(detail) : "data-only", originStatus], actions)}
     <section class="section"><div class="facts">${fact("运行时间", dateText(detail.created_utc))}${fact("执行模式", statusText(detail.execution_mode))}${fact("目标", detail.targets.join(", "))}${fact("数据点", detail.datasets.scan.points.length)}${fact("证据路径", detail.relative_path, true)}</div></section>
     <section class="section"><div class="section-head"><div><h2>峰值分析</h2></div></div><div class="candidate-band">${peaks.map(peakHtml).join("")}</div></section>
     ${detail.recommendation_applicable ? `<section class="section"><div class="section-head"><div><h2>候选校准值</h2></div></div><div class="candidate-band">${detail.candidates.map(candidateHtml).join("")}</div></section><section class="section"><div class="section-head"><div><h2>候选门限</h2></div></div><div class="gate-list">${detail.gates.map(gateHtml).join("")}</div></section>` : ""}
     <section class="section"><div class="section-head"><div><h2>实验数据图</h2><p>选择对象和数据指标，点击图中数据点查看坐标</p></div></div>${plotPanels(detail.plot_specs || [])}</section>
+    ${waveformExplorerSection(detail)}
     <section class="section"><div class="section-head"><div><h2>数据点</h2><p>按目标量子比特分别展示本次扫描数据</p></div></div>${pointLists(detail)}</section>
     <section class="section"><details><summary>证据路径</summary><pre>${esc(detail.evidence_paths.join("\n"))}</pre></details><details><summary>请求 JSON</summary><pre>${esc(JSON.stringify(detail.request, null, 2))}</pre></details></section>`;
-  requestAnimationFrame(() => installUnifiedPlots(detail.plot_specs || [], routeContext));
+  requestAnimationFrame(() => installExperimentPlots(detail, routeContext));
   document.querySelector("#export-experiment-json").addEventListener("click", () => downloadText(`spectroscopy-${detail.run_id}.json`, JSON.stringify({ request: detail.request, dataset: detail.datasets.scan, analysis: detail.analysis, gates: detail.gates, candidates: detail.candidates }, null, 2), "application/json"));
   document.querySelector("#export-experiment-csv").addEventListener("click", () => downloadText(`spectroscopy-${detail.run_id}.csv`, spectroscopyCsv(detail), "text/csv"));
-  if (eligibleCandidates.length) document.querySelector("#apply-candidates").addEventListener("click", () => openCandidateUpdate(detail, eligibleCandidates));
+  if (canApplyCandidateUpdate(detail)) document.querySelector("#apply-candidates").addEventListener("click", () => openCandidateUpdate(detail, detail.candidates));
 }
 
 function renderRabiAmplitude(detail, routeContext = null) {
-  const eligibleCandidates = detail.candidates.filter((row) => row.recommendation_eligible);
   const dataset = detail.datasets.scan || {};
   const axis = dataset.axis || {};
   const values = Array.isArray(axis.values) ? axis.values : [];
@@ -1482,22 +1499,36 @@ function renderRabiAmplitude(detail, routeContext = null) {
   const fit = rabi.fit || analysis;
   const qualityGates = Array.isArray(rabi.quality_gates) ? rabi.quality_gates : detail.gates;
   const candidateValues = Array.isArray(rabi.candidate_values) ? rabi.candidate_values : [];
+  const candidateContent = detail.candidates.length
+    ? detail.candidates.map(candidateHtml).join("")
+    : empty("本次扫描未产生校准候选");
   const range = Array.isArray(scan.range_GHz) && scan.range_GHz.length === 2 ? `${plotNumber(scan.range_GHz[0])} - ${plotNumber(scan.range_GHz[1])} GHz` : values.length ? `${plotNumber(values[0])} - ${plotNumber(values.at(-1))} GHz` : "-";
   const step = scan.step_GHz == null ? "-" : `${plotNumber(scan.step_GHz)} GHz`;
-  const actions = `<button id="export-experiment-json" class="button">导出 JSON</button><button id="export-experiment-csv" class="button">导出 CSV</button>${eligibleCandidates.length ? `<button id="apply-candidates" class="button primary">更新当前配置</button>` : ""}`;
+  const actions = `<button id="export-experiment-json" class="button">导出 JSON</button><button id="export-experiment-csv" class="button">导出 CSV</button>${canApplyCandidateUpdate(detail) ? `<button id="apply-candidates" class="button primary">更新当前配置</button>` : ""}`;
   app.innerHTML = `
-    ${detailHeader("X2P Rabi 幅度校准", detail.run_id, [detail.verification_status, detail.recommendation_eligible ? "eligible" : "blocked"], actions)}
+    ${detailHeader("X2P Rabi 幅度校准", detail.run_id, [detail.verification_status, recommendationStatus(detail)], actions)}
     <section class="section"><div class="facts">${fact("运行时间", dateText(detail.created_utc))}${fact("目标", detail.targets.join(", "))}${fact("扫描范围", range)}${fact("扫描步进", step)}${fact("数据点", scan.point_count ?? values.length)}${fact("父配置", parent.path || parent.relative_path || "-", true)}${fact("活动 XY2 setting", setting.setting_id || detail.request?.setting_id || "-")}${fact("当前幅度", setting.current_amplitude_GHz == null ? "-" : `${plotNumber(setting.current_amplitude_GHz)} GHz`)}</div></section>
-    <section class="section"><div class="section-head"><div><h2>候选 X2P 幅度</h2></div></div><div class="candidate-band">${detail.candidates.map(candidateHtml).join("")}</div><div class="facts">${candidateValues.map((row) => fact("当前 / 候选", `${plotNumber(row.current_value)} / ${plotNumber(row.proposed_value)} ${row.unit || ""}`)).join("") || fact("当前 / 候选", "-")}</div></section>
+    <section class="section"><div class="section-head"><div><h2>候选 X2P 幅度</h2></div></div><div class="candidate-band">${candidateContent}</div><div class="facts">${candidateValues.map((row) => fact("当前 / 候选", `${plotNumber(row.current_value)} / ${plotNumber(row.proposed_value)} ${row.unit || ""}`)).join("") || fact("当前 / 候选", "-")}</div></section>
     <section class="section"><div class="section-head"><div><h2>实验数据图</h2><p>选择对象和数据指标，点击图中数据点查看坐标</p></div></div>${plotPanels(detail.plot_specs || [])}</section>
-    <section class="section"><div class="section-head"><div><h2>QCIS source</h2></div></div><pre>${esc(rabi.qcis_source || "-")}</pre></section>
+    ${waveformExplorerSection(detail)}
     <section class="section"><div class="section-head"><div><h2>相位审计摘要</h2></div></div><div class="facts">${fact("第一个 start sample", phase.first_start_sample)}${fact("第二个 start sample", phase.second_start_sample)}${fact("实验室相位推进", phase.lab_phase_advance_unwrapped_rad == null ? "-" : `${plotNumber(phase.lab_phase_advance_unwrapped_rad)} rad`)}${fact("相位审计", phase.passed === true ? "通过" : phase.passed === false ? "未通过" : "-")}</div></section>
     <section class="section"><div class="section-head"><div><h2>拟合与质量门</h2></div></div><div class="facts">${fact("拟合收敛", fit.fit_converged === true ? "是" : fit.fit_converged === false ? "否" : "-")}${fact("X2P 幅度", fit.x2p_amplitude_GHz == null ? "-" : `${plotNumber(fit.x2p_amplitude_GHz)} GHz`)}${fact("offset", fit.offset == null ? "-" : plotNumber(fit.offset))}${fact("contrast", fit.contrast == null ? "-" : plotNumber(fit.contrast))}${fact("R²", fit.r_squared == null ? "-" : plotNumber(fit.r_squared))}${fact("normalized RMSE", fit.normalized_rmse == null ? "-" : plotNumber(fit.normalized_rmse))}</div><div class="gate-list">${qualityGates.map(gateHtml).join("")}</div></section>
     <section class="section"><details><summary>请求 JSON</summary><pre>${esc(JSON.stringify(detail.request, null, 2))}</pre></details></section>`;
-  requestAnimationFrame(() => installUnifiedPlots(detail.plot_specs || [], routeContext));
+  requestAnimationFrame(() => installExperimentPlots(detail, routeContext));
   document.querySelector("#export-experiment-json").addEventListener("click", () => downloadText(`rabi-${detail.run_id}.json`, JSON.stringify({ request: detail.request, dataset, analysis, gates: detail.gates, candidates: detail.candidates }, null, 2), "application/json"));
   document.querySelector("#export-experiment-csv").addEventListener("click", () => downloadText(`rabi-${detail.run_id}.csv`, rabiCsv(dataset), "text/csv"));
-  if (eligibleCandidates.length) document.querySelector("#apply-candidates").addEventListener("click", () => openCandidateUpdate(detail, eligibleCandidates));
+  if (canApplyCandidateUpdate(detail)) document.querySelector("#apply-candidates").addEventListener("click", () => openCandidateUpdate(detail, detail.candidates));
+}
+
+function canApplyCandidateUpdate(detail) {
+  return detail.recommendation_applicable === true
+    && detail.claim?.evidence_class !== "synthetic_demo"
+    && Array.isArray(detail.candidates)
+    && detail.candidates.length > 0;
+}
+
+function recommendationStatus(detail) {
+  return detail.recommendation_eligible ? "recommended" : "not-recommended";
 }
 
 function rabiCsv(dataset) {
@@ -1517,8 +1548,8 @@ function peakHtml(row) {
 
 function renderGenericExperiment(detail, routeContext = null) {
   const specs = detail.plot_specs || [];
-  app.innerHTML = `${detailHeader(experimentKind(detail.experiment_kind), detail.run_id, [detail.verification_status], "")}${specs.length ? `<section class="section"><div class="section-head"><div><h2>实验数据图</h2><p>由实验发布的统一 plot_spec</p></div></div>${plotPanels(specs)}</section>` : ""}<section class="section"><details open><summary>产物 JSON</summary><pre>${esc(JSON.stringify(detail.raw, null, 2))}</pre></details></section>`;
-  if (specs.length) requestAnimationFrame(() => installUnifiedPlots(specs, routeContext));
+  app.innerHTML = `${detailHeader(experimentKind(detail.experiment_kind), detail.run_id, [detail.verification_status], "")}${specs.length ? `<section class="section"><div class="section-head"><div><h2>实验数据图</h2><p>由实验发布的统一 plot_spec</p></div></div>${plotPanels(specs)}</section>` : ""}${waveformExplorerSection(detail)}<section class="section"><details open><summary>产物 JSON</summary><pre>${esc(JSON.stringify(detail.raw, null, 2))}</pre></details></section>`;
+  requestAnimationFrame(() => installExperimentPlots(detail, routeContext));
 }
 
 function pointLists(detail) {
@@ -1575,6 +1606,140 @@ function csvCell(value) {
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
+function waveformExplorerSection(detail) {
+  if (!supportsWaveformExplorer(detail)) return "";
+  return `<section class="section waveform-explorer" id="waveform-explorer" data-run-id="${esc(detail.run_id)}">
+    <div class="section-head"><div><h2>QCIS 与真实通道波形</h2><p>线路指令、物理 AWG 输出和仿真有效控制</p></div><span class="status status-neutral" data-waveform-status>等待加载</span></div>
+    <div class="waveform-explorer-body">
+      <div class="waveform-selector-bar">
+        <label><span>扫描点</span><select data-waveform-point disabled><option>正在读取线路清单...</option></select></label>
+        <div class="waveform-view-tabs" role="tablist" aria-label="波形层级">
+          <button type="button" class="active" data-waveform-view="awg" role="tab" aria-selected="true">真实 AWG 输出</button>
+          <button type="button" data-waveform-view="effective" role="tab" aria-selected="false">QuTiP 有效控制</button>
+          <button type="button" data-waveform-view="logical" role="tab" aria-selected="false">编译逻辑波形</button>
+        </div>
+      </div>
+      <div class="waveform-binding-facts" data-waveform-facts></div>
+      <details class="qcis-source" open aria-label="QCIS source"><summary>当前扫描点 QCIS 指令</summary><pre data-waveform-qcis>等待加载...</pre></details>
+      <div class="waveform-plot-host" data-waveform-plots>${empty("正在读取波形证据...")}</div>
+    </div>
+  </section>`;
+}
+
+function supportsWaveformExplorer(detail) {
+  return new Set([
+    "qubit_spectroscopy_calibration_v1",
+    "qubit_spectroscopy_scan_v1",
+    "qubit_rabi_x2p_amplitude_scan_v1",
+    "qubit_spectroscopy",
+    "qubit_spectroscopy_scan",
+    "qubit_rabi_x2p_amplitude",
+  ]).has(detail.workflow_id || detail.renderer);
+}
+
+function installExperimentPlots(detail, routeContext) {
+  installUnifiedPlots(detail.plot_specs || [], routeContext);
+  installWaveformExplorer(detail, routeContext);
+}
+
+async function installWaveformExplorer(detail, routeContext) {
+  if (!supportsWaveformExplorer(detail)) return;
+  const root = document.querySelector("#waveform-explorer");
+  if (!root || !routeIsCurrent(routeContext)) return;
+  const pointSelect = root.querySelector("[data-waveform-point]");
+  const statusNode = root.querySelector("[data-waveform-status]");
+  const plotHost = root.querySelector("[data-waveform-plots]");
+  const qcisNode = root.querySelector("[data-waveform-qcis]");
+  const factHost = root.querySelector("[data-waveform-facts]");
+  const tabs = [...root.querySelectorAll("[data-waveform-view]")];
+  let selectedView = "awg";
+  let generation = 0;
+  let catalog = null;
+
+  const setStatus = (text, kind = "neutral") => {
+    statusNode.textContent = text;
+    statusNode.className = `status status-${kind}`;
+  };
+
+  const loadPoint = async () => {
+    if (!catalog || !pointSelect.value) return;
+    const requestGeneration = ++generation;
+    setStatus("正在验证", "info");
+    clearWaveformPlotControllers();
+    plotHost.innerHTML = empty("正在读取并验证所选波形...");
+    try {
+      const url = `/api/v1/experiments/${encodeURIComponent(detail.run_id)}/waveforms/${encodeURIComponent(pointSelect.value)}?view=${encodeURIComponent(selectedView)}&max_points=2000`;
+      const payload = await api(url, routeRequestOptions(routeContext));
+      if (!routeIsCurrent(routeContext) || requestGeneration !== generation) return;
+      qcisNode.textContent = payload.qcis?.source || "-";
+      const counts = payload.control?.sample_counts || {};
+      factHost.innerHTML = [
+        fact("线路 ID", payload.point?.circuit_id || "-", true),
+        fact("扫描坐标", waveformCoordinates(payload.point)),
+        fact("Control ID", payload.control?.control_id || "-", true),
+        fact("采样点", Object.entries(counts).map(([name, count]) => `${name} ${count}`).join(" · ") || "-"),
+      ].join("");
+      plotHost.innerHTML = plotPanels(payload.plot_specs || []);
+      installUnifiedPlots(payload.plot_specs || [], routeContext);
+      setStatus("证据已验证", "good");
+    } catch (error) {
+      if (!routeIsCurrent(routeContext) || requestGeneration !== generation || error?.name === "AbortError") return;
+      plotHost.innerHTML = empty(error.message || "波形读取失败");
+      qcisNode.textContent = "-";
+      factHost.innerHTML = "";
+      setStatus("不可用", "bad");
+    }
+  };
+
+  tabs.forEach((tab) => tab.addEventListener("click", () => {
+    if (tab.dataset.waveformView === selectedView) return;
+    selectedView = tab.dataset.waveformView;
+    tabs.forEach((row) => {
+      const active = row === tab;
+      row.classList.toggle("active", active);
+      row.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    loadPoint();
+  }));
+  pointSelect.addEventListener("change", loadPoint);
+
+  try {
+    catalog = await api(`/api/v1/experiments/${encodeURIComponent(detail.run_id)}/waveforms`, routeRequestOptions(routeContext));
+    if (!routeIsCurrent(routeContext)) return;
+    const points = Array.isArray(catalog.points) ? catalog.points : [];
+    if (!points.length) throw new Error("该实验没有可展示的线路波形");
+    pointSelect.innerHTML = points.map((point) => `<option value="${esc(point.circuit_id)}">${esc(point.label || `#${point.point_index}`)}</option>`).join("");
+    pointSelect.value = catalog.default_circuit_id || points[0].circuit_id;
+    pointSelect.disabled = false;
+    await loadPoint();
+  } catch (error) {
+    if (!routeIsCurrent(routeContext) || error?.name === "AbortError") return;
+    pointSelect.innerHTML = "<option>无波形证据</option>";
+    pointSelect.disabled = true;
+    plotHost.innerHTML = empty(error.message || "该实验没有可展示的线路波形");
+    qcisNode.textContent = "-";
+    setStatus("不可用", error?.status === 404 ? "neutral" : "bad");
+  }
+}
+
+function clearWaveformPlotControllers() {
+  for (const [plotId, controller] of state.plotControllers) {
+    if (!plotId.startsWith("waveform_")) continue;
+    clearPlotHover(controller);
+    if (typeof state.chartObserver?.unobserve === "function" && controller.canvas?.parentElement) {
+      state.chartObserver.unobserve(controller.canvas.parentElement);
+    }
+    state.plotControllers.delete(plotId);
+  }
+}
+
+function waveformCoordinates(point) {
+  const coordinates = point?.scan_coordinates;
+  if (!coordinates || typeof coordinates !== "object" || !Object.keys(coordinates).length) return "-";
+  const unit = point.coordinate_unit ? ` ${point.coordinate_unit}` : "";
+  return Object.entries(coordinates).map(([name, value]) => `${name}=${plotNumber(value)}${unit}`).join(", ");
+}
+
 function downloadText(filename, content, contentType) {
   const blob = new Blob([content], { type: `${contentType};charset=utf-8` });
   const url = URL.createObjectURL(blob);
@@ -1611,7 +1776,7 @@ function plotTypeLabel(type) {
 function installUnifiedPlots(specs) {
   const routeContext = arguments.length > 1 ? arguments[1] : null;
   if (!routeIsCurrent(routeContext)) return;
-  state.plotControllers = new Map();
+  const installed = [];
   for (const spec of specs) {
     const domId = fieldId(spec.plot_id);
     const root = document.querySelector(`#plot-${domId}`);
@@ -1631,6 +1796,7 @@ function installUnifiedPlots(specs) {
       exactPointCache: new Map(),
     };
     state.plotControllers.set(spec.plot_id, controller);
+    installed.push(controller);
     root.querySelectorAll("[data-plot-filter]").forEach((input) => input.addEventListener("change", () => {
       const selected = input.dataset.plotFilter === "object" ? controller.selectedObjects : controller.selectedMetrics;
       input.checked ? selected.add(input.value) : selected.delete(input.value);
@@ -1664,11 +1830,13 @@ function installUnifiedPlots(specs) {
     }
   }
   if (typeof ResizeObserver !== "function") return;
-  state.chartObserver = new ResizeObserver((entries) => entries.forEach((entry) => {
-    const controller = state.plotControllers.get(entry.target.dataset.plotId);
-    if (controller) drawUnifiedPlot(controller);
-  }));
-  state.plotControllers.forEach((controller) => {
+  if (!state.chartObserver) {
+    state.chartObserver = new ResizeObserver((entries) => entries.forEach((entry) => {
+      const controller = state.plotControllers.get(entry.target.dataset.plotId);
+      if (controller) drawUnifiedPlot(controller);
+    }));
+  }
+  installed.forEach((controller) => {
     const wrap = controller.canvas.parentElement;
     wrap.dataset.plotId = controller.spec.plot_id;
     state.chartObserver.observe(wrap);
@@ -2011,7 +2179,7 @@ function plotNumber(value) { const number = Number(value); return Math.abs(numbe
 function experimentTable(rows) {
   if (!rows.length) return empty("暂无实验运行结果");
   return `<div class="table-wrap"><table><thead><tr><th>实验</th><th>运行时间</th><th>目标</th><th>执行模式</th><th>验证状态</th><th>候选状态</th><th>门限</th></tr></thead><tbody>${rows.map((row) => `
-    <tr class="clickable" data-run-id="${esc(row.run_id)}"><td><strong>${esc(experimentKind(row.experiment_kind))}</strong><br><span class="mono muted">${short(row.run_id)}</span></td><td>${dateText(row.created_utc)}</td><td>${esc((row.targets || []).join(", ") || "-")}</td><td>${esc(statusText(row.execution_mode || "-"))}</td><td>${status(row.verification_status)}</td><td>${status(row.recommendation_applicable ? (row.recommendation_eligible ? "eligible" : "blocked") : "data-only")}</td><td>${row.recommendation_applicable ? `${row.gate_summary.passed}/${row.gate_summary.total}` : "-"}</td></tr>`).join("")}</tbody></table></div>`;
+    <tr class="clickable" data-run-id="${esc(row.run_id)}"><td><strong>${esc(experimentKind(row.experiment_kind))}</strong><br><span class="mono muted">${short(row.run_id)}</span></td><td>${dateText(row.created_utc)}</td><td>${esc((row.targets || []).join(", ") || "-")}</td><td>${esc(statusText(row.execution_mode || "-"))}</td><td>${status(row.verification_status)}</td><td>${status(row.recommendation_applicable ? (row.recommendation_eligible ? "eligible" : "not-recommended") : "data-only")}</td><td>${row.recommendation_applicable ? `${row.gate_summary.passed}/${row.gate_summary.total}` : "-"}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function candidateHtml(row) {
@@ -2020,7 +2188,10 @@ function candidateHtml(row) {
   const value = multiple ? String(row.changes.length) : change ? candidateValueText(change.proposed_value) : row.proposed_frequency_GHz == null ? "-" : fmt(row.proposed_frequency_GHz, 7);
   const unit = multiple ? "项参数" : change?.unit || (row.proposed_frequency_GHz == null ? "" : "GHz");
   const detail = multiple ? candidateChangesSummary(row) : change ? candidateParameterLabel(change.parameter_path) : `变化量 ${row.delta_GHz == null ? "-" : fmt(row.delta_GHz, 7)} GHz`;
-  return `<article class="candidate"><h3>${esc(candidateSubjects(row).join(", "))}</h3><div class="candidate-value">${esc(value)} <small>${esc(unit || "")}</small></div><small>${esc(detail)}</small>${status(row.recommendation_eligible ? "eligible" : "blocked")}</article>`;
+  const recommendation = row.recommendation_eligible ? "recommended" : "not-recommended";
+  const reason = !row.recommendation_eligible && (row.recommendation_reason || row.reason)
+    ? `<small class="candidate-reason">${esc(row.recommendation_reason || row.reason)}</small>` : "";
+  return `<article class="candidate"><h3>${esc(candidateSubjects(row).join(", "))}</h3><div class="candidate-value">${esc(value)} <small>${esc(unit || "")}</small></div><small>${esc(detail)}</small>${status(recommendation)}${reason}</article>`;
 }
 
 function candidateSubjects(row) {
@@ -2170,10 +2341,16 @@ async function openCandidateUpdate(detail, candidates) {
     return `<label class="check-row"><input type="checkbox" data-candidate-id value="${esc(candidate.candidate_id)}" checked> ${esc(candidateSubjects(candidate).join(", "))}${resource ? ` · ${esc(resource)}` : ""} · ${esc(summary)}</label>`;
   }).join("");
   const phrase = `APPLY CALIBRATION CANDIDATES ${detail.run_id}`;
-  openDialog("更新当前配置", `<div class="field"><label for="dialog-current">目标配置</label><select id="dialog-current">${currentOptions}</select></div><fieldset><legend>候选参数</legend>${choices}</fieldset><label class="check-row"><input id="dialog-confirm-candidates" type="checkbox"> 我确认将所选候选值写入当前配置</label>`, "确认更新", async () => {
+  const operationId = crypto.randomUUID();
+  openDialog("更新当前配置", `<div class="field"><label for="dialog-current">目标配置</label><select id="dialog-current">${currentOptions}</select></div><fieldset><legend>候选参数</legend>${choices}</fieldset><div id="dialog-override-warning" class="warning-band" hidden><strong>系统不推荐所选候选。</strong><div id="dialog-override-evidence"></div><label class="check-row"><input id="dialog-confirm-override" type="checkbox"> 我理解系统不推荐该候选</label><div class="field"><label for="dialog-override-reason">覆盖原因</label><textarea id="dialog-override-reason" required placeholder="说明人工确认采用该候选的依据"></textarea></div></div><label class="check-row"><input id="dialog-confirm-candidates" type="checkbox"> 我确认将所选候选值写入当前配置</label>`, "确认更新", async () => {
     const selected = [...document.querySelectorAll("[data-candidate-id]:checked")].map((input) => input.value);
     if (!selected.length) throw new Error("请至少选择一个可用候选");
     if (!document.querySelector("#dialog-confirm-candidates").checked) throw new Error("请确认写入当前配置");
+    const selectedCandidates = candidates.filter((candidate) => selected.includes(candidate.candidate_id));
+    const requiresOverride = selectedCandidates.some((candidate) => !candidate.recommendation_eligible);
+    const overrideReason = document.querySelector("#dialog-override-reason").value.trim();
+    if (requiresOverride && !document.querySelector("#dialog-confirm-override").checked) throw new Error("请确认理解系统不推荐该候选");
+    if (requiresOverride && !candidateDecisionReasonIsValid(overrideReason)) throw new Error("覆盖原因无效或超过 2048 个 Unicode 字符");
     const deviceId = document.querySelector("#dialog-current").value;
     const current = state.management.current.find((row) => row.device_id === deviceId);
     if (!current) throw new Error("当前配置不存在");
@@ -2182,14 +2359,51 @@ async function openCandidateUpdate(detail, candidates) {
       device_id: deviceId,
       expected_content_sha256: current.content_sha256,
       candidate_ids: selected,
+      decision_mode: requiresOverride ? "override_recommendation" : "recommended_only",
+      decision_source: "web_user",
+      decision_reason: requiresOverride ? overrideReason : null,
       confirmation_phrase: phrase,
+      operation_id: operationId,
     });
     await refreshAfterMutation(`#/configurations/current/${result.device_id}`, "management", "configurations", "overview");
   });
   const confirmation = document.querySelector("#dialog-confirm-candidates");
   const confirmButton = document.querySelector("#dialog-confirm");
+  const overrideConfirmation = document.querySelector("#dialog-confirm-override");
+  const overrideReason = document.querySelector("#dialog-override-reason");
+  const overrideWarning = document.querySelector("#dialog-override-warning");
+  const overrideEvidence = document.querySelector("#dialog-override-evidence");
   confirmButton.disabled = true;
-  confirmation.addEventListener("change", () => { confirmButton.disabled = !confirmation.checked; });
+  const updateDecisionControls = () => {
+    const selected = [...document.querySelectorAll("[data-candidate-id]:checked")].map((input) => input.value);
+    const notRecommended = candidates.filter((candidate) => selected.includes(candidate.candidate_id) && !candidate.recommendation_eligible);
+    const requiresOverride = notRecommended.length > 0;
+    overrideWarning.hidden = !requiresOverride;
+    overrideReason.required = requiresOverride;
+    confirmButton.textContent = requiresOverride ? "仍然更新" : "确认更新";
+    if (requiresOverride) {
+      const reasons = notRecommended.map((candidate) => candidate.recommendation_reason || candidate.reason).filter(Boolean);
+      const qualityGates = detail.rabi_detail?.quality_gates || detail.gates || [];
+      const failedGates = qualityGates.filter((gate) => gate.passed === false).map((gate) => gateName(gate.name || gate.gate_id));
+      overrideEvidence.textContent = [
+        reasons.length ? `原因：${reasons.join("；")}` : "原因：实验质量策略未推荐该候选",
+        failedGates.length ? `未通过质量门：${failedGates.join("；")}` : "未通过质量门：实验未提供",
+      ].join("\n");
+    }
+    confirmButton.disabled = !confirmation.checked || (requiresOverride && (!overrideConfirmation.checked || !candidateDecisionReasonIsValid(overrideReason.value.trim())));
+  };
+  confirmation.addEventListener("change", updateDecisionControls);
+  overrideConfirmation.addEventListener("change", updateDecisionControls);
+  overrideReason.addEventListener("input", updateDecisionControls);
+  document.querySelectorAll("[data-candidate-id]").forEach((input) => input.addEventListener("change", updateDecisionControls));
+  updateDecisionControls();
+}
+
+function candidateDecisionReasonIsValid(value) {
+  const reason = String(value || "").trim();
+  return reason.length > 0
+    && Array.from(reason).length <= 2048
+    && !/[\p{Cc}]/u.test(reason);
 }
 
 function openPublish(item) {
@@ -2237,6 +2451,8 @@ function openActivate(item) {
 
 function renderStorage() {
   const rows = state.storage.items.filter((item) => state.storageFilter === "all" || item.storage_state === state.storageFilter);
+  pruneStorageSelection("storage", state.storage.items);
+  const page = storagePageData("storage", rows);
   const filters = ["all", "hot", "archived", "archived_duplicate", "trash", "invalid"];
   app.innerHTML = `<section class="storage-view">
     <div class="storage-capacity" aria-label="存储容量摘要">
@@ -2247,11 +2463,16 @@ function renderStorage() {
     </div>
     <div class="section-head storage-head"><div><h2>实验存储</h2><p>目录版本 ${esc(state.storage.catalog_revision)} · ${state.storage.refreshing ? "正在后台更新，新实验稍后显示" : state.storage.refresh_error ? "后台更新失败，请稍后刷新重试" : "容量数值均为实际字节口径"}</p></div><a class="button secondary" href="#/trash">查看回收站</a></div>
     <div class="storage-filters" role="toolbar" aria-label="存储筛选">${filters.map((filter) => `<button class="filter-button ${state.storageFilter === filter ? "active" : ""}" data-storage-filter="${filter}" type="button">${esc(filter === "all" ? "全部" : statusText(filter))}</button>`).join("")}</div>
-    ${rows.length ? `<div class="storage-table-wrap"><table class="storage-table"><thead><tr><th>实验</th><th>状态</th><th>占盘</th><th>保留</th><th>引用</th><th>操作</th></tr></thead><tbody>${rows.map(storageRow).join("")}</tbody></table></div>` : empty("没有符合筛选条件的存储记录")}
+    ${storageBatchToolbar("storage", page)}
+    ${rows.length ? `<div class="storage-table-wrap"><table class="storage-table"><thead><tr><th class="storage-select-cell"><span class="sr-only">选择</span></th><th>实验</th><th>状态</th><th>占盘</th><th>保留</th><th>引用</th><th>操作</th></tr></thead><tbody>${page.items.map((item) => storageRow(item, "storage")).join("")}</tbody></table></div>${storagePagination("storage", page)}` : empty("没有符合筛选条件的存储记录")}
   </section>`;
   app.querySelectorAll("[data-storage-filter]").forEach((button) => button.addEventListener("click", () => {
-    state.storageFilter = button.dataset.storageFilter; renderStorage();
+    state.storageFilter = button.dataset.storageFilter;
+    state.storageSelection.clear();
+    state.storagePage = 1;
+    renderStorage();
   }));
+  installStorageControls("storage", page);
   installStorageActions();
   if (state.storage.refreshing) {
     state.storageRefreshTimer = setTimeout(async () => {
@@ -2264,17 +2485,150 @@ function renderStorage() {
 
 function renderTrash() {
   const notice = state.trash.refreshing ? "存储目录正在更新，暂时不能恢复实验。" : state.trash.refresh_error ? "存储目录更新失败，请刷新后重试。" : "删除仅移动至回收站；此视图不提供永久清除。";
+  pruneStorageSelection("trash", state.trash.items);
+  const page = storagePageData("trash", state.trash.items);
   app.innerHTML = `<section class="storage-view"><div class="section-head storage-head"><div><h2>回收站</h2><p>${notice}</p></div><a class="button secondary" href="#/storage">返回实验存储</a></div>
-    ${state.trash.items.length ? `<div class="storage-table-wrap"><table class="storage-table"><thead><tr><th>实验</th><th>原状态</th><th>占盘</th><th>到期时间</th><th>操作</th></tr></thead><tbody>${state.trash.items.map((item) => `<tr><td><span class="mono">${esc(short(item.run_id))}</span><small>${esc(item.workflow_id)}</small></td><td>${status(item.carrier?.read_preference || "trash")}</td><td>${esc(bytes(item.allocated_bytes))}</td><td>${esc(dateText(item.delete_after_utc))}</td><td>${storageAction(item, "restore", "恢复")}</td></tr>`).join("")}</tbody></table></div>` : empty("回收站为空")}</section>`;
+    ${storageBatchToolbar("trash", page)}
+    ${state.trash.items.length ? `<div class="storage-table-wrap"><table class="storage-table"><thead><tr><th class="storage-select-cell"><span class="sr-only">选择</span></th><th>实验</th><th>原状态</th><th>占盘</th><th>到期时间</th><th>操作</th></tr></thead><tbody>${page.items.map((item) => trashRow(item)).join("")}</tbody></table></div>${storagePagination("trash", page)}` : empty("回收站为空")}</section>`;
+  installStorageControls("trash", page);
   installStorageActions();
 }
 
-function storageRow(item) {
+function storageRow(item, view) {
   const blockers = item.blockers?.length ? `<span class="blocker" title="${esc(item.blockers.join("；"))}" aria-label="阻断原因：${esc(item.blockers.join("；"))}">已阻断</span>` : "";
   const actions = item.storage_state === "hot" ? `${storageAction(item, "keep", item.retention_state === "manual_keep" ? "取消长期保存" : "长期保存")} ${storageAction(item, "archive", "归档")} ${storageAction(item, "trash", "移入回收站")}`
     : item.storage_state === "archived" ? `${storageAction(item, "restore-hot", "恢复热目录")} ${storageAction(item, "trash", "移入回收站")}`
     : item.storage_state === "archived_duplicate" ? `<span class="muted">重复副本待处理</span>` : "";
-  return `<tr><td><a class="mono" href="#/experiments/${encodeURIComponent(item.run_id)}">${esc(short(item.run_id))}</a><small>${esc(item.workflow_id)}</small></td><td>${status(item.storage_state)} ${blockers}</td><td>${esc(bytes(item.allocated_bytes))}<small>${item.allocated_estimated ? "估算" : "实际"}</small></td><td>${esc(statusText(item.retention_state))}</td><td>${esc(item.reference_count)}</td><td class="storage-actions">${actions || `<span class="muted">无可用操作</span>`}</td></tr>`;
+  return `<tr><td class="storage-select-cell">${storageSelectionCheckbox(view, item)}</td><td><a class="mono" href="#/experiments/${encodeURIComponent(item.run_id)}">${esc(short(item.run_id))}</a><small>${esc(item.workflow_id)}</small></td><td>${status(item.storage_state)} ${blockers}</td><td>${esc(bytes(item.allocated_bytes))}<small>${item.allocated_estimated ? "估算" : "实际"}</small></td><td>${esc(statusText(item.retention_state))}</td><td>${esc(item.reference_count)}</td><td class="storage-actions">${actions || `<span class="muted">无可用操作</span>`}</td></tr>`;
+}
+
+function trashRow(item) {
+  return `<tr><td class="storage-select-cell">${storageSelectionCheckbox("trash", item)}</td><td><span class="mono">${esc(short(item.run_id))}</span><small>${esc(item.workflow_id)}</small></td><td>${status(item.carrier?.read_preference || "trash")}</td><td>${esc(bytes(item.allocated_bytes))}</td><td>${esc(dateText(item.delete_after_utc))}</td><td>${storageAction(item, "restore", "恢复")}</td></tr>`;
+}
+
+function storageSelectionFor(view) {
+  return view === "trash" ? state.trashSelection : state.storageSelection;
+}
+
+function storagePageData(view, rows) {
+  const pageKey = view === "trash" ? "trashPage" : "storagePage";
+  const sizeKey = view === "trash" ? "trashPageSize" : "storagePageSize";
+  const pageSize = state[sizeKey];
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+  state[pageKey] = Math.min(Math.max(1, state[pageKey]), pageCount);
+  const start = (state[pageKey] - 1) * pageSize;
+  return {
+    items: rows.slice(start, start + pageSize),
+    page: state[pageKey],
+    pageCount,
+    pageSize,
+    start,
+    total: rows.length,
+  };
+}
+
+function pruneStorageSelection(view, rows) {
+  const available = new Set(rows.map((item) => item.run_id));
+  const selection = storageSelectionFor(view);
+  [...selection].forEach((runId) => { if (!available.has(runId)) selection.delete(runId); });
+}
+
+function storageBatchActions(view) {
+  return view === "trash"
+    ? [["restore", "批量恢复"]]
+    : [["keep", "批量长期保存"], ["archive", "批量归档"], ["trash", "批量移入回收站"]];
+}
+
+function storageBatchActionAllowed(item, action) {
+  if (action === "keep") return item.storage_state === "hot" && item.retention_state !== "manual_keep" && !(item.blockers || []).length;
+  return (item.allowed_actions || []).includes(action);
+}
+
+function storageBatchSelectable(view, item) {
+  return storageBatchActions(view).some(([action]) => storageBatchActionAllowed(item, action));
+}
+
+function storageSelectionCheckbox(view, item) {
+  const enabled = storageBatchSelectable(view, item);
+  const selected = storageSelectionFor(view).has(item.run_id);
+  return `<input type="checkbox" data-storage-select="${esc(item.run_id)}" aria-label="选择实验 ${esc(short(item.run_id))}" ${selected ? "checked" : ""} ${enabled ? "" : "disabled title=\"此记录没有可用的批量操作\""}>`;
+}
+
+function selectedStorageItems(view) {
+  const selection = storageSelectionFor(view);
+  const catalog = view === "trash" ? state.trash : state.storage;
+  return (catalog?.items || []).filter((item) => selection.has(item.run_id));
+}
+
+function storageBatchButton(view, action, label) {
+  const items = selectedStorageItems(view);
+  const catalogBlock = storageCatalogBlockReason(view);
+  const incompatible = items.filter((item) => !storageBatchActionAllowed(item, action));
+  const eligibleCount = items.length - incompatible.length;
+  const enabled = !catalogBlock && items.length > 0 && (action === "trash" ? eligibleCount > 0 : incompatible.length === 0);
+  const reason = catalogBlock || (!items.length ? "请先选择实验" : !eligibleCount ? "已选实验均不可移入回收站" : incompatible.length ? `${incompatible.length} 个已选实验不支持此操作` : "");
+  return `<button type="button" class="button ${action === "trash" ? "danger" : "secondary"}" data-storage-batch="${esc(action)}" ${enabled ? "" : `disabled title="${esc(reason)}"`}>${esc(label)}</button>`;
+}
+
+function storageBatchToolbar(view, page) {
+  const selection = storageSelectionFor(view);
+  const selectable = page.items.filter((item) => storageBatchSelectable(view, item));
+  const selectedOnPage = selectable.filter((item) => selection.has(item.run_id)).length;
+  const checked = selectable.length > 0 && selectedOnPage === selectable.length;
+  return `<div class="storage-batch-toolbar" role="toolbar" aria-label="批量操作">
+    <label class="storage-select-page"><input id="${view}-select-page" type="checkbox" ${checked ? "checked" : ""} ${selectable.length ? "" : "disabled"}><span>选择当前页</span></label>
+    <span class="storage-selection-count">已选择 <strong>${selection.size}</strong> 项</span>
+    <div class="storage-batch-actions">${storageBatchActions(view).map(([action, label]) => storageBatchButton(view, action, label)).join("")}<button type="button" class="button secondary" data-storage-clear ${selection.size ? "" : "disabled"}>清空选择</button></div>
+  </div>`;
+}
+
+function storagePagination(view, page) {
+  const sizeOptions = [10, 20, 50].map((size) => `<option value="${size}" ${page.pageSize === size ? "selected" : ""}>${size} 条</option>`).join("");
+  const first = page.total ? page.start + 1 : 0;
+  const last = Math.min(page.start + page.pageSize, page.total);
+  return `<div class="storage-pagination" aria-label="分页">
+    <span>${first}-${last} / 共 ${page.total} 条</span>
+    <label>每页 <select data-storage-page-size aria-label="每页记录数">${sizeOptions}</select></label>
+    <div class="storage-page-controls"><button type="button" class="storage-page-nav" data-storage-page="-1" title="上一页" aria-label="上一页" ${page.page <= 1 ? "disabled" : ""}>‹</button><strong>${page.page} / ${page.pageCount}</strong><button type="button" class="storage-page-nav" data-storage-page="1" title="下一页" aria-label="下一页" ${page.page >= page.pageCount ? "disabled" : ""}>›</button></div>
+  </div>`;
+}
+
+function installStorageControls(view, page) {
+  const selection = storageSelectionFor(view);
+  const selectPage = app.querySelector(`#${view}-select-page`);
+  const selectable = page.items.filter((item) => storageBatchSelectable(view, item));
+  const selectedOnPage = selectable.filter((item) => selection.has(item.run_id)).length;
+  if (selectPage) {
+    selectPage.indeterminate = selectedOnPage > 0 && selectedOnPage < selectable.length;
+    selectPage.addEventListener("change", () => {
+      setStoragePageSelection(view, selectable, selectPage.checked);
+      view === "trash" ? renderTrash() : renderStorage();
+    });
+  }
+  app.querySelectorAll("[data-storage-select]").forEach((checkbox) => checkbox.addEventListener("change", () => {
+    checkbox.checked ? selection.add(checkbox.dataset.storageSelect) : selection.delete(checkbox.dataset.storageSelect);
+    view === "trash" ? renderTrash() : renderStorage();
+  }));
+  app.querySelector("[data-storage-clear]")?.addEventListener("click", () => {
+    selection.clear();
+    view === "trash" ? renderTrash() : renderStorage();
+  });
+  app.querySelector("[data-storage-page-size]")?.addEventListener("change", (event) => {
+    state[view === "trash" ? "trashPageSize" : "storagePageSize"] = Number(event.target.value);
+    state[view === "trash" ? "trashPage" : "storagePage"] = 1;
+    view === "trash" ? renderTrash() : renderStorage();
+  });
+  app.querySelectorAll("[data-storage-page]").forEach((button) => button.addEventListener("click", () => {
+    const pageKey = view === "trash" ? "trashPage" : "storagePage";
+    state[pageKey] += Number(button.dataset.storagePage);
+    view === "trash" ? renderTrash() : renderStorage();
+  }));
+  app.querySelectorAll("[data-storage-batch]").forEach((button) => button.addEventListener("click", () => openStorageBatchAction(view, button.dataset.storageBatch)));
+}
+
+function setStoragePageSelection(view, items, selected) {
+  const selection = storageSelectionFor(view);
+  items.forEach((item) => selected ? selection.add(item.run_id) : selection.delete(item.run_id));
 }
 
 function storageAction(item, action, label) {
@@ -2295,8 +2649,8 @@ function activeStorageCatalog() {
   return (location.hash || "#/overview") === "#/trash" ? state.trash : state.storage;
 }
 
-function storageCatalogBlockReason() {
-  const catalog = activeStorageCatalog();
+function storageCatalogBlockReason(view = null) {
+  const catalog = view === "trash" ? state.trash : view === "storage" ? state.storage : activeStorageCatalog();
   if (catalog?.refreshing) return "存储目录正在更新，暂时不能执行操作";
   if (catalog?.refresh_error) return "存储目录更新失败，请刷新后重试";
   return "";
@@ -2338,6 +2692,94 @@ function openStorageAction(item, action) {
   });
 }
 
+function openStorageBatchAction(view, action) {
+  const catalogBlock = storageCatalogBlockReason(view);
+  if (catalogBlock) {
+    toast(catalogBlock, true);
+    return;
+  }
+  const selectedItems = selectedStorageItems(view);
+  if (!selectedItems.length) {
+    toast("请先选择实验", true);
+    return;
+  }
+  const incompatible = selectedItems.filter((item) => !storageBatchActionAllowed(item, action));
+  const items = action === "trash"
+    ? selectedItems.filter((item) => storageBatchActionAllowed(item, action))
+    : selectedItems;
+  if (!items.length || (action !== "trash" && incompatible.length)) {
+    toast(`${incompatible.length} 个已选实验不支持此操作`, true);
+    return;
+  }
+  const label = { keep: "批量长期保存", archive: "批量归档", trash: "批量移入回收站", restore: "批量恢复" }[action];
+  const preview = items.slice(0, 5).map((item) => `<li class="mono">${esc(item.run_id)}</li>`).join("");
+  const remainder = items.length > 5 ? `<li>另有 ${items.length - 5} 项</li>` : "";
+  const skipped = action === "trash" && incompatible.length
+    ? `<p class="storage-batch-warning">另有 <strong>${incompatible.length}</strong> 个受引用、长期保留或状态受限的已选实验不会处理。</p>`
+    : "";
+  const reasonField = action === "trash" ? "" : `<div class="field"><label for="dialog-storage-reason">原因</label><input id="dialog-storage-reason" required maxlength="240" value="Web batch storage management"></div>`;
+  const body = `<p>将处理 <strong>${items.length}</strong> 个实验，每项都会生成独立审计记录。</p>${skipped}<ul class="storage-batch-summary">${preview}${remainder}</ul>${reasonField}`;
+  openDialog(label, body, action === "trash" ? "确认移入回收站" : "确认", async () => {
+    const reason = action === "trash" ? "Web batch move to trash" : document.querySelector("#dialog-storage-reason").value.trim();
+    if (!reason) throw new Error("必须填写原因");
+    const catalogRevision = Number((view === "trash" ? state.trash : state.storage).catalog_revision);
+    let completed = [];
+    try {
+      completed = await mutateStorageBatch(items, action, reason, catalogRevision);
+    } catch (error) {
+      completed = Array.isArray(error.storageBatchCompleted) ? error.storageBatchCompleted : [];
+      completed.forEach((runId) => storageSelectionFor(view).delete(runId));
+      try {
+        await refreshAfterMutation(action === "trash" ? "#/trash" : "#/storage", "storage", "trash", "experiments", "overview");
+      } catch (_refreshError) {
+        // Keep the mutation failure as the primary error shown to the user.
+      }
+      const detail = error.code === "storage_catalog_refreshing" ? "存储目录正在更新"
+        : error.code === "storage_catalog_unavailable" ? "存储目录暂时不可用"
+        : error.message;
+      throw new Error(`批量操作已完成 ${completed.length}/${items.length} 项；${detail}`);
+    }
+    storageSelectionFor(view).clear();
+    await refreshAfterMutation(action === "trash" || action === "restore" ? (action === "trash" ? "#/trash" : "#/storage") : "#/storage", "storage", "trash", "experiments", "overview");
+  });
+}
+
+async function mutateStorageBatch(items, action, reason, startingCatalogRevision) {
+  if (action === "trash") {
+    const result = await mutate("/api/v1/experiment-storage/batch-trash", {
+      actor_id: actor(),
+      expected_catalog_revision: startingCatalogRevision,
+      items: items.map((item) => ({
+        run_id: item.run_id,
+        expected_workflow_sha256: item.workflow_sha256,
+      })),
+    });
+    if (!Number.isInteger(result.catalog_revision) || !Array.isArray(result.items)) {
+      throw new Error("服务器未返回有效的批量回收结果");
+    }
+    return result.items.map((item) => item.run_id);
+  }
+  let catalogRevision = startingCatalogRevision;
+  const completed = [];
+  try {
+    for (const item of items) {
+      const payload = { actor_id: actor(), expected_catalog_revision: catalogRevision, expected_workflow_sha256: item.workflow_sha256, reason };
+      if (action === "keep") payload.keep = true;
+      const endpoint = action === "restore"
+        ? `/api/v1/experiment-trash/${encodeURIComponent(item.run_id)}/restore`
+        : `/api/v1/experiments/${encodeURIComponent(item.run_id)}/${action}`;
+      const result = await mutate(endpoint, payload);
+      if (!Number.isInteger(result.catalog_revision)) throw new Error("服务器未返回新的目录版本，批量操作已停止");
+      catalogRevision = result.catalog_revision;
+      completed.push(item.run_id);
+    }
+  } catch (error) {
+    error.storageBatchCompleted = completed;
+    throw error;
+  }
+  return completed;
+}
+
 function bytes(value) { const amount = Number(value || 0); const units = ["B", "KiB", "MiB", "GiB", "TiB"]; let index = 0; let scaled = amount; while (scaled >= 1024 && index < units.length - 1) { scaled /= 1024; index += 1; } return `${scaled.toFixed(index ? 1 : 0)} ${units[index]}`; }
 
 function openDialog(titleText, body, confirmText, action) {
@@ -2349,7 +2791,19 @@ function openDialog(titleText, body, confirmText, action) {
   dialogForm.onsubmit = async (event) => {
     event.preventDefault();
     if (event.submitter?.value === "cancel") { dialog.close(); return; }
-    try { await action(); dialog.close(); } catch (error) { toast(error.message, true); }
+    confirmButton.disabled = true;
+    confirmButton.textContent = "处理中...";
+    dialogForm.setAttribute("aria-busy", "true");
+    try {
+      await action();
+      dialog.close();
+    } catch (error) {
+      toast(error.message, true);
+      confirmButton.disabled = false;
+      confirmButton.textContent = confirmText;
+    } finally {
+      dialogForm.removeAttribute("aria-busy");
+    }
   };
   dialog.showModal();
 }
@@ -2389,7 +2843,9 @@ function statusText(value) {
     verified: "已验证",
     invalid: "无效",
     eligible: "可生成候选",
-    blocked: "已阻止",
+    recommended: "推荐更新",
+    "not-recommended": "不推荐，可人工确认",
+    blocked: "候选不可更新",
     "data-only": "基础数据",
     passed: "通过",
     failed: "失败",

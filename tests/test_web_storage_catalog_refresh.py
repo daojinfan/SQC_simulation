@@ -88,6 +88,50 @@ def test_storage_catalog_token_ignores_running_staging_directories(
     assert second["catalog_revision"] == first["catalog_revision"]
 
 
+def test_storage_bootstrap_creates_reference_pin_root_before_warmup(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+
+    service.bootstrap_roots()
+
+    assert (service.storage_root / "pins").is_dir()
+
+
+def test_reference_token_tracks_contract_files_without_hashing_payload_churn(
+    tmp_path: Path,
+) -> None:
+    configuration = tmp_path / "configuration"
+    experiments = tmp_path / "experiments"
+    pins = tmp_path / "pins"
+    run = experiments / "published-run"
+    for directory in (configuration, run, pins):
+        directory.mkdir(parents=True)
+    workflow = run / "workflow.json"
+    workflow.write_text('{"revision":1}', encoding="utf-8")
+    payload = run / "result.bin"
+    payload.write_bytes(b"first")
+
+    baseline = server_module._reference_authority_token(
+        configuration, experiments, pins
+    )
+    payload.write_bytes(b"second")
+    assert server_module._reference_authority_token(
+        configuration, experiments, pins
+    ) == baseline
+
+    workflow.write_text('{"revision":2}', encoding="utf-8")
+    workflow_changed = server_module._reference_authority_token(
+        configuration, experiments, pins
+    )
+    assert workflow_changed != baseline
+
+    (run / "decision.json").write_text('{"decision":"accept"}', encoding="utf-8")
+    assert server_module._reference_authority_token(
+        configuration, experiments, pins
+    ) != workflow_changed
+
+
 def test_failed_background_refresh_is_reported_and_backed_off(tmp_path: Path) -> None:
     service = _service(tmp_path)
     baseline = service.overview()

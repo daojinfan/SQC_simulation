@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -546,7 +547,7 @@ class CalibrationWebIndex:
                     ],
                     "analysis": workflow["analysis"],
                     "recommendation_id": workflow.get("recommendation_id"),
-                    "candidates": _web_candidates(workflow.get("candidates")),
+                    "candidates": _web_candidate_read_model(workflow.get("candidates")),
                     "gates": workflow.get("gates", []),
                     "decision_refs": [],
                     "evidence_paths": [
@@ -556,10 +557,10 @@ class CalibrationWebIndex:
                 }
             if summary["workflow_id"] == RABI_X2P_WORKFLOW_ID:
                 dataset = self._read_json(directory / "dataset.json", "Rabi dataset")
-                candidate_rows = _web_candidates(workflow.get("candidates"))
+                analysis = workflow.get("analysis", {})
+                candidate_rows = _rabi_web_candidates(workflow)
                 candidate_value = _rabi_candidate_amplitude(candidate_rows)
                 target = _rabi_target(workflow, dataset)
-                analysis = workflow.get("analysis", {})
                 return {
                     **summary,
                     "renderer": "qubit_rabi_x2p_amplitude",
@@ -576,7 +577,7 @@ class CalibrationWebIndex:
                     ],
                     "analysis": analysis,
                     "recommendation_id": workflow.get("recommendation_id"),
-                    "candidates": candidate_rows,
+                    "candidates": _candidate_read_model_rows(candidate_rows),
                     "gates": workflow.get("gates", []),
                     "rabi_detail": _rabi_detail_projection(
                         workflow, dataset, candidate_rows, target, analysis
@@ -620,7 +621,7 @@ class CalibrationWebIndex:
             "plot_specs": [build_spectroscopy_plot_spec(summary["targets"], datasets)],
             "analyses": workflow["analyses"],
             "gates": workflow["gates"],
-            "candidates": _web_candidates(workflow.get("candidates")),
+            "candidates": _web_candidate_read_model(workflow.get("candidates")),
             "plot_url": f"/api/v1/experiments/{run_id}/asset/spectroscopy.png",
             "decision_refs": decisions,
             "evidence_paths": evidence_paths,
@@ -724,8 +725,12 @@ class CalibrationWebIndex:
                 scan_request = request if isinstance(request, Mapping) else {}
             gates = workflow.get("gates", [])
             candidates = workflow.get("candidates", [])
+            if workflow_id == RABI_X2P_WORKFLOW_ID:
+                candidates = _rabi_web_candidates(workflow)
             passed = sum(row.get("passed") is True for row in gates if isinstance(row, Mapping))
             failed = sum(row.get("passed") is False for row in gates if isinstance(row, Mapping))
+            if workflow_id == RABI_X2P_WORKFLOW_ID:
+                passed, failed = _rabi_gate_counts(workflow, scan_request)
             return {
                 "run_id": run_id,
                 "workflow_id": workflow_id,
@@ -740,7 +745,7 @@ class CalibrationWebIndex:
                     else workflow_id
                 ),
                 "status": workflow.get("status", "unknown"),
-                "created_utc": workflow.get("created_utc"),
+                "created_utc": _experiment_created_utc(workflow, path),
                 "data_origin": (
                     claim.get("evidence_class")
                     if isinstance(claim, Mapping)
@@ -1267,6 +1272,56 @@ def _web_candidates(value: Any) -> list[dict[str, Any]]:
         raise WebArtifactError(f"workflow candidate is invalid: {exc}") from exc
 
 
+def _candidate_read_model_rows(
+    candidates: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expose recommendation as advice, never as the Web write permission."""
+
+    rows = []
+    for candidate in candidates:
+        row = dict(candidate)
+        recommended = row.get("recommendation_eligible") is True
+        row["application_status"] = (
+            "recommended" if recommended else "manual_confirmation_required"
+        )
+        row["recommendation_reason"] = row.get("reason")
+        rows.append(row)
+    return rows
+
+
+def _web_candidate_read_model(value: Any) -> list[dict[str, Any]]:
+    return _candidate_read_model_rows(_web_candidates(value))
+
+
+def _experiment_created_utc(workflow: Mapping[str, Any], path: Path) -> str:
+    created_utc = workflow.get("created_utc")
+    if isinstance(created_utc, str) and created_utc:
+        return created_utc
+    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def _rabi_gate_counts(
+    workflow: Mapping[str, Any], request: Mapping[str, Any]
+) -> tuple[int, int]:
+    analysis = workflow.get("analysis")
+    phase = workflow.get("phase_audit")
+    values = (
+        request.get("analysis_policy_approved") is True,
+        isinstance(analysis, Mapping) and analysis.get("fit_converged") is True,
+        (
+            isinstance(phase, Mapping) and phase.get("passed") is True
+        )
+        or (
+            isinstance(analysis, Mapping)
+            and analysis.get("phase_audit_passed") is True
+        ),
+        workflow.get("recommendation_eligible") is True,
+    )
+    return sum(values), len(values) - sum(values)
+
+
 def _rabi_target(workflow: Mapping[str, Any], dataset: Mapping[str, Any]) -> str:
     target = workflow.get("target")
     if not isinstance(target, str) or not target:
@@ -1277,6 +1332,17 @@ def _rabi_target(workflow: Mapping[str, Any], dataset: Mapping[str, Any]) -> str
     if not isinstance(target, str) or not target:
         raise WebArtifactError("Rabi target is missing")
     return target
+
+
+def _rabi_web_candidates(workflow: Mapping[str, Any]) -> list[dict[str, Any]]:
+    candidates = _web_candidates(workflow.get("candidates"))
+    analysis = workflow.get("analysis")
+    if (
+        not isinstance(analysis, Mapping)
+        or analysis.get("x2p_amplitude_GHz") is None
+    ):
+        return []
+    return candidates
 
 
 def _rabi_candidate_amplitude(candidates: list[Mapping[str, Any]]) -> float | None:

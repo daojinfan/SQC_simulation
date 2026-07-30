@@ -26,7 +26,12 @@ from sqvm.candidate_protocol import calibration_candidate, parameter_change
 from sqvm.calibration.rabi_phase import RabiPhaseAuditError, audit_two_x2p_phase
 from sqvm.circuits import CircuitExecutionContext, CircuitExecutionProfile, QCISCircuit, compile_circuit
 from sqvm.qcis.canonical import canonical_float, canonical_json_bytes, sha256_json
-from sqvm.runtime.batch import CircuitBatchHandle, run_circuit_batch, verify_circuit_batch
+from sqvm.runtime.batch import (
+    CircuitBatchError,
+    CircuitBatchHandle,
+    run_circuit_batch,
+    verify_circuit_batch,
+)
 from sqvm.runtime.journal import utc_now_text
 from sqvm.runtime.lifecycle import CancellationToken
 from sqvm.runtime.publication import publish_calibration_directory
@@ -48,6 +53,7 @@ RABI_ERROR_CODES = frozenset({
     "rabi_xy2_setting_invalid",
     "rabi_set_path_unavailable",
     "rabi_compilation_invalid",
+    "rabi_control_preflight_failed",
     "rabi_phase_audit_failed",
     "rabi_result_invalid",
     "rabi_fit_not_converged",
@@ -254,15 +260,29 @@ def run_qubit_rabi_scan(
         supplied = _phase_audits(circuits, context, phase_auditor)
         if any(audit.get("passed") is False for audit in supplied):
             raise RabiError("rabi_phase_audit_failed")
-    batch = run_circuit_batch(
-        circuits, context, staging / "execution", root, batch_id=run_id,
-        experiment_request=_request_payload(request, context, parent_sha),
-        metadata={"run_id": run_id, "recommendation_id": recommendation_id, "created_utc": utc_now_text(), "parent_configuration_sha256": parent_sha},
-        coordinator_root=target.parent / ".runtime-v03", readout_qubit=((request.target,),),
-        point_timeout_s=timeout_s, batch_deadline_s=batch_deadline_s,
-        execution_profile=execution_profile, cancellation_token=cancellation_token,
-        progress_callback=progress_callback,
-    )
+    try:
+        batch = run_circuit_batch(
+            circuits, context, staging / "execution", root, batch_id=run_id,
+            experiment_request=_request_payload(request, context, parent_sha),
+            metadata={"run_id": run_id, "recommendation_id": recommendation_id, "created_utc": utc_now_text(), "parent_configuration_sha256": parent_sha},
+            coordinator_root=target.parent / ".runtime-v03", readout_qubit=((request.target,),),
+            point_timeout_s=timeout_s, batch_deadline_s=batch_deadline_s,
+            execution_profile=execution_profile, cancellation_token=cancellation_token,
+            progress_callback=progress_callback,
+        )
+    except CircuitBatchError as exc:
+        if exc.code != "circuit_control_preflight_failed":
+            raise
+        try:
+            staging.rmdir()
+        except OSError:
+            pass
+        raise RabiError("rabi_control_preflight_failed", exc.detail) from exc
+    created_utc = batch.metadata.get("created_utc")
+    if not isinstance(created_utc, str) or not created_utc:
+        raise RabiError(
+            "rabi_recovery_required", "runtime batch creation time is invalid"
+        )
     dataset = _dataset(request, batch, audits, context)
     dataset_sha = write_canonical_new(staging / "dataset.json", dataset.to_dict())
     dataset = replace(dataset, dataset_sha256=dataset_sha)
@@ -279,6 +299,7 @@ def run_qubit_rabi_scan(
     workflow = {
         "schema_version": "0.1", "artifact_type": "qubit_rabi_x2p_amplitude_scan", "artifact_version": "0.1",
         "workflow_id": RABI_SCAN_WORKFLOW_ID, "run_id": run_id, "recommendation_id": recommendation_id,
+        "created_utc": created_utc,
         "status": "completed", "parent_configuration": {"path": parent.relative_to(root).as_posix(), "sha256": parent_sha, "snapshot_id": context.platform_snapshot_id},
         "request": _request_payload(request, context, parent_sha),
         "dataset": {"path": "dataset.json", "sha256": dataset_sha}, "runtime_batch": _runtime_batch_payload(batch),
@@ -300,7 +321,12 @@ def run_qubit_rabi_scan(
     write_canonical_new(staging / "manifest.json", {"artifact_type": "rabi_scan_manifest", "workflow_sha256": workflow_sha, "dataset_sha256": dataset_sha, "receipt_sha256": receipt_sha})
     _verify_staging_for_publish(staging, request, context, parent_sha, root)
     publish_calibration_directory(staging, target)
-    return RabiRun(target, run_id, recommendation_id, _relocate_dataset(dataset, staging, target), analysis, eligible, MappingProxyType({request.target: MappingProxyType(candidates[0])}), workflow_sha, receipt_sha)
+    candidate_by_target = (
+        MappingProxyType({request.target: MappingProxyType(candidates[0])})
+        if candidates
+        else MappingProxyType({})
+    )
+    return RabiRun(target, run_id, recommendation_id, _relocate_dataset(dataset, staging, target), analysis, eligible, candidate_by_target, workflow_sha, receipt_sha)
 
 
 def analyze_rabi(dataset: RabiDataset, *, policy: Mapping[str, Any] | None = None) -> RabiAnalysis:
@@ -466,8 +492,7 @@ def _static_phase_audits(circuits: Sequence[QCISCircuit], context: CircuitExecut
 def _candidates(request: RabiRequest, analysis: RabiAnalysis, dataset_sha: str, setting_id: str, setting: Mapping[str, Any], eligible: bool) -> list[dict[str, Any]]:
     proposed = analysis.x2p_amplitude_GHz
     if proposed is None:
-        proposed = float(setting["amplitude_GHz"])
-        eligible = False
+        return []
     path = f"calibration_values.waveform_registry.settings.{setting_id}.amplitude_GHz"
     return [calibration_candidate(f"{request.target}:xy2_amplitude:{dataset_sha[:16]}", request.target, [parameter_change(path, setting["amplitude_GHz"], proposed, unit="GHz", configuration_resource={"owner": request.target, "resource_type": "waveform_setting", "resource_id": setting_id})], recommendation_eligible=eligible, candidate_type="xy2_amplitude", source_dataset_sha256s=[dataset_sha], quality_metrics=analysis.to_dict(), reason=None if eligible else "Rabi recommendation requires an approved policy, accepted frequency, converged fit, and phase audit")]
 

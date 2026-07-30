@@ -244,6 +244,11 @@ def _analysis(
 def _candidate(workflow: Mapping[str, Any], dataset_sha: str) -> None:
     candidates = workflow.get("candidates")
     request = workflow["request"]
+    proposed = workflow["analysis"].get("x2p_amplitude_GHz")
+    if proposed is None and candidates == []:
+        if workflow.get("recommendation_eligible") is not False:
+            raise RabiReaderVerificationError("rabi candidate count is invalid")
+        return
     if not isinstance(candidates, list) or len(candidates) != 1 or not isinstance(candidates[0], Mapping):
         raise RabiReaderVerificationError("rabi candidate count is invalid")
     candidate = candidates[0]
@@ -258,7 +263,6 @@ def _candidate(workflow: Mapping[str, Any], dataset_sha: str) -> None:
     if normalized.get("schema") != "calibration_candidate_v1" or not isinstance(normalized.get("candidate_id"), str) or not normalized["candidate_id"] or normalized.get("target") != request.get("target") or normalized.get("calibration_subjects") != [request.get("target")] or normalized.get("candidate_type") != "xy2_amplitude" or normalized.get("recommendation_eligible") is not workflow.get("recommendation_eligible") or normalized.get("source_dataset_sha256s") != [dataset_sha] or normalized.get("quality_metrics") != workflow.get("analysis") or not isinstance(changes, list) or len(changes) != 1 or (workflow.get("recommendation_eligible") and normalized.get("reason") is not None) or (not workflow.get("recommendation_eligible") and not isinstance(normalized.get("reason"), str)):
         raise RabiReaderVerificationError("rabi candidate binding is invalid")
     change = changes[0]
-    proposed = workflow["analysis"].get("x2p_amplitude_GHz")
     expected_proposed = request.get("setting_amplitude_GHz") if proposed is None else proposed
     resource = {"owner": request.get("target"), "resource_type": "waveform_setting", "resource_id": request.get("setting_id")}
     if not isinstance(change, Mapping) or change.get("parameter_path") != expected_path or change.get("unit") != "GHz" or change.get("configuration_resource") != resource or normalized.get("configuration_resources") != [resource] or not _number(change.get("current_value")) or not _number(change.get("proposed_value")) or not _number(request.get("setting_amplitude_GHz")) or not math.isclose(float(change["current_value"]), float(request["setting_amplitude_GHz"]), rel_tol=0.0, abs_tol=1e-12) or not math.isclose(float(change["proposed_value"]), float(expected_proposed), rel_tol=0.0, abs_tol=1e-12) or (workflow.get("recommendation_eligible") and request.get("analysis_policy_approved") is not True) or (proposed is None and workflow.get("recommendation_eligible")):
