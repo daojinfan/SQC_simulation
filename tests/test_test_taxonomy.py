@@ -12,7 +12,7 @@ from tests.conftest import ITEM_PRIMARY_MARKERS, MODULE_PRIMARY_MARKERS, PRIMARY
 
 MIXED_MODULE_PRIMARY_MARKERS = {
     "tests/test_run_circuits.py": {
-        "integration": 12,
+        "integration": 13,
         "physics_slow": 1,
     },
     "tests/test_stage51_verified_control_admission.py": {
