@@ -6,6 +6,7 @@ pytestmark = _pytest.mark.integration
 
 from pathlib import Path
 from types import SimpleNamespace
+import os
 import subprocess
 import sys
 
@@ -123,6 +124,8 @@ def test_x2p_rabi_notebook_uses_the_current_public_api_and_real_run_shape():
     assert "result.data.get(TARGET)" in source
     assert "candidate.get('recommendation_eligible') is not True" in source
 
+    environment = os.environ.copy()
+    environment["PYTHONIOENCODING"] = "cp1252"
     for working_directory in (ROOT, ROOT / "user"):
         completed = subprocess.run(
             [sys.executable, "-c", cells["rabi-imports"]],
@@ -130,8 +133,10 @@ def test_x2p_rabi_notebook_uses_the_current_public_api_and_real_run_shape():
             capture_output=True,
             text=True,
             check=False,
+            env=environment,
         )
         assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "SQVM Rabi API imported"
 
     namespace: dict[str, object] = {"__name__": "__notebook_validation__"}
     exec(compile(cells["rabi-imports"], f"{path}:imports", "exec"), namespace)
