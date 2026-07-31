@@ -1746,15 +1746,20 @@ docs/reviews/07_1_14_candidate_decision_override_acceptance_matrix.md
 ```text
 校正 README 与 calibration README 中已经过时的 Rabi/X2P 实现状态。
 在路线图中只追加当前进度，不改变既有阶段目标或验收条件。
-新增 development baseline release closeout，绑定 PR #9、远端 7d47984 与本地 825b24d。
-记录远端 qualification/hosted evidence 通过，以及两平台 physics 实际 206 passed 后被旧 204 计数锁拦截。
+新增 development baseline release closeout，绑定 PR #9、计数修复 825b24d 与首轮新候选 0835842f。
+825b24d 与首版文档提交已推送为 0835842f；Release Gate run 为 30601295041。
+Windows/Linux physics 均通过，证明 206 testcase 计数锁已关闭。
+qualification/hosted evidence 除 Windows integration 外均通过；Windows integration 为 592 passed/1 failed。
+唯一失败是 registrar 的 O_EXCL Windows PermissionError 未被旧协议识别为既存锁竞争。
+本地修复 5d0f7a1c 已通过独立 QA，但尚未推送。
 ```
 
 当前边界：
 
 ```text
-本地 825b24d 的计数修复尚未推送，新的远端门禁尚未运行。
-最终候选与全绿状态均为 pending；main 未合并，未发布。
+首轮新候选 0835842f 不是全绿；其 release-gate-main 因 Windows integration 失败而未通过。
+包含 5d0f7a1c 的下一候选尚未形成，新的远端门禁尚未运行。
+下一候选、release-gate-main 与最终全绿状态均为 pending；main 未合并，未发布。
 本条不得解释为 completed 或 GO。
 ```
 
@@ -1765,4 +1770,6 @@ git diff --check passed。
 py -3.12 -m compileall -q src tests passed。
 py -3.12 tools/verify_authority_drift.py passed。
 tests/test_user_notebooks.py 与 tests/test_test_taxonomy.py：6 passed。
+5d0f7a1c 独立 QA：registrar 11 passed；相关 Web integration 83 passed；并发用例连续 30 次通过。
+5d0f7a1c 附加检查：taxonomy 3 passed；monkeypatch 恢复为 True；compileall、authority drift、diff check passed。
 ```
