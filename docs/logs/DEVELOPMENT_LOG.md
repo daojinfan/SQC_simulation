@@ -1733,34 +1733,38 @@ docs/results/2026-07-29-candidate-decision-override.md
 docs/reviews/07_1_14_candidate_decision_override_acceptance_matrix.md
 ```
 
-## 2026-07-31: Rabi/X2P 开发基线发布收尾实施中
+## 2026-07-31: Rabi/X2P 开发基线与 v0.1.0 发布准备完成
 
 阶段：
 
 ```text
-文档与发布报告收口（实施中）
+文档、代码基线与发布证据收口
 ```
 
-当前工作：
+完成工作：
 
 ```text
 校正 README 与 calibration README 中已经过时的 Rabi/X2P 实现状态。
 在路线图中只追加当前进度，不改变既有阶段目标或验收条件。
-新增 development baseline release closeout，绑定 PR #9、计数修复 825b24d 与首轮新候选 0835842f。
-825b24d 与首版文档提交已推送为 0835842f；Release Gate run 为 30601295041。
+新增 development baseline release closeout，绑定 PR #9、计数修复 825b24d 与首轮候选 0835842f。
+825b24d 与首版文档提交形成 0835842f；Release Gate run 为 30601295041。
 Windows/Linux physics 均通过，证明 206 testcase 计数锁已关闭。
 qualification/hosted evidence 除 Windows integration 外均通过；Windows integration 为 592 passed/1 failed。
 唯一失败是 registrar 的 O_EXCL Windows PermissionError 未被旧协议识别为既存锁竞争。
-本地修复 5d0f7a1c 已通过独立 QA，但尚未推送。
+5d0f7a1c 完成 fail-closed Windows 锁竞争修复并通过独立 QA。
+最终 PR head 0fbf7181 的 Release Gate 30602658456 全绿，release-gate-main 成功。
+PR #9 已 squash merge；main 合并提交为 c267e84f。
+合并提交的精确候选 Release Gate 30608406905 全绿，release-gate-main 成功。
+产品版本固定为 0.1.0；QCIS/Runtime v0.3 是子协议版本，不作为产品 tag。
 ```
 
-当前边界：
+发布边界：
 
 ```text
-首轮新候选 0835842f 不是全绿；其 release-gate-main 因 Windows integration 失败而未通过。
-包含 5d0f7a1c 的下一候选尚未形成，新的远端门禁尚未运行。
-下一候选、release-gate-main 与最终全绿状态均为 pending；main 未合并，未发布。
-本条不得解释为 completed 或 GO。
+首轮候选 0835842f 不是全绿，不得作为发布证据。
+最终 PR 候选 0fbf7181 与 main 合并提交 c267e84f 的门禁均已形成完整成功证据。
+v0.1.0 仍是 bounded pilot：Ramsey、DRAG、coupler/CZ 和硬件式 shot/IQ/readout 不在本次范围。
+Git tag 必须指向 main 历史中的最终发布提交；正式状态以 GitHub Release v0.1.0 为准。
 ```
 
 本地验证：
@@ -1772,4 +1776,6 @@ py -3.12 tools/verify_authority_drift.py passed。
 tests/test_user_notebooks.py 与 tests/test_test_taxonomy.py：6 passed。
 5d0f7a1c 独立 QA：registrar 11 passed；相关 Web integration 83 passed；并发用例连续 30 次通过。
 5d0f7a1c 附加检查：taxonomy 3 passed；monkeypatch 恢复为 True；compileall、authority drift、diff check passed。
+PR Release Gate 30602658456：success。
+main Release Gate 30608406905：success。
 ```
