@@ -171,6 +171,14 @@ CZ coarse scan
 参数更新必须人工接受
 ```
 
+当前进度（2026-07-31）：
+
+```text
+qubit spectroscopy 已实现。
+Rabi / X2P amplitude scan 已实现，并接入 Runtime 0.3、Web/存储读取和通用候选决策。
+Ramsey frequency refine、DRAG beta scan、coupler flux curve 和 CZ coarse scan 尚未实现。
+```
+
 ## 阶段 8: 读出模型
 
 目的：
@@ -186,6 +194,9 @@ CZ coarse scan
 可以生成合成 IQ 或 population 读出
 读出校准实验可以运行
 ```
+
+当前进度（2026-07-31）：Stage 8 尚未实现；当前结果仍是 dressed computational
+population，不是硬件 shot、IQ、assignment 或读出噪声模型。
 
 ## 阶段 9: Web Lab
 
@@ -203,6 +214,10 @@ CZ coarse scan
 图和拟合结果可见
 用户可以接受或拒绝推荐更新
 ```
+
+当前进度（2026-07-31）：Web 已支持当前配置、频谱/Rabi 结果与图、存储 v1 生命周期操作和
+显式候选决策；实验仍由后台 Python 工作流启动，Web 不发起 QuTiP 扫描。存储 v1 尚不包含
+自动保留、cleanup preview/apply、永久 purge 或配额执行。
 
 ## 阶段 10: 校准后的门仿真
 

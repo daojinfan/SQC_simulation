@@ -1732,3 +1732,37 @@ Result:
 docs/results/2026-07-29-candidate-decision-override.md
 docs/reviews/07_1_14_candidate_decision_override_acceptance_matrix.md
 ```
+
+## 2026-07-31: Rabi/X2P 开发基线发布收尾实施中
+
+阶段：
+
+```text
+文档与发布报告收口（实施中）
+```
+
+当前工作：
+
+```text
+校正 README 与 calibration README 中已经过时的 Rabi/X2P 实现状态。
+在路线图中只追加当前进度，不改变既有阶段目标或验收条件。
+新增 development baseline release closeout，绑定 PR #9、远端 7d47984 与本地 825b24d。
+记录远端 qualification/hosted evidence 通过，以及两平台 physics 实际 206 passed 后被旧 204 计数锁拦截。
+```
+
+当前边界：
+
+```text
+本地 825b24d 的计数修复尚未推送，新的远端门禁尚未运行。
+最终候选与全绿状态均为 pending；main 未合并，未发布。
+本条不得解释为 completed 或 GO。
+```
+
+本地验证：
+
+```text
+git diff --check passed。
+py -3.12 -m compileall -q src tests passed。
+py -3.12 tools/verify_authority_drift.py passed。
+tests/test_user_notebooks.py 与 tests/test_test_taxonomy.py：6 passed。
+```
