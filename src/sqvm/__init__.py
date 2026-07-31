@@ -68,8 +68,12 @@ __all__ = [
     "SpectroscopyParameterUpdate",
     "apply_calibration_candidates_to_current_configuration",
     "apply_spectroscopy_candidates_to_current_configuration",
+    "cancel_spectroscopy",
     "run_active_qubit_spectroscopy_calibration",
     "run_spectroscopy",
+    "RabiRun",
+    "cancel_rabi",
+    "run_rabi",
 ]
 
 __version__ = "0.1.0"
@@ -83,8 +87,12 @@ def __getattr__(name: str):
         "SpectroscopyParameterUpdate",
         "apply_calibration_candidates_to_current_configuration",
         "apply_spectroscopy_candidates_to_current_configuration",
+        "cancel_spectroscopy",
         "run_active_qubit_spectroscopy_calibration",
         "run_spectroscopy",
+        "RabiRun",
+        "cancel_rabi",
+        "run_rabi",
     }:
         from sqvm.calibration.api import (
             CalibrationCandidateUpdate,
@@ -93,8 +101,12 @@ def __getattr__(name: str):
             SpectroscopyParameterUpdate,
             apply_calibration_candidates_to_current_configuration,
             apply_spectroscopy_candidates_to_current_configuration,
+            cancel_spectroscopy,
             run_active_qubit_spectroscopy_calibration,
             run_spectroscopy,
+            RabiRun,
+            cancel_rabi,
+            run_rabi,
         )
 
         exports = {
@@ -104,8 +116,12 @@ def __getattr__(name: str):
             "SpectroscopyParameterUpdate": SpectroscopyParameterUpdate,
             "apply_calibration_candidates_to_current_configuration": apply_calibration_candidates_to_current_configuration,
             "apply_spectroscopy_candidates_to_current_configuration": apply_spectroscopy_candidates_to_current_configuration,
+            "cancel_spectroscopy": cancel_spectroscopy,
             "run_active_qubit_spectroscopy_calibration": run_active_qubit_spectroscopy_calibration,
             "run_spectroscopy": run_spectroscopy,
+            "RabiRun": RabiRun,
+            "cancel_rabi": cancel_rabi,
+            "run_rabi": run_rabi,
         }
         globals().update(exports)
         return exports[name]

@@ -17,8 +17,11 @@ import uuid
 import yaml
 
 from sqvm.candidate_protocol import (
+    CandidateApplicationDecision,
+    CandidateApplicationDecisionError,
     CalibrationCandidateProtocolError,
     candidate_values_equal,
+    normalize_candidate_application_decision,
     normalize_calibration_candidate,
     set_parameter_value,
     value_at_parameter_path,
@@ -35,6 +38,10 @@ from sqvm.web.configuration_schema import (
     publish_calibration,
     validate_document,
     validate_editable,
+)
+from sqvm.web.configuration_transactions import (
+    ConfigurationTransactionError,
+    ConfigurationTransactionManager,
 )
 
 
@@ -94,9 +101,21 @@ _ACCEPTANCE_FIELDS = {
 
 
 class ConfigurationManagementError(ValueError):
-    def __init__(self, message: str, *, status: int = 422, field_errors: Sequence[Mapping[str, str]] = ()) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int = 422,
+        field_errors: Sequence[Mapping[str, str]] = (),
+        code: str | None = None,
+        transaction_id: str | None = None,
+        retry_after: int | None = None,
+    ) -> None:
         self.status = status
         self.field_errors = [dict(item) for item in field_errors]
+        self.code = code
+        self.transaction_id = transaction_id
+        self.retry_after = retry_after
         super().__init__(message)
 
 
@@ -107,6 +126,8 @@ class PlatformConfigurationStore:
         self,
         repository_root: str | Path,
         storage_root: str | Path | None = None,
+        *,
+        _transactions_enabled: bool = True,
     ) -> None:
         self.repository_root = Path(repository_root).resolve()
         self.schema = load_frozen_schema(self.repository_root)
@@ -120,6 +141,109 @@ class PlatformConfigurationStore:
         self.active_root = self.root / "active"
         self.pins_root = self.root / "pins"
         self.audit_root = self.root / "audit"
+        self._transactions_enabled = _transactions_enabled
+        self._transaction_manager = ConfigurationTransactionManager(self.root)
+
+    def _managed_device_ids(self) -> tuple[str, ...]:
+        devices = set(self._transaction_manager.head_devices())
+        if self.current_root.is_dir():
+            devices.update(path.stem for path in self.current_root.glob("*.json"))
+        if self.active_root.is_dir():
+            devices.update(path.stem for path in self.active_root.glob("*.json"))
+        if self.snapshots_root.is_dir():
+            for path in self.snapshots_root.glob("*/snapshot.json"):
+                try:
+                    payload = self._load_json(path, "platform snapshot")
+                except ConfigurationManagementError:
+                    continue
+                if isinstance(payload.get("device_id"), str):
+                    devices.add(payload["device_id"])
+        if self.drafts_root.is_dir():
+            for path in self.drafts_root.glob("*/draft.json"):
+                try:
+                    payload = self._load_json(path, "configuration draft")
+                except ConfigurationManagementError:
+                    continue
+                if isinstance(payload.get("device_id"), str):
+                    devices.add(payload["device_id"])
+        for device_id in devices:
+            self._device(device_id)
+        return tuple(sorted(devices))
+
+    def _ensure_transaction_device(self, device_id: str) -> Any:
+        self._device(device_id)
+        if not self._transaction_manager.head_exists(device_id):
+            legacy = PlatformConfigurationStore(
+                self.repository_root,
+                self.root,
+                _transactions_enabled=False,
+            )
+            legacy._ensure_current_configuration(device_id)
+            legacy.current_configuration(device_id)
+        try:
+            return self._transaction_manager.ensure_imported(device_id, self.root)
+        except ConfigurationTransactionError as exc:
+            raise self._configuration_transaction_error(exc) from exc
+
+    def _transaction_reader(self, device_id: str) -> "PlatformConfigurationStore":
+        view = self._ensure_transaction_device(device_id)
+        return PlatformConfigurationStore(
+            self.repository_root,
+            view.projection_root,
+            _transactions_enabled=False,
+        )
+
+    def _transactional(
+        self,
+        *,
+        device_id: str,
+        operation_type: str,
+        operation_id: str | None,
+        request: Mapping[str, Any],
+        action: Callable[["PlatformConfigurationStore"], Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        self._ensure_transaction_device(device_id)
+
+        def transform(workspace: Path) -> Mapping[str, Any]:
+            worker = PlatformConfigurationStore(
+                self.repository_root,
+                workspace,
+                _transactions_enabled=False,
+            )
+            result = action(worker)
+            if not isinstance(result, Mapping):
+                raise ConfigurationManagementError(
+                    "configuration transaction response must be an object",
+                    status=500,
+                )
+            return result
+
+        try:
+            committed = self._transaction_manager.execute(
+                device_id=device_id,
+                operation_type=operation_type,
+                operation_id=operation_id,
+                request=request,
+                legacy_root=self.root,
+                transform=transform,
+            )
+        except ConfigurationTransactionError as exc:
+            raise self._configuration_transaction_error(exc) from exc
+        response = copy.deepcopy(dict(committed.response))
+        response["transaction"] = copy.deepcopy(dict(committed.transaction))
+        return response
+
+    @staticmethod
+    def _configuration_transaction_error(
+        exc: ConfigurationTransactionError,
+    ) -> ConfigurationManagementError:
+        return ConfigurationManagementError(
+            str(exc),
+            status=exc.status,
+            code=exc.code,
+            transaction_id=exc.transaction_id,
+            retry_after=exc.retry_after,
+        )
 
     def summary(self) -> dict[str, Any]:
         drafts = self.drafts()
@@ -143,6 +267,24 @@ class PlatformConfigurationStore:
         newest managed version) so the previous lifecycle remains readable.
         """
 
+        if self._transactions_enabled:
+            rows = []
+            for device_id in self._managed_device_ids():
+                try:
+                    payload = self._transaction_reader(device_id).current_configuration(
+                        device_id
+                    )
+                except ConfigurationManagementError as exc:
+                    if exc.status == 404:
+                        continue
+                    raise
+                rows.append(self._current_summary(payload))
+            rows.sort(
+                key=lambda row: (row["updated_utc"], row["device_id"]),
+                reverse=True,
+            )
+            return rows
+
         devices = {
             row["device_id"] for row in self.active_configurations()
         } | {
@@ -165,6 +307,8 @@ class PlatformConfigurationStore:
         return rows
 
     def current_configuration(self, device_id: str) -> dict[str, Any]:
+        if self._transactions_enabled:
+            return self._transaction_reader(device_id).current_configuration(device_id)
         self._device(device_id)
         self._ensure_current_configuration(device_id)
         path = self._current_path(device_id)
@@ -184,7 +328,29 @@ class PlatformConfigurationStore:
         name: str,
         note: str,
         editable: Mapping[str, Any],
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
+        if self._transactions_enabled:
+            return self._transactional(
+                device_id=device_id,
+                operation_type="update_current_configuration",
+                operation_id=operation_id,
+                request={
+                    "actor_id": actor_id,
+                    "expected_content_sha256": expected_content_sha256,
+                    "name": name,
+                    "note": note,
+                    "editable": copy.deepcopy(editable),
+                },
+                action=lambda store: store.update_current_configuration(
+                    device_id,
+                    actor_id=actor_id,
+                    expected_content_sha256=expected_content_sha256,
+                    name=name,
+                    note=note,
+                    editable=editable,
+                ),
+            )
         self._actor(actor_id)
         self._device(device_id)
         self._text(name, "name", 1, 96)
@@ -254,7 +420,23 @@ class PlatformConfigurationStore:
         *,
         actor_id: str,
         expected_content_sha256: str,
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
+        if self._transactions_enabled:
+            return self._transactional(
+                device_id=device_id,
+                operation_type="initialize_current_calibration",
+                operation_id=operation_id,
+                request={
+                    "actor_id": actor_id,
+                    "expected_content_sha256": expected_content_sha256,
+                },
+                action=lambda store: store.initialize_current_calibration(
+                    device_id,
+                    actor_id=actor_id,
+                    expected_content_sha256=expected_content_sha256,
+                ),
+            )
         self._actor(actor_id)
         payload = self._load_json(self._current_path(device_id), "current configuration")
         if payload["content_sha256"] != expected_content_sha256:
@@ -303,31 +485,73 @@ class PlatformConfigurationStore:
         experiment_run_id: str,
         recommendation_id: str,
         candidates: Sequence[Mapping[str, Any]],
+        decision: CandidateApplicationDecision | Mapping[str, Any] | None = None,
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
         """Apply verified calibration candidates to the mutable current configuration."""
+
+        try:
+            normalized_decision = normalize_candidate_application_decision(decision)
+        except CandidateApplicationDecisionError as exc:
+            raise ConfigurationManagementError(str(exc), code=exc.code) from exc
+        if self._transactions_enabled:
+            candidate_request = [copy.deepcopy(dict(row)) for row in candidates]
+            return self._transactional(
+                device_id=device_id,
+                operation_type="apply_candidates_to_current_configuration",
+                operation_id=operation_id,
+                request={
+                    "actor_id": actor_id,
+                    "expected_content_sha256": expected_content_sha256,
+                    "experiment_run_id": experiment_run_id,
+                    "recommendation_id": recommendation_id,
+                    "candidates": candidate_request,
+                    "decision": normalized_decision.to_dict(),
+                },
+                action=lambda store: store.apply_candidates_to_current_configuration(
+                    device_id,
+                    actor_id=actor_id,
+                    expected_content_sha256=expected_content_sha256,
+                    experiment_run_id=experiment_run_id,
+                    recommendation_id=recommendation_id,
+                    candidates=candidates,
+                    decision=normalized_decision,
+                ),
+            )
 
         self._actor(actor_id)
         self._device(device_id)
         if not candidates:
-            raise ConfigurationManagementError("at least one candidate is required")
+            raise ConfigurationManagementError(
+                "at least one candidate is required", code="candidate_update_invalid"
+            )
         payload = self._load_json(self._current_path(device_id), "current configuration")
         if payload["content_sha256"] != expected_content_sha256:
             raise ConfigurationManagementError(
-                "current configuration changed since it was loaded", status=409
+                "current configuration changed since it was loaded",
+                status=409,
+                code="candidate_configuration_conflict",
             )
         editable = copy.deepcopy(payload["editable"])
-        normalized_candidates = _apply_candidate_groups(editable, candidates)
+        old_content_sha256 = payload["content_sha256"]
+        normalized_candidates = _apply_candidate_groups(
+            editable, candidates, normalized_decision
+        )
         errors = validate_editable(editable, published=False)
         if errors:
             raise ConfigurationManagementError(
                 "candidate update would make current configuration invalid",
                 field_errors=errors,
+                code="candidate_update_invalid",
             )
         source_candidate = _candidate_source(
             experiment_run_id,
             recommendation_id,
             normalized_candidates,
             editable,
+            normalized_decision,
+            old_content_sha256=old_content_sha256,
+            new_content_sha256=sha256_json(editable),
         )
         payload.update(
             {
@@ -356,7 +580,10 @@ class PlatformConfigurationStore:
                 "recommendation_id": recommendation_id,
                 "candidate_ids": source_candidate["candidate_ids"],
                 "targets": source_candidate["targets"],
-                "content_sha256": payload["content_sha256"],
+                "decision": source_candidate["decision"],
+                "recommendation_snapshot": source_candidate["recommendation_snapshot"],
+                "old_content_sha256": old_content_sha256,
+                "new_content_sha256": payload["content_sha256"],
             },
         )
         self.snapshot_current_configuration(
@@ -379,7 +606,31 @@ class PlatformConfigurationStore:
         reason: str,
         keep: bool = False,
         _activate: bool = False,
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
+        if self._transactions_enabled:
+            return self._transactional(
+                device_id=device_id,
+                operation_type="snapshot_current_configuration",
+                operation_id=operation_id,
+                request={
+                    "actor_id": actor_id,
+                    "expected_content_sha256": expected_content_sha256,
+                    "name": name,
+                    "reason": reason,
+                    "keep": bool(keep),
+                    "activate": bool(_activate),
+                },
+                action=lambda store: store.snapshot_current_configuration(
+                    device_id,
+                    actor_id=actor_id,
+                    expected_content_sha256=expected_content_sha256,
+                    name=name,
+                    reason=reason,
+                    keep=keep,
+                    _activate=_activate,
+                ),
+            )
         self._actor(actor_id)
         self._device(device_id)
         self._text(name, "name", 1, 96)
@@ -491,7 +742,26 @@ class PlatformConfigurationStore:
         *,
         actor_id: str,
         expected_current_content_sha256: str,
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
+        if self._transactions_enabled:
+            snapshot = self.snapshot(snapshot_id)
+            device_id = str(snapshot["device_id"])
+            return self._transactional(
+                device_id=device_id,
+                operation_type="apply_snapshot_to_current",
+                operation_id=operation_id,
+                request={
+                    "snapshot_id": snapshot_id,
+                    "actor_id": actor_id,
+                    "expected_current_content_sha256": expected_current_content_sha256,
+                },
+                action=lambda store: store.apply_snapshot_to_current(
+                    snapshot_id,
+                    actor_id=actor_id,
+                    expected_current_content_sha256=expected_current_content_sha256,
+                ),
+            )
         self._actor(actor_id)
         snapshot = self.snapshot(snapshot_id)
         current = self._load_json(
@@ -718,11 +988,19 @@ class PlatformConfigurationStore:
         experiment_run_id: str,
         recommendation_id: str,
         candidates: Sequence[Mapping[str, Any]],
+        decision: CandidateApplicationDecision | Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._actor(actor_id)
+        try:
+            normalized_decision = normalize_candidate_application_decision(decision)
+        except CandidateApplicationDecisionError as exc:
+            raise ConfigurationManagementError(str(exc), code=exc.code) from exc
         if not candidates:
-            raise ConfigurationManagementError("at least one candidate is required")
+            raise ConfigurationManagementError(
+                "at least one candidate is required", code="candidate_update_invalid"
+            )
         payload = self._load_json(self._draft_path(draft_id), "draft")
+        old_content_sha256 = payload["content_sha256"]
         editable = copy.deepcopy(payload["editable"])
         initializing_calibration = editable.get("calibration_values") == {}
         if initializing_calibration:
@@ -732,18 +1010,24 @@ class PlatformConfigurationStore:
             if initializing_calibration
             else candidates
         )
-        normalized_candidates = _apply_candidate_groups(editable, candidate_rows)
+        normalized_candidates = _apply_candidate_groups(
+            editable, candidate_rows, normalized_decision
+        )
         errors = validate_editable(editable, published=False)
         if errors:
             raise ConfigurationManagementError(
                 "candidate update would make draft invalid",
                 field_errors=errors,
+                code="candidate_update_invalid",
             )
         source_candidate = _candidate_source(
             experiment_run_id,
             recommendation_id,
             normalized_candidates,
             editable,
+            normalized_decision,
+            old_content_sha256=old_content_sha256,
+            new_content_sha256=sha256_json(editable),
         )
         payload["editable"] = editable
         payload["updated_utc"] = utc_now_text()
@@ -765,6 +1049,10 @@ class PlatformConfigurationStore:
                 "experiment_run_id": experiment_run_id,
                 "candidate_ids": source_candidate["candidate_ids"],
                 "targets": source_candidate["targets"],
+                "decision": source_candidate["decision"],
+                "recommendation_snapshot": source_candidate["recommendation_snapshot"],
+                "old_content_sha256": old_content_sha256,
+                "new_content_sha256": payload["content_sha256"],
             },
         )
         return self.draft(draft_id)
@@ -829,7 +1117,54 @@ class PlatformConfigurationStore:
         name: str,
         reason: str,
         keep: bool = False,
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
+        if self._transactions_enabled:
+            draft = self.draft(draft_id)
+            device_id = str(draft["device_id"])
+
+            def publish(worker: "PlatformConfigurationStore") -> Mapping[str, Any]:
+                self._copy_managed_tree(
+                    self.drafts_root,
+                    draft_id,
+                    "draft",
+                    worker.drafts_root / draft_id,
+                )
+                result = worker.publish_draft(
+                    draft_id,
+                    actor_id=actor_id,
+                    expected_content_sha256=expected_content_sha256,
+                    name=name,
+                    reason=reason,
+                    keep=keep,
+                )
+                current_path = worker.current_root / f"{device_id}.json"
+                current = worker._load_json(
+                    current_path,
+                    "current configuration",
+                )
+                if (
+                    current.get("source_snapshot_id") is None
+                    and current.get("revision") == 1
+                ):
+                    current_path.unlink()
+                    worker._ensure_current_configuration(device_id)
+                return result
+
+            return self._transactional(
+                device_id=device_id,
+                operation_type="publish_draft",
+                operation_id=operation_id,
+                request={
+                    "draft_id": draft_id,
+                    "actor_id": actor_id,
+                    "expected_content_sha256": expected_content_sha256,
+                    "name": name,
+                    "reason": reason,
+                    "keep": bool(keep),
+                },
+                action=publish,
+            )
         self._actor(actor_id)
         self._text(name, "name", 1, 96)
         self._text(reason, "reason", 1, 1024)
@@ -902,6 +1237,20 @@ class PlatformConfigurationStore:
         return self.snapshot(snapshot_id)
 
     def snapshots(self) -> list[dict[str, Any]]:
+        if self._transactions_enabled:
+            rows = []
+            for device_id in self._managed_device_ids():
+                try:
+                    rows.extend(self._transaction_reader(device_id).snapshots())
+                except ConfigurationManagementError as exc:
+                    if exc.status == 404:
+                        continue
+                    raise
+            rows.sort(
+                key=lambda row: (row["published_utc"], row["snapshot_id"]),
+                reverse=True,
+            )
+            return rows
         if not self.snapshots_root.is_dir():
             return []
         active = {row["snapshot_id"] for row in self.active_configurations()}
@@ -934,6 +1283,15 @@ class PlatformConfigurationStore:
         return rows
 
     def snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        if self._transactions_enabled:
+            _uuid(snapshot_id, "snapshot_id")
+            for device_id in self._managed_device_ids():
+                try:
+                    return self._transaction_reader(device_id).snapshot(snapshot_id)
+                except ConfigurationManagementError as exc:
+                    if exc.status != 404:
+                        raise
+            raise ConfigurationManagementError("snapshot not found", status=404)
         path = self._snapshot_path(snapshot_id)
         payload = self._load_json(path, "platform snapshot")
         return {
@@ -950,7 +1308,26 @@ class PlatformConfigurationStore:
         *,
         actor_id: str,
         confirmation_phrase: str,
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
+        if self._transactions_enabled:
+            snapshot = self.snapshot(snapshot_id)
+            device_id = str(snapshot["device_id"])
+            return self._transactional(
+                device_id=device_id,
+                operation_type="set_active",
+                operation_id=operation_id,
+                request={
+                    "snapshot_id": snapshot_id,
+                    "actor_id": actor_id,
+                    "confirmation_phrase": confirmation_phrase,
+                },
+                action=lambda store: store.set_active(
+                    snapshot_id,
+                    actor_id=actor_id,
+                    confirmation_phrase=confirmation_phrase,
+                ),
+            )
         self._actor(actor_id)
         snapshot = self.snapshot(snapshot_id)
         expected = f"SET ACTIVE {snapshot_id}"
@@ -987,7 +1364,32 @@ class PlatformConfigurationStore:
         self._audit("snapshot_activated", actor_id, payload)
         return payload
 
-    def set_keep(self, snapshot_id: str, *, actor_id: str, keep: bool) -> dict[str, Any]:
+    def set_keep(
+        self,
+        snapshot_id: str,
+        *,
+        actor_id: str,
+        keep: bool,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
+        if self._transactions_enabled:
+            snapshot = self.snapshot(snapshot_id)
+            device_id = str(snapshot["device_id"])
+            return self._transactional(
+                device_id=device_id,
+                operation_type="set_keep",
+                operation_id=operation_id,
+                request={
+                    "snapshot_id": snapshot_id,
+                    "actor_id": actor_id,
+                    "keep": bool(keep),
+                },
+                action=lambda store: store.set_keep(
+                    snapshot_id,
+                    actor_id=actor_id,
+                    keep=keep,
+                ),
+            )
         self._actor(actor_id)
         self.snapshot(snapshot_id)
         if keep:
@@ -1011,7 +1413,29 @@ class PlatformConfigurationStore:
         )
         self._audit("draft_deleted", actor_id, {"draft_id": draft_id})
 
-    def delete_snapshot(self, snapshot_id: str, *, actor_id: str) -> None:
+    def delete_snapshot(
+        self,
+        snapshot_id: str,
+        *,
+        actor_id: str,
+        operation_id: str | None = None,
+    ) -> None:
+        if self._transactions_enabled:
+            snapshot = self.snapshot(snapshot_id)
+            device_id = str(snapshot["device_id"])
+
+            def remove(worker: "PlatformConfigurationStore") -> Mapping[str, Any]:
+                worker.delete_snapshot(snapshot_id, actor_id=actor_id)
+                return {"snapshot_id": snapshot_id, "deleted": True}
+
+            self._transactional(
+                device_id=device_id,
+                operation_type="delete_snapshot",
+                operation_id=operation_id,
+                request={"snapshot_id": snapshot_id, "actor_id": actor_id},
+                action=remove,
+            )
+            return
         self._actor(actor_id)
         payload_path = self._managed_payload_path(
             self.snapshots_root,
@@ -1043,6 +1467,19 @@ class PlatformConfigurationStore:
         self._audit("snapshot_deleted", actor_id, {"snapshot_id": snapshot_id})
 
     def active_configurations(self) -> list[dict[str, Any]]:
+        if self._transactions_enabled:
+            rows = []
+            for device_id in self._managed_device_ids():
+                try:
+                    rows.extend(
+                        self._transaction_reader(device_id).active_configurations()
+                    )
+                except ConfigurationManagementError as exc:
+                    if exc.status == 404:
+                        continue
+                    raise
+            rows.sort(key=lambda row: str(row.get("device_id", "")))
+            return rows
         if not self.active_root.is_dir():
             return []
         rows = []
@@ -1637,6 +2074,66 @@ class PlatformConfigurationStore:
                     f"cannot remove {label} directory: {exc}"
                 ) from exc
 
+    def _copy_managed_tree(
+        self,
+        container: Path,
+        identifier: str,
+        label: str,
+        destination: Path,
+    ) -> None:
+        source, components = self._managed_directory_components(
+            container,
+            identifier,
+            label,
+        )
+        directories, files = self._inventory_deletion_tree(source, label)
+        destination.mkdir(parents=True, exist_ok=False)
+        for path in sorted(
+            directories,
+            key=lambda item: (len(item.parts), str(item)),
+        ):
+            if path == source:
+                continue
+            self._verify_deletion_directory(
+                path,
+                source,
+                components,
+                directories,
+                label,
+            )
+            (destination / path.relative_to(source)).mkdir()
+        for path in sorted(files, key=lambda item: str(item)):
+            self._verify_deletion_path(
+                path,
+                source,
+                components,
+                directories,
+                files[path],
+                label,
+            )
+            before = self._regular_lstat(path, f"{label} entry")
+            try:
+                raw = path.read_bytes()
+            except OSError as exc:
+                raise ConfigurationManagementError(
+                    f"cannot read {label} entry: {exc}"
+                ) from exc
+            after = self._regular_lstat(path, f"{label} entry")
+            if (
+                self._identity(before) != self._identity(after)
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+            ):
+                raise ConfigurationManagementError(
+                    f"{label} entry changed while it was copied",
+                    status=409,
+                )
+            target = destination / path.relative_to(source)
+            with target.open("xb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+
     def _managed_directory_components(
         self,
         container: Path,
@@ -1846,8 +2343,9 @@ class PlatformConfigurationStore:
     def _inside(self, value: str | Path, label: str) -> Path:
         path = Path(value)
         path = (self.repository_root / path).resolve() if not path.is_absolute() else path.resolve()
+        logical = _logical_configuration_path(path).resolve()
         try:
-            path.relative_to(self.repository_root)
+            logical.relative_to(self.repository_root)
         except ValueError as exc:
             raise ConfigurationManagementError(f"{label} is outside repository") from exc
         return path
@@ -2318,6 +2816,28 @@ def _retained_candidate_source(
             )
         )
         result["targets"] = result["configuration_targets"]
+        recommendation_snapshot = result.get("recommendation_snapshot")
+        if recommendation_snapshot is not None:
+            retained_ids = set(result["candidate_ids"])
+            if not isinstance(recommendation_snapshot, list):
+                return None
+            retained_snapshot = [
+                copy.deepcopy(dict(row))
+                for row in recommendation_snapshot
+                if isinstance(row, Mapping) and row.get("candidate_id") in retained_ids
+            ]
+            if [row.get("candidate_id") for row in retained_snapshot] != result["candidate_ids"]:
+                return None
+            decision = result.get("decision")
+            if not isinstance(decision, Mapping):
+                return None
+            retained_decision = copy.deepcopy(dict(decision))
+            retained_decision["overrode_recommendation"] = any(
+                row.get("recommendation_eligible") is False
+                for row in retained_snapshot
+            )
+            result["recommendation_snapshot"] = retained_snapshot
+            result["decision"] = retained_decision
         frequency_values = _frequency_candidate_values(retained)
         if frequency_values:
             result["candidate_values_GHz"] = frequency_values
@@ -2355,14 +2875,21 @@ def _retained_candidate_source(
 def _apply_candidate_groups(
     editable: dict[str, Any],
     candidates: Sequence[Mapping[str, Any]],
+    decision: CandidateApplicationDecision,
 ) -> list[dict[str, Any]]:
+    if any(not isinstance(candidate, Mapping) for candidate in candidates):
+        raise ConfigurationManagementError(
+            "candidate update is invalid", code="candidate_update_invalid"
+        )
     try:
         normalized = [
             normalize_calibration_candidate(_with_legacy_current_value(editable, row))
             for row in candidates
         ]
     except CalibrationCandidateProtocolError as exc:
-        raise ConfigurationManagementError(str(exc)) from exc
+        raise ConfigurationManagementError(
+            str(exc), code="candidate_update_invalid"
+        ) from exc
     candidate_ids = [row["candidate_id"] for row in normalized]
     paths = [
         change["parameter_path"]
@@ -2370,11 +2897,21 @@ def _apply_candidate_groups(
         for change in candidate["changes"]
     ]
     if len(candidate_ids) != len(set(candidate_ids)):
-        raise ConfigurationManagementError("candidate_ids must be unique")
+        raise ConfigurationManagementError(
+            "candidate_ids must be unique", code="candidate_update_invalid"
+        )
     if len(paths) != len(set(paths)):
-        raise ConfigurationManagementError("candidate parameter paths must be unique")
-    if any(row.get("recommendation_eligible") is not True for row in normalized):
-        raise ConfigurationManagementError("candidate is not eligible")
+        raise ConfigurationManagementError(
+            "candidate parameter paths must be unique",
+            code="candidate_update_invalid",
+        )
+    if (
+        decision.mode == "recommended_only"
+        and any(row.get("recommendation_eligible") is not True for row in normalized)
+    ):
+        raise ConfigurationManagementError(
+            "candidate is not recommended", code="candidate_not_recommended"
+        )
     try:
         for candidate in normalized:
             for change in candidate["changes"]:
@@ -2382,8 +2919,12 @@ def _apply_candidate_groups(
                 set_parameter_value(editable, change)
                 _apply_parameter_metadata(editable, change["parameter_path"])
     except CalibrationCandidateProtocolError as exc:
-        status = 409 if "stale" in str(exc) else 422
-        raise ConfigurationManagementError(str(exc), status=status) from exc
+        stale = "stale" in str(exc)
+        raise ConfigurationManagementError(
+            str(exc),
+            status=409 if stale else 422,
+            code="candidate_stale" if stale else "candidate_update_invalid",
+        ) from exc
     return normalized
 
 
@@ -2449,6 +2990,10 @@ def _candidate_source(
     recommendation_id: str,
     candidates: Sequence[Mapping[str, Any]],
     editable: Mapping[str, Any],
+    decision: CandidateApplicationDecision,
+    *,
+    old_content_sha256: str,
+    new_content_sha256: str,
 ) -> dict[str, Any]:
     rows = []
     for candidate in candidates:
@@ -2495,11 +3040,30 @@ def _candidate_source(
     result = {
         "experiment_run_id": experiment_run_id,
         "recommendation_id": recommendation_id,
+        # These identify the original candidate-application event. Retention
+        # deliberately preserves them when later manual edits leave a candidate
+        # value intact, rather than relabeling that event with a later hash.
+        "old_content_sha256": old_content_sha256,
+        "new_content_sha256": new_content_sha256,
         "candidate_ids": [row["candidate_id"] for row in rows],
         "calibration_subjects": calibration_subjects,
         "configuration_targets": configuration_targets,
         "targets": configuration_targets,
         "candidates": rows,
+        "decision": decision.to_dict(
+            overrode_recommendation=any(
+                candidate["recommendation_eligible"] is False
+                for candidate in candidates
+            )
+        ),
+        "recommendation_snapshot": [
+            {
+                "candidate_id": candidate["candidate_id"],
+                "recommendation_eligible": candidate["recommendation_eligible"],
+                "reason": candidate.get("reason"),
+            }
+            for candidate in candidates
+        ],
     }
     frequency_values = _frequency_candidate_values(rows)
     if frequency_values:
@@ -2610,6 +3174,17 @@ def _number(value: Any, *, positive: bool = False) -> bool:
         and math.isfinite(float(value))
         and (not positive or float(value) > 0.0)
     )
+
+
+def _logical_configuration_path(path: str | Path) -> Path:
+    value = os.fspath(path)
+    if os.name != "nt":
+        return Path(value)
+    if value.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + value[8:])
+    if value.startswith("\\\\?\\"):
+        return Path(value[4:])
+    return Path(value)
 
 
 def _reject_constant(value: str) -> None:

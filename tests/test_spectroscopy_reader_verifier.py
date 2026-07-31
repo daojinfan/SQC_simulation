@@ -29,6 +29,8 @@ from sqvm.storage.errors import ArchiveFormatError
 from sqvm.storage.inventory import inventory_tree
 from sqvm.storage.models import ArchiveEntry
 from sqvm.storage.workflow_verifiers import (
+    RABI_VERIFIER_ID,
+    RABI_VERIFIER_VERSION,
     SPECTROSCOPY_VERIFIER_ID,
     SPECTROSCOPY_VERIFIER_VERSION,
     archive_evidence_verifier_registry,
@@ -36,6 +38,7 @@ from sqvm.storage.workflow_verifiers import (
     workflow_evidence_verifier_registry,
 )
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_bytes
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 
 
@@ -44,7 +47,7 @@ PARENT = ROOT / "configs/calibration/platform_uncalibrated_v1.json"
 
 
 def _install_fake_circuits(monkeypatch) -> None:
-    def fake_run(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake_run(circuits, _context_value, output_root, _repository_root, **kwargs):
         execution_root = Path(output_root)
         results = []
         for circuit in circuits:
@@ -53,6 +56,8 @@ def _install_fake_circuits(monkeypatch) -> None:
             (evidence_root / "result.bin").write_bytes(circuit.circuit_id.encode("ascii"))
             results.append(replace(
                 _result(circuit.circuit_id, 0.8, 0.19, 0.0, 0.0),
+                circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
                 evidence_root=evidence_root, model_evidence_root=evidence_root,
             ))
         return tuple(results)
@@ -65,10 +70,12 @@ def scan_root(monkeypatch, tmp_path: Path):
     _install_fake_circuits(monkeypatch)
     # The production publisher confines the run beneath its repository root.
     base = ROOT / "tmp" / f"reader_verifier_{tmp_path.name}"
-    target = base / "scan"
+    operation_id = "2bdc78b2-272b-4935-874b-c16adbfbc187"
+    target = base / f"qubit_spectroscopy_{operation_id}"
     try:
         run = run_qubit_spectroscopy_scan(
-            replace(_single_request(), run_phase="scan"), _context(), PARENT, target, ROOT, timeout_s=10.0,
+            replace(_single_request(), run_phase="scan"), _context(), PARENT, target, ROOT,
+            timeout_s=10.0, operation_id=operation_id,
         )
         yield run.root
     finally:
@@ -86,7 +93,9 @@ def _directory_reader(root: Path) -> DirectoryEvidenceReader:
 
 def _registered() -> tuple[str, str, object]:
     value = get_workflow_evidence_verifier("qubit_spectroscopy_scan_v1", "0.3")
-    assert value == (SPECTROSCOPY_VERIFIER_ID, SPECTROSCOPY_VERIFIER_VERSION, verify_qubit_spectroscopy_scan_evidence)
+    assert value is not None
+    assert value[:2] == (SPECTROSCOPY_VERIFIER_ID, SPECTROSCOPY_VERIFIER_VERSION)
+    assert callable(value[2])
     return value
 
 
@@ -106,7 +115,29 @@ def test_v03_reader_and_zip_reader_verify_real_scan(scan_root: Path, tmp_path: P
     verify_qubit_spectroscopy_scan_evidence(ZipEvidenceReader(archive, bundle.entries, ArchiveLimits()))
 
 
-def test_registry_is_frozen_and_only_v03_is_archivable():
+def test_v03_reader_remains_compatible_with_pre_batch_scan(scan_root: Path):
+    workflow = json.loads((scan_root / "workflow.json").read_text("utf-8"))
+    workflow.pop("runtime_batch")
+    (scan_root / "workflow.json").write_bytes(canonical_json_bytes(workflow))
+    shutil.rmtree(scan_root / "execution" / "batch")
+    for name in ("manifest.json", "verification_report.json", "receipt.json"):
+        (scan_root / name).unlink()
+    write_completed_evidence(
+        scan_root,
+        run_id=workflow["run_id"],
+        recommendation_id=workflow["recommendation_id"],
+        workflow_id=workflow["workflow_id"],
+        workflow_sha256=hashlib.sha256((scan_root / "workflow.json").read_bytes()).hexdigest().upper(),
+        dataset_sha256=hashlib.sha256((scan_root / "dataset.json").read_bytes()).hexdigest().upper(),
+        parent_configuration_sha256=workflow["parent_configuration"]["sha256"],
+        recommendation_eligible=workflow["recommendation_eligible"],
+    )
+
+    assert verify_qubit_spectroscopy_scan(scan_root)
+    verify_qubit_spectroscopy_scan_evidence(_directory_reader(scan_root))
+
+
+def test_registry_is_frozen_and_only_explicit_workflow_versions_are_archivable():
     assert get_workflow_evidence_verifier("qubit_spectroscopy_scan_v1", "0.1") is None
     assert get_workflow_evidence_verifier("qubit_spectroscopy_scan_v1", "0.2") is None
     assert get_workflow_evidence_verifier("unknown", "0.3") is None
@@ -116,9 +147,11 @@ def test_registry_is_frozen_and_only_v03_is_archivable():
     with pytest.raises(TypeError):
         workflow_evidence_verifier_registry()[("unknown", "0.3")] = ("x", "x", lambda _reader: None)
     archive_registry = archive_evidence_verifier_registry()
-    assert archive_registry == {
-        (SPECTROSCOPY_VERIFIER_ID, SPECTROSCOPY_VERIFIER_VERSION): verify_qubit_spectroscopy_scan_evidence,
+    assert set(archive_registry) == {
+        (SPECTROSCOPY_VERIFIER_ID, SPECTROSCOPY_VERIFIER_VERSION),
+        (RABI_VERIFIER_ID, RABI_VERIFIER_VERSION),
     }
+    assert all(callable(verifier) for verifier in archive_registry.values())
     with pytest.raises(TypeError):
         archive_registry[("unknown", "0.3")] = lambda _reader: None
 

@@ -16,10 +16,13 @@ import pytest
 import sqvm.calibration.spectroscopy as spectroscopy_module
 import sqvm.storage.operations as operations
 from sqvm.calibration.api import run_spectroscopy
+from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_bytes
 from sqvm.storage.operations import ExperimentStorageOperations, StorageMutationRequest, StorageOperationError
 from sqvm.storage.catalog import CatalogRoots, rebuild_catalog, query_catalog
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 from tests.support.fixture_loader import copy_fixture
+from sqvm.web.configuration_transactions import ConfigurationTransactionManager
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,12 +30,18 @@ PARENT = ROOT / "configs" / "calibration" / "platform_uncalibrated_v1.json"
 
 
 def _runner(monkeypatch):
-    def fake(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake(circuits, _context_value, output_root, _repository_root, **kwargs):
         root = Path(output_root); rows = []
         for circuit in circuits:
             evidence = root / "circuits" / circuit.circuit_id; evidence.mkdir(parents=True)
             (evidence / "result.bin").write_bytes(circuit.circuit_id.encode())
-            rows.append(replace(_result(circuit.circuit_id, .8, .19, 0, 0), evidence_root=evidence, model_evidence_root=evidence))
+            rows.append(replace(
+                _result(circuit.circuit_id, .8, .19, 0, 0),
+                circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
+                evidence_root=evidence,
+                model_evidence_root=evidence,
+            ))
         return tuple(rows)
     monkeypatch.setattr(spectroscopy_module, "run_circuits", fake)
 
@@ -71,6 +80,26 @@ def _catalog_state(hot: Path, storage: Path, run_id: str) -> str:
     return query_catalog(catalog, run_id)[0].storage_state
 
 
+def _commit_applied_audit(config_root: Path, run_id: str, content_sha256: str) -> None:
+    event_id = str(uuid.uuid4())
+    event = {"schema_version":"0.1", "event_id":event_id, "event":"experiment_candidates_applied_to_current", "actor_id":"test.actor", "created_utc":"2026-07-22T00:00:00Z", "details":{"device_id":"demo_2q1c2r", "experiment_run_id":run_id, "recommendation_id":str(uuid.uuid4()), "candidate_ids":["candidate"], "targets":["Q1"], "content_sha256":content_sha256}}
+
+    def commit_reference(workspace: Path):
+        (workspace / "audit" / f"{event_id}.json").write_bytes(
+            canonical_json_bytes(event)
+        )
+        return {"event_id": event_id}
+
+    ConfigurationTransactionManager(config_root).execute(
+        device_id="demo_2q1c2r",
+        operation_type="reference_test",
+        operation_id=str(uuid.uuid4()),
+        request={"event_id": event_id},
+        legacy_root=config_root,
+        transform=commit_reference,
+    )
+
+
 def test_archive_restore_hot_and_keep(service):
     ops, run, request, hot, storage = service
     result = ops.archive(run, request)
@@ -88,6 +117,24 @@ def test_revision_hash_conflicts_and_reference_block_trash(service):
     with pytest.raises(StorageOperationError): ops.archive(run, StorageMutationRequest("test.actor", 7, "A" * 64, "x"))
     index = ops._experiment_root / "bad"; index.mkdir(); (index / "workflow.json").write_text('{"workflow_id":"unknown"}', "utf-8")
     with pytest.raises(StorageOperationError): ops.trash(run, request)
+
+
+def test_mixed_transaction_and_legacy_devices_block_destructive_operations(service):
+    ops, run, request, _hot_root, _storage = service
+    config = ops._config_root
+    source = config / "current" / "demo_2q1c2r.json"
+    legacy = json.loads(source.read_text("utf-8"))
+    legacy["device_id"] = "legacy_device"
+    (config / "current" / "legacy_device.json").write_bytes(
+        canonical_json_bytes(legacy)
+    )
+
+    graph = ops._fresh_references()
+
+    assert graph.scan_incomplete is True
+    assert "legacy_device" in " ".join(graph.blockers)
+    with pytest.raises(StorageOperationError):
+        ops.trash(run, request)
 
 
 def test_trash_and_restore_hot_payload(service):
@@ -200,9 +247,7 @@ def test_reference_added_after_initial_scan_blocks_before_destructive_move(servi
         nonlocal calls
         calls += 1
         if calls == 2:
-            event_id = str(uuid.uuid4())
-            audit = ops._config_root / "audit" / f"{event_id}.json"
-            audit.write_text(json.dumps({"schema_version":"0.1", "event_id":event_id, "event":"experiment_candidates_applied_to_current", "actor_id":"test.actor", "created_utc":"2026-07-22T00:00:00Z", "details":{"device_id":"demo_2q1c2r", "experiment_run_id":run, "recommendation_id":str(uuid.uuid4()), "candidate_ids":["candidate"], "targets":["Q1"], "content_sha256":"A" * 64}}), "utf-8")
+            _commit_applied_audit(ops._config_root, run, "A" * 64)
         return original_scan()
     monkeypatch.setattr(ops, "_fresh_references", raced_scan)
     with pytest.raises(StorageOperationError, match="references changed"):
@@ -222,8 +267,7 @@ def test_manual_keep_unknown_reference_and_real_applied_audit_block_trash(servic
     with pytest.raises(StorageOperationError):
         ops.trash(run, request)
     shutil.rmtree(unknown)
-    event_id = str(uuid.uuid4())
-    (ops._config_root / "audit" / f"{event_id}.json").write_text(json.dumps({"schema_version":"0.1", "event_id":event_id, "event":"experiment_candidates_applied_to_current", "actor_id":"test.actor", "created_utc":"2026-07-22T00:00:00Z", "details":{"device_id":"demo_2q1c2r", "experiment_run_id":run, "recommendation_id":str(uuid.uuid4()), "candidate_ids":["candidate"], "targets":["Q1"], "content_sha256":"B" * 64}}), "utf-8")
+    _commit_applied_audit(ops._config_root, run, "B" * 64)
     with pytest.raises(StorageOperationError):
         ops.trash(run, request)
     assert ops.archive(run, request).state == "archived"
@@ -491,14 +535,14 @@ def test_set_keep_transitions_for_archived_and_trash(service):
 def test_duplicate_or_unrelated_invalid_hot_candidate_fails_closed(service):
     ops, run, request, hot, _storage = service
     shutil.copytree(_hot(ops, hot), hot / "qubit_spectroscopy_duplicate")
-    with pytest.raises(StorageOperationError, match="ambiguous"):
+    with pytest.raises(StorageOperationError, match="alias|ambiguous"):
         ops.archive(run, request)
 
 
 def test_unrelated_broken_published_candidate_fails_closed(service):
     ops, run, request, hot, _storage = service
     (hot / "qubit_spectroscopy_broken").mkdir()
-    with pytest.raises(StorageOperationError, match="hot carrier scan could not be completed"):
+    with pytest.raises(StorageOperationError, match="invalid alias|hot carrier scan could not be completed"):
         ops.archive(run, request)
 
 

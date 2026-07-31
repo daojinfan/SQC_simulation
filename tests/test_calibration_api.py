@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 import uuid
 
 import pytest
@@ -26,6 +27,7 @@ from sqvm.calibration.spectroscopy_run import (
     verify_qubit_spectroscopy_scan,
 )
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.storage.references import build_reference_graph
 from sqvm.web import CalibrationWebIndex, PlatformConfigurationStore
 from tests.support.calibration_requests import spectroscopy_calibration_request as _request
 from tests.support.synthetic_runners import install_synthetic_spectroscopy_runner as _install_synthetic_runner
@@ -84,7 +86,7 @@ def test_active_spectroscopy_api_publishes_web_visible_data(monkeypatch):
         )
 
         assert run.root.parent == base / "experiments"
-        assert len(calls) == 4
+        assert len(calls) == 18
         assert all(
             call["execution_profile"] == "calibration_scan"
             for call in calls
@@ -190,7 +192,7 @@ def test_active_spectroscopy_api_publishes_web_visible_data(monkeypatch):
 
 
 def test_run_spectroscopy_builds_the_scan_from_ranges_and_step(monkeypatch):
-    base = ROOT / "tmp" / f"simple_spectroscopy_api_{uuid.uuid4().hex}"
+    base = ROOT / "tmp" / f"sp_{uuid.uuid4().hex}"
     calls = []
     _install_synthetic_runner(monkeypatch, calls)
     store = _active_store(base)
@@ -210,7 +212,7 @@ def test_run_spectroscopy_builds_the_scan_from_ranges_and_step(monkeypatch):
         assert isinstance(run, SpectroscopyRun)
         assert run.analysis.recommendation_eligible is False
         assert run.recommendation_eligible is True
-        assert [len(call["circuits"]) for call in calls] == [3]
+        assert [len(call["circuits"]) for call in calls] == [1, 1, 1]
         workflow = json.loads((run.root / "workflow.json").read_text("utf-8"))
         scan = workflow["request"]
         assert workflow["workflow_id"] == "qubit_spectroscopy_scan_v1"
@@ -275,8 +277,39 @@ def test_run_spectroscopy_builds_the_scan_from_ranges_and_step(monkeypatch):
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_run_spectroscopy_replays_the_same_operation_without_execution(monkeypatch):
+    base = ROOT / "tmp" / f"sp_{uuid.uuid4().hex}"
+    calls = []
+    _install_synthetic_runner(monkeypatch, calls)
+    store = _active_store(base)
+    operation_id = str(uuid.uuid4())
+    arguments = {
+        "frequency_step_GHz": 0.1,
+        "operation_id": operation_id,
+        "output_root": base / "experiments",
+        "configuration_storage_root": store.root,
+        "repository_root": ROOT,
+        "timeout_s": 10.0,
+    }
+    try:
+        first = run_spectroscopy({"Q1": (4.9, 5.1)}, **arguments)
+        executed = len(calls)
+        replay = run_spectroscopy({"Q1": (4.9, 5.1)}, **arguments)
+
+        assert executed == 3
+        assert len(calls) == executed
+        assert replay.run_id == first.run_id == operation_id
+        assert replay.root == first.root
+        assert replay.workflow_sha256 == first.workflow_sha256
+        assert replay.receipt_sha256 == first.receipt_sha256
+        assert replay.dataset.runtime_batch is not None
+        assert replay.dataset.runtime_batch.reused_point_count == 3
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_run_spectroscopy_rejects_a_range_not_divisible_by_the_step():
-    base = ROOT / "tmp" / f"simple_spectroscopy_invalid_{uuid.uuid4().hex}"
+    base = ROOT / "tmp" / f"sp_{uuid.uuid4().hex}"
     store = _active_store(base)
     try:
         with pytest.raises(CalibrationExperimentError, match="not exactly divisible"):
@@ -292,7 +325,7 @@ def test_run_spectroscopy_rejects_a_range_not_divisible_by_the_step():
 
 
 def test_run_spectroscopy_accepts_a_single_target_with_an_even_point_count(monkeypatch):
-    base = ROOT / "tmp" / f"simple_spectroscopy_single_{uuid.uuid4().hex}"
+    base = ROOT / "tmp" / f"sp_{uuid.uuid4().hex}"
     calls = []
     _install_synthetic_runner(monkeypatch, calls)
     store = _active_store(base)
@@ -308,7 +341,7 @@ def test_run_spectroscopy_accepts_a_single_target_with_an_even_point_count(monke
 
         assert run.analysis.recommendation_eligible is False
         assert run.recommendation_eligible is True
-        assert [len(call["circuits"]) for call in calls] == [4]
+        assert [len(call["circuits"]) for call in calls] == [1, 1, 1, 1]
         workflow = json.loads((run.root / "workflow.json").read_text("utf-8"))
         scan = workflow["request"]
         assert scan["execution_mode"] == "single"
@@ -390,3 +423,174 @@ def test_top_level_active_spectroscopy_api_is_lazy_export():
     )
     assert calibration.run_spectroscopy is legacy_api.run_spectroscopy
     assert calibration.SpectroscopyRequest is legacy_experiments.SpectroscopyRequest
+
+
+def test_candidate_api_override_requires_explicit_human_decision_and_audits_it(
+    monkeypatch,
+):
+    base = ROOT / "tmp" / f"candidate_decision_{uuid.uuid4().hex}"
+    base.mkdir(parents=True)
+    try:
+        store = _active_store(base)
+        current = store.current_configuration("demo_2q1c2r")
+        path = (
+            "calibration_values.qagents.Q1.reference_frequency_authority."
+            "reference_frequency_GHz"
+        )
+        reference = current["editable"]["calibration_values"]["qagents"]["Q1"][
+            "reference_frequency_authority"
+        ]["reference_frequency_GHz"]
+        candidate = {
+            "candidate_id": "Q1.override_frequency",
+            "target": "Q1",
+            "candidate_type": "qubit_reference_frequency",
+            "calibration_subjects": ["Q1"],
+            "changes": [
+                {
+                    "operation": "set",
+                    "parameter_path": path,
+                    "value_type": "float",
+                    "current_value": reference,
+                    "proposed_value": reference + 0.001,
+                    "unit": "GHz",
+                }
+            ],
+            "source_dataset_sha256s": [],
+            "quality_metrics": {},
+            "recommendation_eligible": False,
+            "reason": "quality policy rejected this otherwise complete candidate",
+        }
+        run_id = str(uuid.uuid4())
+        recommendation_id = str(uuid.uuid4())
+        run = SimpleNamespace(root=base / "run", run_id=run_id)
+        run.root.mkdir()
+        monkeypatch.setattr(
+            __import__("sqvm.calibration.api", fromlist=["_"]),
+            "_verified_candidate_workflow",
+            lambda _root: {
+                "run_id": run_id,
+                "recommendation_id": recommendation_id,
+                "candidates": [candidate],
+            },
+        )
+        phrase = f"APPLY CALIBRATION CANDIDATES {run_id}"
+
+        with pytest.raises(CalibrationExperimentError) as captured:
+            apply_calibration_candidates_to_current_configuration(
+                run,
+                confirmation_phrase=phrase,
+                candidate_ids=[candidate["candidate_id"]],
+                configuration_storage_root=store.root,
+                repository_root=ROOT,
+            )
+        assert captured.value.code == "candidate_not_recommended"
+
+        for selection in (
+            {"candidate_ids": [candidate["candidate_id"], candidate["candidate_id"]]},
+            {"candidate_ids": ["unknown-candidate"]},
+            {"candidate_ids": [candidate["candidate_id"]], "targets": ["Q1"]},
+        ):
+            with pytest.raises(CalibrationExperimentError) as captured:
+                apply_calibration_candidates_to_current_configuration(
+                    run,
+                    confirmation_phrase=phrase,
+                    configuration_storage_root=store.root,
+                    repository_root=ROOT,
+                    **selection,
+                )
+            assert captured.value.code == "candidate_update_invalid"
+
+        for source, reason, expected_code in (
+            ("automation", "reviewed", "candidate_override_source_invalid"),
+            ("notebook_user", None, "candidate_override_reason_required"),
+        ):
+            with pytest.raises(CalibrationExperimentError) as captured:
+                apply_calibration_candidates_to_current_configuration(
+                    run,
+                    confirmation_phrase=phrase,
+                    candidate_ids=[candidate["candidate_id"]],
+                    decision_mode="override_recommendation",
+                    decision_source=source,
+                    decision_reason=reason,
+                    configuration_storage_root=store.root,
+                    repository_root=ROOT,
+                )
+            assert captured.value.code == expected_code
+
+        with pytest.raises(CalibrationExperimentError) as captured:
+            apply_calibration_candidates_to_current_configuration(
+                run,
+                confirmation_phrase=phrase,
+                decision_mode="override_recommendation",
+                decision_source="notebook_user",
+                decision_reason="reviewed",
+                configuration_storage_root=store.root,
+                repository_root=ROOT,
+            )
+        assert captured.value.code == "candidate_override_selection_required"
+
+        operation_id = str(uuid.uuid4())
+        update = apply_calibration_candidates_to_current_configuration(
+            run,
+            confirmation_phrase=phrase,
+            candidate_ids=[candidate["candidate_id"]],
+            decision_mode="override_recommendation",
+            decision_source="ai_assisted",
+            decision_reason="Reviewed curve, leakage, and fit residuals.",
+            configuration_storage_root=store.root,
+            repository_root=ROOT,
+            expected_current_content_sha256=current["content_sha256"],
+            operation_id=operation_id,
+        )
+        assert update.candidate_ids == (candidate["candidate_id"],)
+        source = store.current_configuration("demo_2q1c2r")["source_candidate"]
+        assert source["decision"] == {
+            "mode": "override_recommendation",
+            "source": "ai_assisted",
+            "reason": "Reviewed curve, leakage, and fit residuals.",
+            "overrode_recommendation": True,
+        }
+        assert source["recommendation_snapshot"] == [
+            {
+                "candidate_id": candidate["candidate_id"],
+                "recommendation_eligible": False,
+                "reason": candidate["reason"],
+            }
+        ]
+        assert source["old_content_sha256"] == current["content_sha256"]
+        assert source["new_content_sha256"] != current["content_sha256"]
+        audit = [
+            json.loads(path.read_text("utf-8"))
+            for path in store.audit_root.glob("*.json")
+        ]
+        event = next(
+            row for row in audit
+            if row["event"] == "experiment_candidates_applied_to_current"
+        )
+        assert event["details"]["decision"] == source["decision"]
+        assert event["details"]["old_content_sha256"] == current["content_sha256"]
+        assert event["details"]["new_content_sha256"] != current["content_sha256"]
+        with pytest.raises(CalibrationExperimentError) as captured:
+            apply_calibration_candidates_to_current_configuration(
+                run,
+                confirmation_phrase=phrase,
+                candidate_ids=[candidate["candidate_id"]],
+                decision_mode="override_recommendation",
+                decision_source="ai_assisted",
+                decision_reason="A different reason changes the decision request.",
+                configuration_storage_root=store.root,
+                repository_root=ROOT,
+                expected_current_content_sha256=current["content_sha256"],
+                operation_id=operation_id,
+            )
+        assert captured.value.code == "idempotency_conflict"
+
+        experiment_root = base / "experiments"
+        experiment_root.mkdir()
+        references = build_reference_graph(
+            configuration_root=store.root,
+            experiment_output_root=experiment_root,
+        )
+        assert references.scan_incomplete is False
+    finally:
+        shutil.rmtree(base, ignore_errors=True)

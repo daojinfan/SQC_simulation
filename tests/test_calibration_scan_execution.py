@@ -16,6 +16,7 @@ import pytest
 import sqvm.runtime.calibration_scan as scan_module
 from sqvm.circuits import QCISCircuit, compile_circuit
 from sqvm.evolution.stage51_models import Stage51NumericalResult
+from sqvm.hamiltonian.provenance import canonical_json_bytes, raw_file_sha256
 from sqvm.runtime.calibration_model import (
     _build_projected_charge_model,
     _validate_projection_convergence,
@@ -136,6 +137,33 @@ def test_calibration_scan_admission_enforces_policy_timeout(monkeypatch):
         scan_module._admit(compilation, "point_1", 600.1, policy)
 
 
+def test_calibration_scan_v2_admits_long_rabi_and_keeps_v1_verifiable(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(scan_module, "verify_compilation", lambda _value: None)
+    monkeypatch.setattr(scan_module, "verify_drive_event_inventory", lambda _value: None)
+    monkeypatch.setattr(scan_module, "verify_coefficient_inventory", lambda _value: None)
+    compilation = SimpleNamespace(
+        q1_xy=np.zeros(80),
+        plan=SimpleNamespace(dt_ns=0.5),
+    )
+    policy = calibration_scan_policy()
+
+    assert policy["artifact_version"] == "0.2"
+    scan_module._admit(compilation, "rabi_long", 600.0, policy)
+
+    legacy_sha256 = raw_file_sha256(
+        ROOT / "configs/runtime/calibration_scan/execution_policy_v1.json"
+    )
+    (tmp_path / scan_module.EVIDENCE_NAME).write_bytes(
+        canonical_json_bytes({"policy_sha256": legacy_sha256})
+    )
+    legacy = scan_module._load_bound_policy(tmp_path, ROOT)
+    assert legacy["artifact_version"] == "0.1"
+    assert legacy["max_logical_sample_count"] == 64
+    assert scan_module._canonical_sha(legacy) == legacy_sha256
+
+
 def test_calibration_scan_staging_name_preserves_windows_path_budget(monkeypatch, tmp_path):
     compilation = SimpleNamespace(
         q1_xy=np.zeros(8),
@@ -151,7 +179,14 @@ def test_calibration_scan_staging_name_preserves_windows_path_budget(monkeypatch
 
     observed = {}
 
-    def fail_after_staging(_compilation, _point_id, staging, _root, _idle_flux):
+    def fail_after_staging(
+        _compilation,
+        _point_id,
+        staging,
+        _root,
+        _idle_flux,
+        _control_values,
+    ):
         observed["name"] = staging.name
         raise RuntimeError("stop")
 

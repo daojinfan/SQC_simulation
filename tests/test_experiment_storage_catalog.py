@@ -33,6 +33,7 @@ from sqvm.storage.operations import ExperimentStorageOperations, StorageMutation
 from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
 from sqvm.calibration.spectroscopy_reader import verify_qubit_spectroscopy_scan_evidence
 import sqvm.calibration.spectroscopy as spectroscopy_module
+from sqvm.qcis.canonical import sha256_bytes
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 
 
@@ -84,7 +85,7 @@ def _rebuild(catalog: Path, roots: CatalogRoots, **kwargs) -> int:
 
 
 def _install_v03_runner(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake_run(circuits, _context_value, output_root, _repository_root, **kwargs):
         execution_root = Path(output_root)
         rows = []
         for circuit in circuits:
@@ -93,6 +94,8 @@ def _install_v03_runner(monkeypatch: pytest.MonkeyPatch) -> None:
             (evidence_root / "result.bin").write_bytes(circuit.circuit_id.encode("ascii"))
             rows.append(replace(
                 _result(circuit.circuit_id, 0.8, 0.19, 0.0, 0.0),
+                circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
                 evidence_root=evidence_root,
                 model_evidence_root=evidence_root,
             ))
@@ -784,6 +787,51 @@ def test_public_rebuild_adapter_failure_and_unknown_carriers_fail_closed(tmp_pat
     assert row.storage_state == "invalid"
     assert row.reference_status == "unknown"
     assert {"unknown_hot_root_entry", "unknown_archive_root_entry"} <= set(row.blockers)
+
+
+def test_public_rebuild_ignores_strict_calibration_staging_without_hiding_unknowns(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    run = _run(roots.hot_root)
+    run_id = run.name.removeprefix("qubit_spectroscopy_")
+    (roots.hot_root / f".rabi_{uuid.uuid4().hex}").mkdir()
+    (roots.hot_root / f".spectroscopy_{uuid.uuid4().hex}").mkdir()
+
+    _rebuild(_catalog(tmp_path), roots)
+    row = query_catalog(_catalog(tmp_path), run_id)[0]
+    assert row.storage_state == "hot"
+    assert "trash" in row.allowed_actions
+
+    (roots.hot_root / ".rabi_not-a-run-id").mkdir()
+    _rebuild(_catalog(tmp_path), roots)
+    row = query_catalog(_catalog(tmp_path), run_id)[0]
+    assert row.storage_state == "invalid"
+    assert "unidentified_hot_carrier" in row.blockers
+
+
+def test_public_rebuild_isolates_invalid_known_run_without_poisoning_valid_runs(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    valid = _run(roots.hot_root)
+    valid_id = valid.name.removeprefix("qubit_spectroscopy_")
+    invalid_id = str(uuid.uuid4())
+    invalid = roots.hot_root / f"qubit_spectroscopy_{uuid.UUID(invalid_id).hex}"
+    invalid.mkdir()
+    (invalid / "workflow.json").write_bytes(canonical_archive_json_bytes({
+        "artifact_version": "0.2",
+        "created_utc": "invalid",
+        "run_id": invalid_id,
+        "workflow_id": "scan-v1",
+    }))
+    (invalid / "receipt.json").write_bytes(canonical_archive_json_bytes({
+        "run_id": invalid_id,
+        "status": "completed",
+    }))
+
+    _rebuild(_catalog(tmp_path), roots)
+    rows = {row.run_id: row for row in query_catalog(_catalog(tmp_path))}
+    assert rows[valid_id].storage_state == "hot"
+    assert "trash" in rows[valid_id].allowed_actions
+    assert rows[invalid_id].storage_state == "invalid"
+    assert rows[invalid_id].blockers == ("hot_carrier_invalid",)
 
 
 def test_public_rebuild_lock_conflict_and_malformed_lock_payload(tmp_path: Path) -> None:

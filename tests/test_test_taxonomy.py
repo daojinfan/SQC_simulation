@@ -12,7 +12,7 @@ from tests.conftest import ITEM_PRIMARY_MARKERS, MODULE_PRIMARY_MARKERS, PRIMARY
 
 MIXED_MODULE_PRIMARY_MARKERS = {
     "tests/test_run_circuits.py": {
-        "integration": 10,
+        "integration": 13,
         "physics_slow": 1,
     },
     "tests/test_stage51_verified_control_admission.py": {
@@ -49,5 +49,5 @@ def test_physics_suite_count_lock_matches_current_baseline() -> None:
     assert lock == {
         "schema_version": "0.1",
         "primary_marker": "physics_slow",
-        "expected_testcases": 192,
+        "expected_testcases": 206,
     }

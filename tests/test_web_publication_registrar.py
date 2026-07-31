@@ -19,6 +19,7 @@ import sqvm.calibration.spectroscopy as spectroscopy_module
 from sqvm.calibration.spectroscopy_run import run_qubit_spectroscopy_scan
 from sqvm.calibration.spectroscopy_workflow import run_qubit_spectroscopy_calibration
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_bytes
 from sqvm.web import registrar
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 from tests.support.calibration_requests import spectroscopy_calibration_request as _request
@@ -143,6 +144,75 @@ def test_concurrent_enqueue_publishes_exactly_one_event(tmp_path: Path) -> None:
     assert not list((storage / "index-inbox").glob(".*.tmp"))
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows O_EXCL error mapping")
+def test_windows_permission_error_for_verified_lock_is_contention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inbox = tmp_path / "index-inbox"
+    inbox.mkdir()
+    event_id = "A" * 64
+    lock_path = inbox / f".{event_id}.lock"
+    lock_path.write_bytes(b"competing owner")
+    denied = PermissionError("simulated Windows O_EXCL sharing denial")
+    original_open = registrar._open_new_file
+    attempts = 0
+
+    def contend_once(path: Path, flags: int, mode: int = 0o777) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise denied
+        lock_path.unlink()
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(registrar, "_open_new_file", contend_once)
+    token = b"owner token"
+
+    acquired = registrar._acquire_event_lock(
+        lock_path,
+        inbox / f"{event_id}.json",
+        tmp_path,
+        b"event",
+        event_id,
+        token,
+    )
+
+    assert acquired is None
+    assert attempts == 2
+    assert lock_path.read_bytes() == token
+    registrar._release_event_lock(lock_path, tmp_path, token)
+
+
+@pytest.mark.parametrize("lock_state", ["missing", "directory"])
+def test_permission_error_without_verified_regular_lock_fails_closed(
+    lock_state: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inbox = tmp_path / "index-inbox"
+    inbox.mkdir()
+    event_id = "B" * 64
+    lock_path = inbox / f".{event_id}.lock"
+    if lock_state == "directory":
+        lock_path.mkdir()
+    denied = PermissionError("simulated inbox permission denial")
+
+    def fail_exclusive_create(_path: Path, _flags: int, _mode: int) -> int:
+        raise denied
+
+    monkeypatch.setattr(registrar, "_open_new_file", fail_exclusive_create)
+
+    with pytest.raises(PermissionError, match="permission denial") as raised:
+        registrar._acquire_event_lock(
+            lock_path,
+            inbox / f"{event_id}.json",
+            tmp_path,
+            b"event",
+            event_id,
+            b"owner token",
+        )
+
+    assert raised.value is denied
+
+
 def test_existing_event_identity_conflict_fails_closed(tmp_path: Path) -> None:
     source, _ = _published_run(tmp_path)
     result = registrar.enqueue_published_run(tmp_path, source)
@@ -210,7 +280,7 @@ def test_replace_failure_warns_without_mutating_published_run(
 
 
 def _install_scan_runner(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(circuits, _context_value, output_root, _repository_root, **_kwargs):
+    def fake_run(circuits, _context_value, output_root, _repository_root, **kwargs):
         execution_root = Path(output_root)
         results = []
         for circuit in circuits:
@@ -222,6 +292,8 @@ def _install_scan_runner(monkeypatch: pytest.MonkeyPatch) -> None:
             results.append(
                 replace(
                     _result(circuit.circuit_id, 0.8, 0.19, 0.0, 0.0),
+                    circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                    readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
                     evidence_root=evidence_root,
                     model_evidence_root=evidence_root,
                 )

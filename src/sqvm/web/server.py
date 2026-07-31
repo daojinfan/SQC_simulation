@@ -15,8 +15,14 @@ import stat
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Mapping
+import uuid
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from sqvm.candidate_protocol import (
+    CandidateApplicationDecision,
+    CandidateApplicationDecisionError,
+    normalize_candidate_application_decision,
+)
 from sqvm.storage.archive_verify import ArchiveLimits, ZipEvidenceReader
 from sqvm.storage.archive_verify import verify_sqrun
 from sqvm.storage.workflow_verifiers import archive_evidence_verifier_registry
@@ -28,6 +34,13 @@ from sqvm.web.plotting import (
     build_min_max_envelope,
     build_spectroscopy_plot_spec,
     lookup_source_point,
+)
+from sqvm.web.waveforms import (
+    ArchiveEvidenceReader,
+    DirectoryEvidenceReader,
+    WaveformEvidenceError,
+    waveform_catalog,
+    waveform_point,
 )
 from sqvm.web.configuration import (
     ConfigurationManagementError,
@@ -74,6 +87,65 @@ def _strong_etag(*parts: object) -> str:
     return f'"{hashlib.sha256(raw).hexdigest().upper()}"'
 
 
+def _reference_authority_token(
+    configuration_root: Path,
+    experiment_root: Path,
+    pins_root: Path,
+) -> str:
+    """Fingerprint reference semantics without re-hashing immutable evidence."""
+
+    digest = hashlib.sha256()
+
+    def add_path(path: Path, root: Path, *, include_bytes: bool) -> None:
+        info = path.lstat()
+        record = (
+            path.relative_to(root).as_posix(),
+            stat.S_IFMT(info.st_mode),
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_nlink,
+            getattr(info, "st_reparse_tag", 0),
+        )
+        digest.update(json.dumps(record, separators=(",", ":")).encode("utf-8"))
+        if include_bytes and stat.S_ISREG(info.st_mode):
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+
+    for label, root in (
+        ("configuration", configuration_root),
+        ("pins", pins_root),
+    ):
+        digest.update(label.encode("ascii"))
+        if not root.exists():
+            digest.update(b"\0missing\0")
+            continue
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            dirs.sort()
+            files.sort()
+            base = Path(directory)
+            for name in [*dirs, *files]:
+                add_path(base / name, root, include_bytes=True)
+
+    # Published experiment reference contracts live at the root of each run
+    # carrier. Execution payloads can contain thousands of immutable files and
+    # do not independently create configuration references.
+    digest.update(b"experiments")
+    if not experiment_root.exists():
+        digest.update(b"\0missing\0")
+    else:
+        for entry in sorted(os.scandir(experiment_root), key=lambda row: row.name):
+            path = Path(entry.path)
+            add_path(path, experiment_root, include_bytes=entry.is_file(follow_symlinks=False))
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            for name in ("workflow.json", "decision.json"):
+                semantic = path / name
+                if os.path.lexists(semantic):
+                    add_path(semantic, experiment_root, include_bytes=True)
+    return digest.hexdigest().upper()
+
+
 class CalibrationWebServer(ThreadingHTTPServer):
     index: CalibrationWebIndex
     store: PlatformConfigurationStore
@@ -97,10 +169,13 @@ class StorageWebError(ValueError):
 
     def __init__(self, code: str, status: int, error: str, *, run_id: str | None = None,
                  blockers: tuple[str, ...] = (), retryable: bool = False,
-                 catalog_revision: int | None = None) -> None:
+                 catalog_revision: int | None = None,
+                 extra_details: Mapping[str, object] | None = None) -> None:
         self.code, self.status, self.error = code, status, error
         self.details = {"run_id": run_id, "blockers": list(blockers), "retryable": retryable,
                         "catalog_revision": catalog_revision}
+        if extra_details:
+            self.details.update(extra_details)
         super().__init__(error)
 
     def payload(self) -> dict[str, object]:
@@ -126,12 +201,19 @@ class ExperimentStorageWebService:
         self._catalog_refresh_retry_after = 0.0
         self._catalog_overview_lock = threading.Lock()
         self._catalog_overview_cache: dict[str, object] | None = None
+        self._reference_lock = threading.Lock()
+        self._reference_graph_cache: object | None = None
+        self._reference_graph_token: str | None = None
+        self._reference_warmup_thread: threading.Thread | None = None
         self.on_change: Callable[[], None] | None = None
 
     def shutdown(self) -> None:
         refresh = self._catalog_refresh_thread
         if refresh is not None and refresh is not threading.current_thread():
             refresh.join()
+        warmup = self._reference_warmup_thread
+        if warmup is not None and warmup is not threading.current_thread():
+            warmup.join()
 
     @property
     def catalog_path(self) -> Path:
@@ -153,7 +235,7 @@ class ExperimentStorageWebService:
         _safe_create_storage_directory(
             self.storage_root, "experiment storage root", verified=verified
         )
-        for name in ("lifecycle", "tombstones", "trash"):
+        for name in ("lifecycle", "tombstones", "trash", "pins"):
             _safe_create_storage_directory(
                 self.storage_root / name,
                 f"experiment storage {name} root",
@@ -171,12 +253,81 @@ class ExperimentStorageWebService:
 
     def _reference_graph(self):
         from sqvm.storage.references import build_reference_graph
-        return build_reference_graph(configuration_root=self.configuration_root,
-                                     experiment_output_root=self.experiment_output_root,
-                                     lifecycle_root=self.storage_root / "lifecycle",
-                                     pins_root=self.storage_root / "pins")
+        with self._reference_lock:
+            try:
+                before = _reference_authority_token(
+                    self.configuration_root,
+                    self.experiment_output_root,
+                    self.storage_root / "pins",
+                )
+            except OSError:
+                before = None
+            if (
+                before is not None
+                and self._reference_graph_cache is not None
+                and before == self._reference_graph_token
+            ):
+                return self._reference_graph_cache
+            graph = build_reference_graph(
+                configuration_root=self.configuration_root,
+                experiment_output_root=self.experiment_output_root,
+                lifecycle_root=self.storage_root / "lifecycle",
+                pins_root=self.storage_root / "pins",
+            )
+            try:
+                after = _reference_authority_token(
+                    self.configuration_root,
+                    self.experiment_output_root,
+                    self.storage_root / "pins",
+                )
+            except OSError:
+                after = None
+            if before is not None and before == after:
+                self._reference_graph_cache = graph
+                self._reference_graph_token = after
+            else:
+                self._reference_graph_cache = None
+                self._reference_graph_token = None
+            return graph
 
-    def rebuild(self) -> int:
+    def _adopt_reference_graph(self, graph: object) -> None:
+        with self._reference_lock:
+            try:
+                token = _reference_authority_token(
+                    self.configuration_root,
+                    self.experiment_output_root,
+                    self.storage_root / "pins",
+                )
+            except OSError:
+                self._reference_graph_cache = None
+                self._reference_graph_token = None
+                return
+            self._reference_graph_cache = graph
+            self._reference_graph_token = token
+
+    def start_reference_warmup(self) -> None:
+        warmup = self._reference_warmup_thread
+        if warmup is not None and warmup.is_alive():
+            return
+
+        def warm_reference_graph() -> None:
+            try:
+                self._reference_graph()
+            except Exception:
+                # Destructive operations still perform their own fail-closed
+                # scan and surface any authority error to the caller.
+                pass
+            finally:
+                self._reference_warmup_thread = None
+
+        self._reference_warmup_thread = threading.Thread(
+            target=warm_reference_graph,
+            name="sqvm-reference-graph-warmup",
+            daemon=True,
+        )
+        self._reference_warmup_thread.start()
+
+    def rebuild(self, *, reference_graph: object | None = None) -> int:
         from sqvm.storage.catalog import rebuild_catalog
         from sqvm.storage.errors import StorageError
         with self._catalog_lock:
@@ -185,7 +336,7 @@ class ExperimentStorageWebService:
                 revision = rebuild_catalog(
                     self.catalog_path,
                     self._roots(),
-                    reference_adapter=self._reference_graph,
+                    reference_adapter=(self._reference_graph if reference_graph is None else lambda: reference_graph),
                 )
                 after = self._source_token()
                 # A publication that races the rebuild must force another
@@ -513,6 +664,67 @@ class ExperimentStorageWebService:
             "assets": [],
         }
 
+    def waveform_catalog(self, run_id: str) -> dict[str, object]:
+        """Project circuit/QCIS bindings without reading any waveform array."""
+
+        return self._read_waveforms(run_id, waveform_catalog)
+
+    def waveform_point(
+        self,
+        run_id: str,
+        circuit_id: str,
+        *,
+        view: str,
+        max_points: int,
+    ) -> dict[str, object]:
+        """Read one bounded waveform view from a verified storage carrier."""
+
+        return self._read_waveforms(
+            run_id,
+            lambda reader, bound_run_id: waveform_point(
+                reader,
+                bound_run_id,
+                circuit_id,
+                view=view,
+                max_points=max_points,
+            ),
+        )
+
+    def _read_waveforms(
+        self,
+        run_id: str,
+        projector: Callable[[Any, str], dict[str, Any]],
+    ) -> dict[str, object]:
+        directory = self.projection_directory(run_id)
+        try:
+            if directory is not None:
+                return projector(DirectoryEvidenceReader(directory), run_id)
+            row = self._internal_archive_row(run_id)
+            assert row.archive_path is not None
+            bundle = verify_sqrun(
+                row.archive_path,
+                verifier_registry=archive_evidence_verifier_registry(),
+                require_source_verified=True,
+            )
+            if bundle.run_id != row.run_id or bundle.workflow_sha256 != row.workflow_sha256:
+                raise ValueError("archive identity changed")
+            with ZipEvidenceReader(
+                Path(row.archive_path), bundle.entries, ArchiveLimits()
+            ) as archive_reader:
+                return projector(ArchiveEvidenceReader(archive_reader), run_id)
+        except WaveformEvidenceError as exc:
+            raise WebArtifactError(str(exc), status=exc.status) from exc
+        except StorageWebError:
+            raise
+        except Exception as exc:
+            raise StorageWebError(
+                "waveform_verification_failed",
+                500,
+                "experiment waveform evidence could not be verified",
+                run_id=run_id,
+                retryable=True,
+            ) from exc
+
     def _internal_archive_row(self, run_id: str):
         self._ensure_catalog()
         from sqvm.storage.catalog import query_catalog
@@ -543,9 +755,17 @@ class ExperimentStorageWebService:
             if request.expected_workflow_sha256 != current["workflow_sha256"]:
                 raise StorageWebError("workflow_hash_conflict", 412, "workflow identity changed", run_id=run_id,
                                       catalog_revision=revision, retryable=True)
+            latest_reference_graph: object | None = None
+
+            def reference_graph_provider():
+                nonlocal latest_reference_graph
+                latest_reference_graph = self._reference_graph()
+                return latest_reference_graph
+
             operations = ExperimentStorageOperations(hot_root=self.hot_root, storage_root=self.storage_root,
                 configuration_root=self.configuration_root, experiment_output_root=self.experiment_output_root,
-                archive_root=self.archive_root, catalog_revision=revision)
+                archive_root=self.archive_root, reference_graph_provider=reference_graph_provider,
+                catalog_revision=revision)
             try:
                 if action == "keep":
                     assert keep is not None
@@ -557,7 +777,15 @@ class ExperimentStorageWebService:
                 else: raise StorageWebError("invalid_storage_request", 422, "storage action is not available", run_id=run_id)
             except StorageOperationError as exc:
                 raise _storage_operation_error(exc, run_id, revision) from exc
-            new_revision = self.rebuild()
+            reuse_reference_graph = action in {"archive", "trash"} and latest_reference_graph is not None
+            if reuse_reference_graph:
+                self._adopt_reference_graph(latest_reference_graph)
+            if action == "trash":
+                new_revision = self._publish_trash_catalog((run_id,), revision)
+            else:
+                new_revision = self.rebuild(
+                    reference_graph=latest_reference_graph if reuse_reference_graph else None,
+                )
             rows = query_catalog(self.catalog_path, run_id)
             if len(rows) != 1:
                 raise StorageWebError("storage_operation_failed", 500, "storage mutation completed without a catalog record", run_id=run_id, catalog_revision=new_revision)
@@ -566,6 +794,142 @@ class ExperimentStorageWebService:
         if self.on_change is not None:
             self.on_change()
         return response
+
+    def batch_trash(self, payload: Mapping[str, object]) -> dict[str, object]:
+        actor_id, expected_revision, requested = _storage_batch_trash_request(payload)
+        self._reject_catalog_refreshing_mutation()
+        changed = False
+        with self._catalog_lock:
+            self._reject_catalog_refreshing_mutation()
+            self._ensure_catalog()
+            self._reject_catalog_refreshing_mutation()
+            from sqvm.storage.catalog import query_catalog, storage_summary
+            from sqvm.storage.operations import (
+                ExperimentStorageOperations,
+                StorageMutationRequest,
+                StorageOperationError,
+            )
+
+            revision = storage_summary(
+                self.catalog_path, volume_root=self.storage_root
+            ).catalog_revision
+            if expected_revision != revision:
+                raise StorageWebError(
+                    "catalog_revision_conflict", 412, "catalog revision changed",
+                    catalog_revision=revision, retryable=True,
+                )
+            catalog_rows = {row.run_id: row for row in query_catalog(self.catalog_path)}
+            for run_id, workflow_sha256 in requested:
+                row = catalog_rows.get(run_id)
+                if row is None:
+                    raise StorageWebError(
+                        "experiment_not_found", 404,
+                        "experiment storage record was not found", run_id=run_id,
+                        catalog_revision=revision,
+                    )
+                if row.workflow_sha256 != workflow_sha256:
+                    raise StorageWebError(
+                        "workflow_hash_conflict", 412, "workflow identity changed",
+                        run_id=run_id, catalog_revision=revision, retryable=True,
+                    )
+                if "trash" not in row.allowed_actions:
+                    code = "experiment_referenced" if row.reference_status == "protected" else (
+                        "experiment_kept" if row.manual_keep else "invalid_storage_state"
+                    )
+                    raise StorageWebError(
+                        code, 409, "experiment cannot enter trash", run_id=run_id,
+                        blockers=row.blockers, catalog_revision=revision,
+                    )
+
+            latest_reference_graph: object | None = None
+
+            def reference_graph_provider():
+                nonlocal latest_reference_graph
+                latest_reference_graph = self._reference_graph()
+                return latest_reference_graph
+
+            operations = ExperimentStorageOperations(
+                hot_root=self.hot_root,
+                storage_root=self.storage_root,
+                configuration_root=self.configuration_root,
+                experiment_output_root=self.experiment_output_root,
+                archive_root=self.archive_root,
+                reference_graph_provider=reference_graph_provider,
+                catalog_revision=revision,
+            )
+            completed: list[object] = []
+            failed_run_id: str | None = None
+            try:
+                for run_id, workflow_sha256 in requested:
+                    failed_run_id = run_id
+                    completed.append(operations.trash(
+                        run_id,
+                        StorageMutationRequest(
+                            actor_id,
+                            revision,
+                            workflow_sha256,
+                            "Web batch move to trash",
+                        ),
+                    ))
+                    changed = True
+                    if latest_reference_graph is not None:
+                        self._adopt_reference_graph(latest_reference_graph)
+            except StorageOperationError as exc:
+                published_revision = revision
+                if completed:
+                    published_revision = self._publish_trash_catalog(
+                        tuple(item.run_id for item in completed), revision
+                    )
+                error = _storage_operation_error(exc, failed_run_id or "", published_revision)
+                error.details.update({
+                    "completed_run_ids": [item.run_id for item in completed],
+                    "requested_count": len(requested),
+                })
+                if changed and self.on_change is not None:
+                    self.on_change()
+                raise error from exc
+
+            new_revision = self._publish_trash_catalog(
+                tuple(item.run_id for item in completed), revision
+            )
+            rows = {row.run_id: row for row in query_catalog(self.catalog_path)}
+            response = {
+                "schema_version": "0.1",
+                "operation_count": len(completed),
+                "catalog_revision": new_revision,
+                "items": [_public_catalog_row(rows[item.run_id]) for item in completed],
+            }
+        if changed and self.on_change is not None:
+            self.on_change()
+        return response
+
+    def _publish_trash_catalog(
+        self, run_ids: tuple[str, ...], expected_revision: int
+    ) -> int:
+        from sqvm.storage.catalog import publish_trash_catalog
+        from sqvm.storage.errors import StorageError
+
+        try:
+            revision = publish_trash_catalog(
+                self.catalog_path,
+                self._roots(),
+                run_ids,
+                expected_revision=expected_revision,
+            )
+            self._catalog_source_token = self._source_token()
+            self._catalog_reconcile_required = False
+            self._catalog_refresh_error = False
+            with self._catalog_overview_lock:
+                self._catalog_overview_cache = None
+            return revision
+        except (StorageError, OSError, ValueError) as exc:
+            self._catalog_source_token = None
+            self._catalog_reconcile_required = True
+            raise StorageWebError(
+                "storage_catalog_unavailable", 500,
+                "trash completed but catalog publication failed; reconciliation is required",
+                retryable=True,
+            ) from exc
 
 
 class CalibrationWebHandler(BaseHTTPRequestHandler):
@@ -578,9 +942,17 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
             self._json(exc.status, exc.payload())
         except (WebArtifactError, ConfigurationManagementError) as exc:
             payload = {"error": str(exc), "status": exc.status}
+            headers = None
             if isinstance(exc, ConfigurationManagementError):
                 payload["field_errors"] = exc.field_errors
-            self._json(exc.status, payload)
+                if exc.code is not None:
+                    payload["code"] = exc.code
+                if exc.transaction_id is not None:
+                    payload["transaction_id"] = exc.transaction_id
+                if exc.retry_after is not None:
+                    payload["retry_after"] = exc.retry_after
+                    headers = {"Retry-After": str(exc.retry_after)}
+            self._json(exc.status, payload, headers=headers)
         except Exception:
             self._json(500, {"error": "internal server error", "status": 500})
 
@@ -735,6 +1107,21 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[1] == "storage" and parts[0]:
                 self._json(200, self.server.storage.run(parts[0]))
                 return
+            if len(parts) == 2 and parts[1] == "waveforms" and parts[0]:
+                payload = self.server.storage.waveform_catalog(parts[0])
+                self._json_with_etag(
+                    payload, _strong_etag("experiment-waveform-catalog-v1", payload)
+                )
+                return
+            if len(parts) == 3 and parts[1] == "waveforms" and all((parts[0], parts[2])):
+                view, max_points = _waveform_request(request.query)
+                payload = self.server.storage.waveform_point(
+                    parts[0], parts[2], view=view, max_points=max_points
+                )
+                self._json_with_etag(
+                    payload, _strong_etag("experiment-waveform-point-v1", payload)
+                )
+                return
             if len(parts) == 2 and parts[1] == "plots" and parts[0]:
                 detail = self.server.index.experiment(parts[0])
                 payload = {
@@ -830,9 +1217,17 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
             self._json(exc.status, exc.payload())
         except (WebArtifactError, ConfigurationManagementError) as exc:
             payload = {"error": str(exc), "status": exc.status}
+            headers = None
             if isinstance(exc, ConfigurationManagementError):
                 payload["field_errors"] = exc.field_errors
-            self._json(exc.status, payload)
+                if exc.code is not None:
+                    payload["code"] = exc.code
+                if exc.transaction_id is not None:
+                    payload["transaction_id"] = exc.transaction_id
+                if exc.retry_after is not None:
+                    payload["retry_after"] = exc.retry_after
+                    headers = {"Retry-After": str(exc.retry_after)}
+            self._json(exc.status, payload, headers=headers)
         except Exception:
             self._json(500, {"error": "internal server error", "status": 500})
 
@@ -845,6 +1240,10 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                 _validate_storage_action_payload("restore", payload)
                 self._json(200, self.server.storage.mutate(run_id, "restore", payload))
                 return
+        if method == "POST" and path == "/api/v1/experiment-storage/batch-trash":
+            _storage_batch_trash_request(payload)
+            self._json(200, self.server.storage.batch_trash(payload))
+            return
         if method == "POST" and path.startswith("/api/v1/experiments/"):
             tail = path.removeprefix("/api/v1/experiments/").split("/")
             if len(tail) == 2 and tail[0] and tail[1] in {"keep", "archive", "restore-hot", "trash"}:
@@ -875,18 +1274,21 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
             detail = self.server.index.experiment(run_id)
             if detail.get("recommendation_applicable") is not True:
                 raise ConfigurationManagementError(
-                    "experiment has no configuration update adapter"
+                    "experiment has no configuration update adapter",
+                    code="candidate_update_invalid",
                 )
             if detail.get("claim", {}).get("evidence_class") == "synthetic_demo":
                 raise ConfigurationManagementError(
-                    "synthetic demo candidates cannot update configuration"
+                    "synthetic demo candidates cannot update configuration",
+                    code="candidate_update_invalid",
                 )
             expected_phrase = f"APPLY CALIBRATION CANDIDATES {run_id}"
             if payload.get("confirmation_phrase") != expected_phrase:
                 raise ConfigurationManagementError(
                     "candidate update confirmation phrase is invalid"
                 )
-            candidates = _selected_candidates(detail, payload)
+            decision = _candidate_application_decision(payload)
+            candidates = _selected_candidates(detail, payload, decision=decision)
             result = self.server.store.apply_candidates_to_current_configuration(
                 payload.get("device_id", "demo_2q1c2r"),
                 actor_id=payload.get("actor_id"),
@@ -894,6 +1296,8 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                 experiment_run_id=run_id,
                 recommendation_id=detail.get("recommendation_id") or run_id,
                 candidates=candidates,
+                decision=decision,
+                operation_id=payload.get("operation_id"),
             )
             self._json(200, result)
             return
@@ -901,8 +1305,17 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
             run_id = path.removeprefix("/api/v1/experiments/").removesuffix("/draft")
             detail = self.server.index.experiment(run_id)
             if detail.get("recommendation_applicable") is not True:
-                raise ConfigurationManagementError("experiment has no configuration draft adapter")
-            candidates = _selected_candidates(detail, payload)
+                raise ConfigurationManagementError(
+                    "experiment has no configuration draft adapter",
+                    code="candidate_update_invalid",
+                )
+            if detail.get("claim", {}).get("evidence_class") == "synthetic_demo":
+                raise ConfigurationManagementError(
+                    "synthetic demo candidates cannot update configuration",
+                    code="candidate_update_invalid",
+                )
+            decision = _candidate_application_decision(payload)
+            candidates = _selected_candidates(detail, payload, decision=decision)
             parent = detail.get("parent_calibration")
             relative = parent.get("path") if isinstance(parent, dict) else None
             matches = [
@@ -927,6 +1340,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                 experiment_run_id=run_id,
                 recommendation_id=detail.get("recommendation_id") or run_id,
                 candidates=candidates,
+                decision=decision,
             )
             self._json(201, result)
             return
@@ -941,6 +1355,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     name=payload.get("name"),
                     note=payload.get("note", ""),
                     editable=payload.get("editable"),
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
@@ -949,6 +1364,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     device_id,
                     actor_id=payload.get("actor_id"),
                     expected_content_sha256=payload.get("expected_content_sha256"),
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
@@ -960,6 +1376,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     name=payload.get("name"),
                     reason=payload.get("reason"),
                     keep=payload.get("keep") is True,
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(201, result)
                 return
@@ -1000,6 +1417,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     name=payload.get("name"),
                     reason=payload.get("reason"),
                     keep=payload.get("keep") is True,
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(201, result)
                 return
@@ -1016,6 +1434,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     snapshot_id,
                     actor_id=payload.get("actor_id"),
                     confirmation_phrase=payload.get("confirmation_phrase"),
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
@@ -1026,6 +1445,7 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     expected_current_content_sha256=payload.get(
                         "expected_current_content_sha256"
                     ),
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
@@ -1034,12 +1454,17 @@ class CalibrationWebHandler(BaseHTTPRequestHandler):
                     snapshot_id,
                     actor_id=payload.get("actor_id"),
                     keep=payload.get("keep") is True,
+                    operation_id=payload.get("operation_id"),
                 )
                 self._json(200, result)
                 return
             if method == "DELETE" and len(tail) == 1:
                 actor_id = self.headers.get("X-SQVM-Actor")
-                self.server.store.delete_snapshot(snapshot_id, actor_id=actor_id)
+                self.server.store.delete_snapshot(
+                    snapshot_id,
+                    actor_id=actor_id,
+                    operation_id=self.headers.get("X-SQVM-Operation-ID"),
+                )
                 self._json(200, {"deleted": True, "snapshot_id": snapshot_id})
                 return
         self._method_not_allowed()
@@ -1221,6 +1646,7 @@ def create_calibration_web_server(
         )
         server.storage.on_change = server.coordinator.notify
         server.coordinator.start()
+        server.storage.start_reference_warmup()
     except Exception:
         server.server_close()
         raise
@@ -1436,6 +1862,31 @@ def _plot_data_request(query_text: str) -> tuple[int, float | None, float | None
     return max_points, values[0], values[1]
 
 
+def _waveform_request(query_text: str) -> tuple[str, int]:
+    query = parse_qs(query_text, keep_blank_values=True)
+    if set(query) - {"view", "max_points"}:
+        raise WebArtifactError("waveform query contains unsupported fields", status=400)
+
+    def single(name: str, default: str) -> str:
+        values = query.get(name)
+        if values is None:
+            return default
+        if len(values) != 1 or not values[0] or len(values[0]) > 32:
+            raise WebArtifactError(f"waveform {name} is invalid", status=400)
+        return values[0]
+
+    view = single("view", "awg")
+    if view not in {"awg", "effective", "logical"}:
+        raise WebArtifactError("waveform view is invalid", status=400)
+    try:
+        max_points = int(single("max_points", "2000"))
+    except ValueError as exc:
+        raise WebArtifactError("waveform max_points is invalid", status=400) from exc
+    if not 2 <= max_points <= 10_000:
+        raise WebArtifactError("waveform max_points must be in [2,10000]", status=400)
+    return view, max_points
+
+
 def _web_path_identifier(value: str, label: str) -> None:
     if (
         len(value) > 128
@@ -1447,19 +1898,26 @@ def _web_path_identifier(value: str, label: str) -> None:
 def _selected_candidates(
     detail: Mapping[str, Any],
     payload: Mapping[str, Any],
+    *,
+    decision: CandidateApplicationDecision | None = None,
 ) -> list[Mapping[str, Any]]:
     rows = detail.get("candidates")
     if not isinstance(rows, list):
         raise ConfigurationManagementError("experiment candidates are invalid")
     candidate_ids = payload.get("candidate_ids")
     targets = payload.get("targets")
+    if candidate_ids is not None and targets is not None:
+        raise ConfigurationManagementError(
+            "select candidates by candidate_ids or targets, not both",
+            code="candidate_update_invalid",
+        )
     if candidate_ids is not None:
         if (
-            not isinstance(candidate_ids, list)
-            or not candidate_ids
-            or len(candidate_ids) != len(set(candidate_ids))
+            not _candidate_selection_identifiers(candidate_ids)
         ):
-            raise ConfigurationManagementError("candidate_ids are required")
+            raise ConfigurationManagementError(
+                "candidate_ids are required", code="candidate_update_invalid"
+            )
         candidate_map = {
             row.get("candidate_id"): row
             for row in rows
@@ -1467,14 +1925,16 @@ def _selected_candidates(
         }
         selected = [candidate_map[item] for item in candidate_ids if item in candidate_map]
         if len(selected) != len(candidate_ids):
-            raise ConfigurationManagementError("candidate_ids are invalid")
+            raise ConfigurationManagementError(
+                "candidate_ids are invalid", code="candidate_update_invalid"
+            )
     else:
         if (
-            not isinstance(targets, list)
-            or not targets
-            or len(targets) != len(set(targets))
+            not _candidate_selection_identifiers(targets)
         ):
-            raise ConfigurationManagementError("candidate_ids are required")
+            raise ConfigurationManagementError(
+                "candidate_ids are required", code="candidate_update_invalid"
+            )
         selected = [
             row
             for row in rows
@@ -1492,10 +1952,58 @@ def _selected_candidates(
             for subject in row.get("calibration_subjects", [row.get("target")])
         }
         if not selected or not set(targets).issubset(selected_subjects):
-            raise ConfigurationManagementError("candidate targets are invalid")
-    if any(row.get("recommendation_eligible") is not True for row in selected):
-        raise ConfigurationManagementError("selected candidate is not eligible")
+            raise ConfigurationManagementError(
+                "candidate targets are invalid", code="candidate_update_invalid"
+            )
+    if (
+        (decision.mode if decision is not None else "recommended_only")
+        == "recommended_only"
+        and any(row.get("recommendation_eligible") is not True for row in selected)
+    ):
+        raise ConfigurationManagementError(
+            "selected candidate is not recommended",
+            code="candidate_not_recommended",
+        )
     return selected
+
+
+def _candidate_selection_identifiers(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, str) and item.strip() for item in value)
+        and len(value) == len(set(value))
+    )
+
+
+def _candidate_application_decision(
+    payload: Mapping[str, Any],
+) -> CandidateApplicationDecision:
+    """Normalize the request decision before candidate selection or persistence."""
+
+    mode = payload.get("decision_mode", "recommended_only")
+    source = payload.get("decision_source", "automation")
+    if not isinstance(mode, str) or not isinstance(source, str):
+        raise ConfigurationManagementError(
+            "candidate decision mode or source is invalid",
+            code="candidate_decision_invalid",
+        )
+    if mode == "override_recommendation":
+        candidate_ids = payload.get("candidate_ids")
+        if not isinstance(candidate_ids, list) or not candidate_ids:
+            raise ConfigurationManagementError(
+                "override requires explicit candidate_ids",
+                code="candidate_override_selection_required",
+            )
+    try:
+        decision = normalize_candidate_application_decision(
+            mode=mode,
+            source=source,
+            reason=payload.get("decision_reason"),
+        )
+    except CandidateApplicationDecisionError as exc:
+        raise ConfigurationManagementError(str(exc), code=exc.code) from exc
+    return decision
 
 
 def serve_calibration_web(
@@ -1544,6 +2052,60 @@ def _validate_storage_action_payload(action: str, payload: Mapping[str, object])
     _request, keep = _storage_request(payload)
     if (action == "keep") != (keep is not None):
         raise StorageWebError("invalid_storage_request", 422, "keep is required only for a keep mutation")
+
+
+def _storage_batch_trash_request(
+    payload: Mapping[str, object],
+) -> tuple[str, int, tuple[tuple[str, str], ...]]:
+    if set(payload) != {"actor_id", "expected_catalog_revision", "items"}:
+        raise StorageWebError(
+            "invalid_storage_request", 422, "batch trash request fields are invalid"
+        )
+    actor_id = payload.get("actor_id")
+    revision = payload.get("expected_catalog_revision")
+    items = payload.get("items")
+    if (
+        not isinstance(actor_id, str)
+        or len(actor_id) < 3
+        or len(actor_id) > 64
+        or not actor_id[0].isalpha()
+        or any(character not in "._-" and not character.isalnum() for character in actor_id)
+        or type(revision) is not int
+        or revision < 0
+        or not isinstance(items, list)
+        or not 1 <= len(items) <= 100
+    ):
+        raise StorageWebError(
+            "invalid_storage_request", 422, "batch trash request values are invalid"
+        )
+    requested: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, Mapping) or set(item) != {
+            "run_id", "expected_workflow_sha256"
+        }:
+            raise StorageWebError(
+                "invalid_storage_request", 422, "batch trash item is invalid"
+            )
+        run_id = item.get("run_id")
+        workflow_sha256 = item.get("expected_workflow_sha256")
+        try:
+            valid_run_id = isinstance(run_id, str) and str(uuid.UUID(run_id)) == run_id
+        except (ValueError, TypeError, AttributeError):
+            valid_run_id = False
+        if (
+            not valid_run_id
+            or run_id in seen
+            or not isinstance(workflow_sha256, str)
+            or len(workflow_sha256) != 64
+            or any(character not in "0123456789ABCDEF" for character in workflow_sha256)
+        ):
+            raise StorageWebError(
+                "invalid_storage_request", 422, "batch trash item is invalid"
+            )
+        seen.add(run_id)
+        requested.append((run_id, workflow_sha256))
+    return actor_id, revision, tuple(requested)
 
 
 def _storage_operation_error(error: StorageOperationError, run_id: str, revision: int) -> StorageWebError:

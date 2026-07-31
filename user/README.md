@@ -5,6 +5,7 @@
 | Notebook | 用途 | 状态 |
 | --- | --- | --- |
 | `01_qubit_spectroscopy.ipynb` | 单比特或双比特并行频谱扫描 | 可运行 |
+| `02_x2p_rabi_calibration.ipynb` | Active XY2 setting 的两个连续 X2P 幅度校准 | 可运行 |
 
 首次使用或更换 Python 环境后，先运行：
 
@@ -13,10 +14,15 @@
 ```
 
 该脚本把当前项目安装为 editable package，并验证
-`from sqvm.calibration import run_spectroscopy`。Notebook 随后可以直接通过
+`from sqvm.calibration import run_spectroscopy, run_rabi`。Notebook 随后可以直接通过
 `sqvm.calibration` 公共接口运行实验。实验结果写入
 `output/experiments/`，随后可以在校准 Web 控制台中查看。
 
 真实 QuTiP 扫描可能耗时较长。Notebook 的 `RUN_EXPERIMENT=True` 会开始运行；需要先
 检查导入和参数时可改成 `False`。运行后逐点打印进度和 circuit ID，每个 worker 的
-watchdog 上限为 600 秒。
+watchdog 上限为 600 秒。Notebook 同时保存一个 `OPERATION_ID`；运行中断后不要重新执行
+参数单元格，直接重跑实验单元格即可复用已完成的数据点。
+
+Rabi Notebook 使用 `UPDATE_CANDIDATE=False` 作为默认保护。只有检查结果后才将其改为
+`True`；该步骤会要求候选存在且 eligible。首个 pilot 的 analysis policy 未批准、相位审计或
+质量门未通过时，Rabi 仍可提供诊断结果，但候选不可应用，Notebook 不会发起配置写事务。

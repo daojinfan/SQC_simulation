@@ -15,19 +15,19 @@ exit /b 1
 :install_venv
 ".venv\Scripts\python.exe" -m pip install -e .
 if errorlevel 1 goto failed
-".venv\Scripts\python.exe" -c "from sqvm.calibration import run_spectroscopy; print('SQVM import OK')"
+".venv\Scripts\python.exe" -c "from sqvm.calibration import run_spectroscopy, run_rabi; print('SQVM import OK')"
 goto finish
 
 :install_py
 py -3 -m pip install -e .
 if errorlevel 1 goto failed
-py -3 -c "from sqvm.calibration import run_spectroscopy; print('SQVM import OK')"
+py -3 -c "from sqvm.calibration import run_spectroscopy, run_rabi; print('SQVM import OK')"
 goto finish
 
 :install_python
 python -m pip install -e .
 if errorlevel 1 goto failed
-python -c "from sqvm.calibration import run_spectroscopy; print('SQVM import OK')"
+python -c "from sqvm.calibration import run_spectroscopy, run_rabi; print('SQVM import OK')"
 goto finish
 
 :failed

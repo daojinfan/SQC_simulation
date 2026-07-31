@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -19,6 +20,19 @@ from sqvm.web.configuration_schema import (
     project_wave_indices,
     validate_document,
 )
+from sqvm.web.configuration_transactions import (
+    ConfigurationTransactionError,
+    ConfigurationTransactionManager,
+)
+from sqvm.web.runtime_contract import assert_runtime_configuration_covered
+
+
+# The selector remains part of the public SET path.  Its chosen record is
+# resolved from the already validated authority, so callers cannot name a
+# setting ID or widen the allowed numeric surface through a request.
+_SETTABLE_NUMERIC_WAVEFORM_FIELDS = {
+    "active_xy2_setting": frozenset({"amplitude_GHz"}),
+}
 
 
 class PlatformAuthorityResolutionError(ValueError):
@@ -34,13 +48,28 @@ class PlatformAuthorityResolver:
         self.root = (Path(storage_root).resolve() if storage_root else self.repository_root / "output" / "platform-configurations")
 
     def resolve(self, device_id: str = "demo_2q1c2r") -> CircuitExecutionContext:
-        pointer = self._load(self.root / "active" / f"{device_id}.json", "active pointer")
+        authority_root = self.root
+        transactions = ConfigurationTransactionManager(self.root)
+        if transactions.head_exists(device_id):
+            try:
+                authority_root = transactions.committed_view(device_id).projection_root
+            except ConfigurationTransactionError as exc:
+                raise PlatformAuthorityResolutionError(
+                    f"configuration transaction authority is invalid: {exc}"
+                ) from exc
+        pointer = self._load(
+            authority_root / "active" / f"{device_id}.json",
+            "active pointer",
+        )
         if pointer.get("device_id") != device_id:
             raise PlatformAuthorityResolutionError("Active pointer device does not match request")
         snapshot_id = pointer.get("snapshot_id")
         if not isinstance(snapshot_id, str):
             raise PlatformAuthorityResolutionError("Active pointer snapshot id is invalid")
-        snapshot = self._load(self.root / "snapshots" / snapshot_id / "snapshot.json", "active snapshot")
+        snapshot = self._load(
+            authority_root / "snapshots" / snapshot_id / "snapshot.json",
+            "active snapshot",
+        )
         if snapshot.get("snapshot_id") != snapshot_id or snapshot.get("device_id") != device_id:
             raise PlatformAuthorityResolutionError("Active pointer does not resolve its snapshot")
         if snapshot.get("content_sha256") != pointer.get("snapshot_content_sha256") or snapshot.get("content_sha256") != sha256_json(snapshot.get("editable")):
@@ -54,8 +83,15 @@ class PlatformAuthorityResolver:
         calibration = snapshot["editable"]["calibration_values"]
         if not calibration:
             raise PlatformAuthorityResolutionError("uninitialized snapshot cannot resolve a compiler authority")
+        try:
+            assert_runtime_configuration_covered(snapshot["editable"])
+        except ValueError as exc:
+            raise PlatformAuthorityResolutionError(
+                f"Active snapshot runtime contract is invalid: {exc}"
+            ) from exc
         authorities = self._authorities(snapshot, device, calibration)
         frozen = _freeze(authorities)
+        frozen_configuration = _freeze(copy.deepcopy(snapshot["editable"]))
         simulation = snapshot["editable"]["control_values"].get(
             "simulation",
             initial_simulation_configuration(),
@@ -64,20 +100,23 @@ class PlatformAuthorityResolver:
         if not isinstance(model_configuration, Mapping):
             raise PlatformAuthorityResolutionError("calibration simulation model is invalid")
         frozen_model_configuration = _freeze(model_configuration)
+        settable_paths = self._settable_paths(frozen)
         context_hash = sha256_json(
             {
                 "qcis_authorities": _plain(frozen),
-                "calibration_model_configuration": _plain(frozen_model_configuration),
+                "platform_configuration": _plain(frozen_configuration),
+                "settable_paths": sorted(settable_paths),
             }
         )
         return CircuitExecutionContext(
             frozen,
             MappingProxyType({name: float(snapshot["editable"]["control_values"]["idle_flux_phi0"][name]) for name in ("q1", "q2", "c")} ),
-            frozenset(),
+            settable_paths,
             platform_snapshot_id=snapshot_id,
             platform_snapshot_content_sha256=snapshot["content_sha256"],
             authority_context_sha256=context_hash,
             calibration_model_configuration=frozen_model_configuration,
+            platform_configuration=frozen_configuration,
         )
 
     def _device(self, snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -131,6 +170,44 @@ class PlatformAuthorityResolver:
         self._validate_selected(authorities)
         authorities["expected_sha256"] = {name: sha256_json(authorities[name]) for name in ("instruction_profile", "qagent_registry", "gate_configuration", "waveform_registry", "clock", "compiler")}
         return authorities
+
+    @staticmethod
+    def _settable_paths(authorities: Mapping[str, Any]) -> frozenset[str]:
+        """Derive the fixed numeric SET policy from accepted selected settings."""
+
+        gates = authorities.get("gate_configuration")
+        registry = authorities.get("waveform_registry")
+        settings = registry.get("settings") if isinstance(registry, Mapping) else None
+        if not isinstance(gates, Mapping) or not isinstance(settings, Mapping):
+            raise PlatformAuthorityResolutionError("settable-path authority is incomplete")
+        paths: set[str] = set()
+        for target in ("Q1", "Q2"):
+            gate_config = gates.get(target)
+            if not isinstance(gate_config, Mapping):
+                raise PlatformAuthorityResolutionError(f"{target} gate configuration is invalid")
+            for selector, fields in _SETTABLE_NUMERIC_WAVEFORM_FIELDS.items():
+                setting_id = gate_config.get(selector)
+                setting = settings.get(setting_id)
+                if (
+                    not isinstance(setting_id, str)
+                    or not isinstance(setting, Mapping)
+                    or setting.get("setting_id") != setting_id
+                    or setting.get("target") != target
+                    or setting.get("gate_type") != "XY2"
+                    or setting.get("transition") != "01"
+                    or setting.get("status") != "accepted"
+                ):
+                    raise PlatformAuthorityResolutionError(
+                        f"{target}.{selector} is not an accepted XY2 setting"
+                    )
+                for field in fields:
+                    value = setting.get(field)
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                        raise PlatformAuthorityResolutionError(
+                            f"{target}.{selector}.{field} is not a finite numeric setting"
+                        )
+                    paths.add(f"{target}.setting.{selector}.{field}")
+        return frozenset(paths)
 
     @staticmethod
     def _validate_raw_calibration(calibration: Mapping[str, Any]) -> None:

@@ -12,8 +12,8 @@ r1, r2  两个读出谐振腔
 ```
 
 当前项目处于校准平台的 bounded pilot 阶段。器件、哈密顿量、静态能谱、控制链、
-QuTiP 演化、QCIS 编译和通用 `run_circuits` 接口已经建立；比特频谱是目前第一项完整
-打通的校准实验。
+QuTiP 演化、QCIS 编译和通用 `run_circuits` 接口已经建立；比特频谱与 Rabi/X2P
+幅度扫描是目前已经完整打通的两项校准实验。
 
 ## 当前能力
 
@@ -26,6 +26,8 @@ QuTiP 演化、QCIS 编译和通用 `run_circuits` 接口已经建立；比特�
   probability。
 - 通过统一 `run_spectroscopy` 接口运行一次单比特或双比特并行频谱，并返回本次扫描的
   频率、P0、P1、leakage 和峰值分析。
+- 通过 `run_rabi` 执行单比特首瓣 `X2P + X2P` 幅度扫描，并返回幅度、P0、P1、
+  leakage、拟合分析和候选更新；`cancel_rabi` 提供跨进程协作取消。
 - 在本地 Web 控制台编辑当前配置、保存或恢复快照，并查看实验数据和证据。
 - 从实验详情导出 JSON 或 CSV 数据。
 
@@ -108,8 +110,10 @@ runner commands: it fails closed unless the approved interpreter and kernelspec 
 ## CI 与 successor 基线
 
 仓库提供四套 GitHub Actions 工作流：PR 资格、夜间物理、hosted evidence 和 main 发布汇总。
-Windows/CPython 3.12.10 是资格平台，Linux job 是跨平台补充。工作流文件存在不代表仓库规则已经将其
-设为 required；在 GitHub Ruleset 配置完成并取得连续稳定运行记录前，Step 4 仍保持 NO-GO。
+Windows/CPython 3.12.10 是资格平台，Linux job 是跨平台补充。`dev` PR 独立运行一次资格矩阵；
+`main` PR 由 Release Gate 复用同一矩阵，不再额外触发一套重复资格任务。物理 Windows/Linux job
+在独立 hosted runner 上并行，产物名和 pip cache 都按平台隔离。工作流使用 Node 24 或更新运行时的
+官方 Actions major，required check 名称保持不变。
 
 旧 Stage 2.1 至 4.0 evidence 的原始字节已经不可恢复。当前 successor fixture 只记录已知旧哈希、
 不可恢复状态和 provisional source closure，不宣称重新完成物理执行。验证开发基线：
@@ -135,10 +139,11 @@ py -3.12 -m pytest -q `
 | Notebook | 用途 |
 | --- | --- |
 | [`01_qubit_spectroscopy.ipynb`](user/01_qubit_spectroscopy.ipynb) | 单比特或双比特并行频谱校准 |
+| [`02_x2p_rabi_calibration.ipynb`](user/02_x2p_rabi_calibration.ipynb) | 单比特 `X2P + X2P` Rabi 幅度校准 |
 
 Notebook 会自动定位项目根目录并从 `sqvm.calibration` 导入公共接口。真实 QuTiP 扫描
-可能耗时较长，因此 `RUN_EXPERIMENT=False` 是默认值；检查扫描轴和波形参数后，显式改为
-`True` 才会开始实验。
+可能耗时较长；当前 Notebook 的 `RUN_EXPERIMENT=True`，执行扫描单元格前应先检查扫描轴、
+波形参数和 `OPERATION_ID`，不准备运行时将其改为 `False`。
 
 推荐从项目根目录启动 Jupyter：
 
@@ -149,7 +154,7 @@ Notebook 会自动定位项目根目录并从 `sqvm.calibration` 导入公共接
 ```
 
 如果没有 `.venv`，环境脚本会使用系统的 `py -3` 或 `python`。安装完成后可以在项目
-根目录或 `user/` 目录直接执行 `from sqvm.calibration import run_spectroscopy`。
+根目录或 `user/` 目录直接导入 `run_spectroscopy` 或 `run_rabi`。
 
 ## Python 校准 API
 
@@ -160,17 +165,22 @@ Web 不负责启动实验。校准实验通过 Python API 运行，结果写入
 扫谱，两个对象自动并行：
 
 ```python
+from uuid import uuid4
+
 from sqvm.calibration import (
     apply_calibration_candidates_to_current_configuration,
+    cancel_spectroscopy,
     run_spectroscopy,
 )
 
+operation_id = str(uuid4())
 result = run_spectroscopy(
     {
         "Q1": (5.00, 5.40),
         "Q2": (5.10, 5.50),
     },
     frequency_step_GHz=0.20,
+    operation_id=operation_id,
 )
 
 print(result.run_id)
@@ -208,12 +218,47 @@ Web 和 Python API 均按 `candidate_ids` 选择候选，通用确认短语为
 | `pulse_r_sigma_samples` | 否 | `8.0` | 扫谱脉冲的 `r_sigma` |
 | `device_id` | 否 | `demo_2q1c2r` | 使用 Active 配置的设备 |
 | `timeout_s` | 否 | `600.0` | 每个隔离 QuTiP worker 的 watchdog，不是整次实验总时长 |
+| `batch_deadline_s` | 否 | `3600.0` | 一次有效批次 attempt 的总时限；已提交点在下次 attempt 中复用 |
+| `operation_id` | 否 | 自动 UUID4 | 幂等运行 ID；重试时传回原值即可续跑或零执行重开 |
+| `cancellation_token` | 否 | `None` | 进程内协作取消；在两个 QCIS 点之间生效 |
 | `output_root` | 否 | `output/experiments` | 实验结果集合目录 |
 | `progress_callback` | 否 | `None` | 接收运行进度事件的回调 |
 
 每次调用只执行参数指定的这一轮扫描，不会自动追加另一组范围或步进。本次扫描的有效峰
 会形成候选校准值；候选通过峰质量、最大 leakage 和最大 norm error 门限后，可以由用户
 显式确认并写入当前配置。需要换范围或步进时，再次调用同一个接口。
+
+调用前保存 `operation_id`。进程中断后，以完全相同的参数和该 ID 再次调用，只执行尚未提交的
+QCIS 点；结果已经发布时则只验证并重开，不重复运行 QuTiP。同一个 ID 如果绑定了不同范围、
+波形、Active 配置或执行时限会被拒绝。跨进程取消可调用
+`cancel_spectroscopy(operation_id, ...)`，取消为协作式，不会在单个 QuTiP worker 中途强杀线程。
+
+Rabi/X2P 扫描使用 Runtime 0.3 的同一批执行、恢复、幂等和证据发布合同。首版固定为一个目标
+比特、从零开始的幅度轴，以及每点 `SET + X2P + X2P`；扫描范围和步进必须显式给出：
+
+```python
+from uuid import uuid4
+
+from sqvm.calibration import cancel_rabi, run_rabi
+
+operation_id = str(uuid4())
+result = run_rabi(
+    target="Q1",
+    amplitude_range_GHz=(0.0, 0.03),
+    amplitude_step_GHz=0.002,
+    operation_id=operation_id,
+)
+
+print(list(result.data["Q1"]["amplitude_GHz"]))
+print(list(result.data["Q1"]["P1"]))
+print(result.candidates.get("Q1"))
+
+# 需要在下一个扫描点前协作取消时：
+# cancel_rabi(operation_id)
+```
+
+Rabi 实验只生成 active XY2 setting 的幅度候选，不会自动修改当前配置。相同参数和
+`operation_id` 可恢复未提交点或零执行重开；`cancel_rabi` 不会在单个 QuTiP worker 中途强杀进程。
 
 本地校准扫描使用已批准的 Stage 4.1 控制链，并把验证后的有效 I/Q 数组交给独立的
 QuTiP worker。默认从 `(7,7,7)` 电荷基重建 2Q1C 哈密顿量，再投影到
@@ -272,6 +317,7 @@ Web 的职责边界：
 - 可以保存配置快照、长期保留快照或把快照恢复到当前配置。
 - 可以查看扫描曲线、峰值分析、候选校准值、门限和底层证据。
 - 实验图使用统一 `plot_spec`，可筛选 Q1/Q2/C 等对象与 P0/P1/leakage 等指标，并支持选点坐标、折线、散点和 heatmap。
+- 实验详情可按扫描点联动查看 QCIS 指令、编译逻辑波形、电子学链后的真实 AWG `delivered_voltage`/DAC 码，以及实际送入 QuTiP 的有效 I/Q 和磁通控制。
 - 实验列表使用后端分页、搜索和状态筛选；大型一维曲线按需加载降采样数据，点击后回查精确原始点。
 - 实验列表、总览、详情和绘图普通请求读取可重建的 SQLite 读模型，不遍历每个实验的 `execution/` 证据树。
 - 不启动 QuTiP 实验，不在浏览器中重新拟合数据。
@@ -279,6 +325,13 @@ Web 的职责边界：
 - 扫谱生成合格候选后，可以显式确认并更新当前配置。
 - 当前配置只在点击“保存并生效”后写入；保存成功会自动生成不可变运行版本并切换 Active，下一次实验直接使用新值。
 - Notebook 中显式确认候选更新、以及 Web 中恢复快照，同样会在成功后立即生效，不再要求手工发布或激活。
+
+通道波形不会并入普通实验详情响应，而是按需读取受清单和 SHA-256 绑定的 Stage 4.1 证据：
+
+```text
+GET /api/v1/experiments/<run_id>/waveforms
+GET /api/v1/experiments/<run_id>/waveforms/<circuit_id>?view=awg|effective|logical&max_points=2000
+```
 
 ## 实验存储 v1
 
@@ -346,13 +399,22 @@ from sqvm.storage.operations import ExperimentStorageOperations, StorageMutation
 
 ```text
 output/platform-configurations/
-├─ current/       Web 中直接编辑的当前工作配置
-├─ snapshots/     不可修改的配置快照
-├─ active/        当前实验入口使用的 Active 快照指针
+├─ transactions/
+│  ├─ heads/      每个设备唯一的事务提交点
+│  ├─ bundles/    不可变的同代 current/Active/snapshot/pin/audit 状态
+│  └─ locks/      Web 与 Notebook/Python 共用的跨进程设备锁
+├─ current/       Web 当前配置的兼容投影
+├─ snapshots/     不可修改快照的兼容投影
+├─ active/        Active 指针的兼容投影
 ├─ drafts/        旧版 Draft 兼容数据
-├─ pins/          用户要求长期保留的快照
-└─ audit/         配置操作审计
+├─ pins/          长期保留标记的兼容投影
+└─ audit/         配置审计的兼容投影
 ```
+
+正式 Store、实验 resolver、引用图、Web 和 Notebook/Python API 都先验证 transaction Head、Manifest、
+完整 Bundle 与 parent chain。平面目录只用于旧脚本兼容，可能在崩溃恢复期间短暂滞后，不应被新代码
+直接读取。事务协议与稳定错误码见
+[`docs/designs/07_1_11_configuration_transaction_v0_1.md`](docs/designs/07_1_11_configuration_transaction_v0_1.md)。
 
 当前 Web 主流程使用“当前配置 + 快照”模型；`run_spectroscopy` 要求设备恰好存在一个
 合法的 Active 运行版本。浏览器内尚未保存的修改不会影响实验；点击“保存并生效”后，
@@ -395,6 +457,10 @@ output/experiments/<experiment_run>/
   tests/test_platform_configuration_v02.py `
   tests/test_spectroscopy_calibration_workflow.py `
   tests/test_qubit_spectroscopy.py `
+  tests/test_rabi_public_api_acceptance.py `
+  tests/test_rabi_calibration.py `
+  tests/test_rabi_runtime_adapter.py `
+  tests/test_rabi_storage_lifecycle.py `
   tests/test_user_notebooks.py
 ```
 
@@ -425,9 +491,13 @@ Smoke 完成不等于生产物理后端通过正式规模验收。
 - 当前 75 维投影电荷基校准模型只接收 idle-flux XY 线路；DTN、CZ 和 FSIM 仍需增加磁通响应模型。
 - 当前初态固定为 `lab_ground`，observable 主要是 dressed computational population。
 - 尚未实现真实 shot、IQ、assignment matrix 和读出噪声模型。
-- Rabi、Ramsey、DRAG、Coupler 和 CZ 等校准实验尚未接入完整工作流。
+- 比特频谱与 Rabi/X2P 幅度校准已接入完整工作流；Ramsey、DRAG、Coupler 和 CZ 校准实验
+  仍未实现。
+- Runtime 0.3 批执行底座已用于频谱和 Rabi 的预编译、逐点提交、恢复、取消与幂等重开。
 - 校准扫描仍是后台 Python 工作流，不作为 Web 请求内的同步操作。
-- `runtime`、`runtime_v02` 以及部分 Stage 4/5 双版本仍待后续架构收敛。
+- Web 已支持配置、实验查看、Rabi/频谱绘图、存储 v1 生命周期操作和显式候选决策，
+  但不负责启动实验；自动保留、cleanup preview/apply、永久 purge 和配额执行仍未交付。
+- `runtime`、`runtime_v02`、Runtime 0.3 批执行以及部分 Stage 4/5 双版本仍待后续架构收敛。
 
 ## 文档入口
 
@@ -442,4 +512,5 @@ Smoke 完成不等于生产物理后端通过正式规模验收。
 7. [`docs/designs/07_1_5_current_configuration_workbench_v2.md`](docs/designs/07_1_5_current_configuration_workbench_v2.md)
 8. [`docs/designs/07_1_6_local_calibration_scan_execution.md`](docs/designs/07_1_6_local_calibration_scan_execution.md)
 9. [`docs/designs/07_1_7_unified_web_plotting.md`](docs/designs/07_1_7_unified_web_plotting.md)
-10. [`docs/logs/DEVELOPMENT_LOG.md`](docs/logs/DEVELOPMENT_LOG.md)
+10. [`docs/designs/07_1_13_rabi_x2p_amplitude_calibration.md`](docs/designs/07_1_13_rabi_x2p_amplitude_calibration.md)
+11. [`docs/logs/DEVELOPMENT_LOG.md`](docs/logs/DEVELOPMENT_LOG.md)

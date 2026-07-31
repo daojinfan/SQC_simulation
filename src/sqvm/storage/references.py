@@ -13,10 +13,15 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import uuid
 from datetime import datetime
 from typing import Any, Iterable, Mapping
 
+from sqvm.candidate_protocol import (
+    CandidateApplicationDecisionError,
+    normalize_candidate_application_decision,
+)
 from sqvm.calibration.spectroscopy_workflow import (
     verify_qubit_spectroscopy_calibration,
     verify_qubit_spectroscopy_calibration_decision,
@@ -25,6 +30,7 @@ from sqvm.calibration.spectroscopy_run import verify_qubit_spectroscopy_scan
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.qcis.canonical import sha256_json
 from sqvm.web.configuration_schema import validate_document, validate_editable
+from sqvm.web.configuration_transactions import ConfigurationTransactionManager
 
 
 REFERENCE_TYPES = frozenset({
@@ -99,9 +105,36 @@ def build_reference_graph(
         pin_root = _authority_root(pins_root, required=False, label="pins")
         if lifecycle is not None:
             _check_tree(lifecycle, allow_directories=True)
-        snapshots = _scan_configurations(config, edges)
+        transaction_manager = ConfigurationTransactionManager(config)
+        head_devices = set(transaction_manager.head_devices())
+        projections = tuple(
+            transaction_manager.committed_view(device_id).projection_root
+            for device_id in sorted(head_devices)
+        )
+        snapshots: dict[str, tuple[dict[str, Any], Path]] = {}
+        if projections:
+            for projection in projections:
+                for snapshot_id, value in _scan_configurations(
+                    projection,
+                    edges,
+                    include_drafts=False,
+                ).items():
+                    if snapshot_id in snapshots:
+                        raise ReferenceScanError(
+                            f"duplicate snapshot identity across committed devices: {snapshot_id}"
+                        )
+                    snapshots[snapshot_id] = value
+                _scan_snapshot_pins(projection / "pins")
+            _reject_unmigrated_flat_devices(
+                config,
+                head_devices=head_devices,
+                committed_snapshot_ids=set(snapshots),
+            )
+            _scan_drafts(config, edges)
+        else:
+            snapshots = _scan_configurations(config, edges)
+            _scan_snapshot_pins(config / "pins")
         _scan_workflows_and_decisions(experiments, edges)
-        _scan_snapshot_pins(config / "pins")
         if pin_root is not None:
             _scan_run_pins(pin_root, edges)
         _validate_duplicate_identities(edges)
@@ -115,7 +148,45 @@ def build_reference_graph(
     )
 
 
-def _scan_configurations(root: Path, edges: list[ReferenceEdge]) -> dict[str, tuple[dict[str, Any], Path]]:
+def _reject_unmigrated_flat_devices(
+    root: Path,
+    *,
+    head_devices: set[str],
+    committed_snapshot_ids: set[str],
+) -> None:
+    """Do not miss legacy references while a configuration root is partly migrated."""
+
+    flat_devices: set[str] = set()
+    for directory_name in ("current", "active"):
+        directory = root / directory_name
+        if directory.exists():
+            flat_devices.update(path.stem for path in _json_children(directory))
+    snapshots = root / "snapshots"
+    if snapshots.exists():
+        for directory in _id_directories(snapshots):
+            if directory.name in committed_snapshot_ids:
+                continue
+            path = directory / "snapshot.json"
+            if not path.is_file():
+                raise ReferenceScanError(f"snapshot missing: {path}")
+            device_id = _json(path).get("device_id")
+            if not isinstance(device_id, str) or not device_id:
+                raise ReferenceScanError(f"snapshot device identity is invalid: {path}")
+            flat_devices.add(device_id)
+    missing = sorted(flat_devices - head_devices)
+    if missing:
+        raise ReferenceScanError(
+            "mixed transaction and legacy configuration authority: "
+            f"devices without transaction heads: {', '.join(missing)}"
+        )
+
+
+def _scan_configurations(
+    root: Path,
+    edges: list[ReferenceEdge],
+    *,
+    include_drafts: bool = True,
+) -> dict[str, tuple[dict[str, Any], Path]]:
     allowed = {"current", "drafts", "snapshots", "active", "audit", "pins"}
     _check_children(root, allowed, directories=allowed)
     snapshots: dict[str, tuple[dict[str, Any], Path]] = {}
@@ -145,24 +216,8 @@ def _scan_configurations(root: Path, edges: list[ReferenceEdge]) -> dict[str, tu
             candidate = directory / "source_candidate.json"
             if candidate.exists():
                 _source_edge(_source_candidate(_json(candidate)), "snapshot_configuration", candidate, root, edges)
-    drafts_root = root / "drafts"
-    if drafts_root.exists():
-        for directory in _id_directories(drafts_root):
-            _check_children(directory, {"draft.json", "source_candidate.json", "checkpoints"}, directories={"checkpoints"})
-            path = directory / "draft.json"
-            if not path.exists():
-                raise ReferenceScanError(f"draft missing: {path}")
-            payload = _json(path)
-            _configuration(payload, "platform_configuration_draft", "0.2", path)
-            if directory.name != _uuid(payload.get("draft_id"), "draft_id"):
-                raise ReferenceScanError(f"incorrect draft identity: {path}")
-            checkpoints = directory / "checkpoints"
-            if checkpoints.exists():
-                for checkpoint in _json_children(checkpoints):
-                    _checkpoint(_json(checkpoint), payload, checkpoint)
-            candidate = directory / "source_candidate.json"
-            if candidate.exists():
-                _source_edge(_source_candidate(_json(candidate)), "draft_configuration", candidate, root, edges)
+    if include_drafts:
+        _scan_drafts(root, edges)
     active = root / "active"
     if active.exists():
         for path in _json_children(active):
@@ -190,12 +245,75 @@ def _scan_configurations(root: Path, edges: list[ReferenceEdge]) -> dict[str, tu
                 raise ReferenceScanError(f"audit schema: {path}")
             if event["event"] == "experiment_candidates_applied_to_current":
                 details = event["details"]
-                _exact(details, {"device_id", "experiment_run_id", "recommendation_id", "candidate_ids", "targets", "content_sha256"}, path)
+                legacy_keys = {"device_id", "experiment_run_id", "recommendation_id", "candidate_ids", "targets", "content_sha256"}
+                decision_keys = {
+                    "device_id", "experiment_run_id", "recommendation_id",
+                    "candidate_ids", "targets", "decision",
+                    "recommendation_snapshot", "old_content_sha256",
+                    "new_content_sha256",
+                }
+                details_keys = frozenset(details)
+                if details_keys not in {frozenset(legacy_keys), frozenset(decision_keys)}:
+                    raise ReferenceScanError(f"schema keys: {path}")
                 run = _uuid(details.get("experiment_run_id"), "experiment_run_id")
                 recommendation = _uuid(details.get("recommendation_id"), "recommendation_id")
-                _hash(details.get("content_sha256"), "content_sha256")
+                candidate_ids = details.get("candidate_ids")
+                targets = details.get("targets")
+                if (
+                    not isinstance(candidate_ids, list)
+                    or not candidate_ids
+                    or any(not isinstance(item, str) or not item for item in candidate_ids)
+                    or len(candidate_ids) != len(set(candidate_ids))
+                    or not isinstance(targets, list)
+                    or any(not isinstance(item, str) or not item for item in targets)
+                    or len(targets) != len(set(targets))
+                ):
+                    raise ReferenceScanError(f"applied audit candidate binding: {path}")
+                if details_keys == legacy_keys:
+                    _hash(details.get("content_sha256"), "content_sha256")
+                else:
+                    _hash(details.get("old_content_sha256"), "old_content_sha256")
+                    _hash(details.get("new_content_sha256"), "new_content_sha256")
+                    _candidate_decision_provenance(
+                        details.get("decision"),
+                        details.get("recommendation_snapshot"),
+                        candidate_ids,
+                    )
                 edges.append(_edge(run, "applied_audit", path, root, recommendation))
     return snapshots
+
+
+def _scan_drafts(root: Path, edges: list[ReferenceEdge]) -> None:
+    drafts_root = root / "drafts"
+    if not drafts_root.exists():
+        return
+    _check_path(drafts_root, root)
+    for directory in _id_directories(drafts_root):
+        _check_children(
+            directory,
+            {"draft.json", "source_candidate.json", "checkpoints"},
+            directories={"checkpoints"},
+        )
+        path = directory / "draft.json"
+        if not path.exists():
+            raise ReferenceScanError(f"draft missing: {path}")
+        payload = _json(path)
+        _configuration(payload, "platform_configuration_draft", "0.2", path)
+        if directory.name != _uuid(payload.get("draft_id"), "draft_id"):
+            raise ReferenceScanError(f"incorrect draft identity: {path}")
+        checkpoints = directory / "checkpoints"
+        if checkpoints.exists():
+            for checkpoint in _json_children(checkpoints):
+                _checkpoint(_json(checkpoint), payload, checkpoint)
+        candidate = directory / "source_candidate.json"
+        if candidate.exists():
+            _source_edge(
+                _source_candidate(_json(candidate)),
+                "draft_configuration",
+                candidate,
+                root,
+                edges,
+            )
 
 
 def _scan_workflows_and_decisions(root: Path, edges: list[ReferenceEdge]) -> None:
@@ -214,6 +332,13 @@ def _scan_workflows_and_decisions(root: Path, edges: list[ReferenceEdge]) -> Non
                     if workflow.get("artifact_type") != "qubit_spectroscopy_scan" or workflow.get("artifact_version") not in {"0.1", "0.2", "0.3"}:
                         raise ReferenceScanError(f"scan workflow schema: {base}")
                     verify_qubit_spectroscopy_scan(base)
+                elif workflow_id == "qubit_rabi_x2p_amplitude_scan_v1":
+                    if workflow.get("artifact_type") != "qubit_rabi_x2p_amplitude_scan" or workflow.get("artifact_version") != "0.1":
+                        raise ReferenceScanError(f"Rabi workflow schema: {base}")
+                    # Lazy import avoids making the reference graph depend on
+                    # calibration package initialization order.
+                    from sqvm.calibration.rabi import verify_rabi_evidence_tree
+                    verify_rabi_evidence_tree(base)
                 elif workflow_id == "qubit_spectroscopy_calibration_v1":
                     if workflow.get("artifact_type") != "stage_07_qubit_spectroscopy_calibration" or workflow.get("artifact_version") != "0.1":
                         raise ReferenceScanError(f"calibration workflow schema: {base}")
@@ -290,8 +415,20 @@ def _source_candidate(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ReferenceScanError("source_candidate must be an object")
     required = {"experiment_run_id", "recommendation_id", "candidate_ids", "calibration_subjects", "configuration_targets", "targets", "candidates"}
-    allowed = required | {"candidate_values_GHz"}
-    if set(value) != required and set(value) != allowed:
+    optional_frequency = {"candidate_values_GHz"}
+    decision_fields = {
+        "decision",
+        "recommendation_snapshot",
+        "old_content_sha256",
+        "new_content_sha256",
+    }
+    allowed_key_sets = {
+        frozenset(required),
+        frozenset(required | optional_frequency),
+        frozenset(required | decision_fields),
+        frozenset(required | optional_frequency | decision_fields),
+    }
+    if frozenset(value) not in allowed_key_sets:
         raise ReferenceScanError("source_candidate schema keys")
     _uuid(value.get("experiment_run_id"), "experiment_run_id")
     _uuid(value.get("recommendation_id"), "recommendation_id")
@@ -326,7 +463,64 @@ def _source_candidate(value: Any) -> Mapping[str, Any]:
     if "candidate_values_GHz" in value:
         if not isinstance(value["candidate_values_GHz"], Mapping) or any(not isinstance(k, str) or not _numeric_finite(v) for k, v in value["candidate_values_GHz"].items()):
             raise ReferenceScanError("invalid candidate_values_GHz")
+    if "decision" in value:
+        _hash(value.get("old_content_sha256"), "source_candidate old_content_sha256")
+        _hash(value.get("new_content_sha256"), "source_candidate new_content_sha256")
+        _candidate_decision_provenance(
+            value.get("decision"),
+            value.get("recommendation_snapshot"),
+            candidate_ids,
+        )
     return value
+
+
+def _candidate_decision_provenance(
+    raw_decision: Any,
+    recommendation_snapshot: Any,
+    candidate_ids: list[str],
+) -> None:
+    if not isinstance(raw_decision, Mapping) or set(raw_decision) != {
+        "mode", "source", "reason", "overrode_recommendation"
+    }:
+        raise ReferenceScanError("invalid candidate decision provenance")
+    try:
+        decision = normalize_candidate_application_decision(raw_decision)
+    except CandidateApplicationDecisionError as exc:
+        raise ReferenceScanError("invalid candidate decision provenance") from exc
+    if (
+        raw_decision.get("mode") != decision.mode
+        or raw_decision.get("source") != decision.source
+        or raw_decision.get("reason") != decision.reason
+        or type(raw_decision.get("overrode_recommendation")) is not bool
+    ):
+        raise ReferenceScanError("invalid candidate decision provenance")
+    if not isinstance(recommendation_snapshot, list) or len(recommendation_snapshot) != len(candidate_ids):
+        raise ReferenceScanError("invalid candidate recommendation_snapshot")
+    snapshot_ids: list[str] = []
+    contains_unrecommended = False
+    for snapshot in recommendation_snapshot:
+        if not isinstance(snapshot, Mapping) or set(snapshot) != {
+            "candidate_id", "recommendation_eligible", "reason"
+        }:
+            raise ReferenceScanError("invalid candidate recommendation_snapshot")
+        candidate_id = snapshot.get("candidate_id")
+        eligible = snapshot.get("recommendation_eligible")
+        reason = snapshot.get("reason")
+        if (
+            not isinstance(candidate_id, str)
+            or not candidate_id
+            or type(eligible) is not bool
+            or (reason is not None and not isinstance(reason, str))
+        ):
+            raise ReferenceScanError("invalid candidate recommendation_snapshot")
+        snapshot_ids.append(candidate_id)
+        contains_unrecommended = contains_unrecommended or not eligible
+    if snapshot_ids != candidate_ids:
+        raise ReferenceScanError("candidate recommendation_snapshot binding")
+    if raw_decision["overrode_recommendation"] != contains_unrecommended:
+        raise ReferenceScanError("candidate override decision binding")
+    if decision.mode == "recommended_only" and contains_unrecommended:
+        raise ReferenceScanError("candidate recommendation decision binding")
 
 
 def _configuration(payload: Mapping[str, Any], artifact: str, version: str, path: Path) -> None:
@@ -437,8 +631,26 @@ def _check_children(root: Path, allowed: set[str], *, directories: set[str]) -> 
 def _check_tree(root: Path, *, allow_directories: bool) -> None:
     _check_path(root, root)
     for directory, dirs, files in os.walk(root, followlinks=False):
+        base = Path(directory)
+        try:
+            base.relative_to(root)
+        except ValueError as exc:
+            raise ReferenceScanError(f"path escapes authority root: {base}") from exc
+        directory_names = set(dirs)
         for name in [*dirs, *files]:
-            _check_path(Path(directory) / name, root)
+            expected_directory = name in directory_names
+            path = base / name
+            try:
+                info = path.lstat()
+            except OSError as exc:
+                raise ReferenceScanError(f"authority path cannot be inspected: {path}") from exc
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+                raise ReferenceScanError(f"link/reparse authority path: {path}")
+            if expected_directory:
+                if not allow_directories or not stat.S_ISDIR(info.st_mode):
+                    raise ReferenceScanError(f"unknown authority directory: {path}")
+            elif stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                raise ReferenceScanError(f"hardlinked authority file: {path}")
 
 
 def _json_children(root: Path) -> list[Path]:

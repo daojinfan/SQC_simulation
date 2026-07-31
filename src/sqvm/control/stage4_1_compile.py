@@ -98,7 +98,10 @@ def compile_qcis_waveform_plan(
         try:
             lane_codes, lane_reconstructed = _quantize_half_even(row, config.dac)
         except ValueError as exc:
-            _fail(ParameterizedControlReasonCode.DAC_RANGE_EXCEEDED, str(exc))
+            _fail(
+                ParameterizedControlReasonCode.DAC_RANGE_EXCEEDED,
+                f"{lane}: {exc}",
+            )
         error = float(np.max(np.abs(row - lane_reconstructed))) if row.size else 0.0
         if error > 0.5 * float(config.dac["lsb_V"]) + 1e-15:
             _fail(ParameterizedControlReasonCode.QUANTIZATION_BOUND_EXCEEDED, lane)
@@ -482,6 +485,8 @@ def _quantize_half_even(values: np.ndarray, dac: Mapping[str, Any]) -> tuple[np.
     codes = np.empty(values.size, dtype="<i8")
     reconstructed = np.empty(values.size, dtype="<f8")
     lsb: Decimal = dac["lsb_V"]
+    lower = Decimal(dac["full_scale_min_V"])
+    code_min = int(dac["code_min"])
     with localcontext() as decimal_context:
         decimal_context.prec = 80
         decimal_context.rounding = ROUND_HALF_EVEN
@@ -489,11 +494,21 @@ def _quantize_half_even(values: np.ndarray, dac: Mapping[str, Any]) -> tuple[np.
             number = float(np.float64(value))
             if not math.isfinite(number):
                 raise ValueError("requested AWG voltage is non-finite")
-            code = int((Decimal.from_float(number) / lsb).to_integral_value(rounding=ROUND_HALF_EVEN))
+            level = int(
+                ((Decimal.from_float(number) - lower) / lsb).to_integral_value(
+                    rounding=ROUND_HALF_EVEN
+                )
+            )
+            code = code_min + level
             if code < dac["code_min"] or code > dac["code_max"]:
-                raise ValueError(f"DAC code out of range at sample {index}")
+                upper = Decimal(dac["full_scale_max_exclusive_V"])
+                raise ValueError(
+                    f"requested {number:.12g} V outside "
+                    f"[{float(lower):.12g}, {float(upper):.12g}) V "
+                    f"at sample {index}"
+                )
             codes[index] = code
-            reconstructed[index] = float(Decimal(code) * lsb)
+            reconstructed[index] = float(lower + Decimal(code - code_min) * lsb)
             if abs(reconstructed[index] - number) > 0.5 * float(lsb) + 1e-15:
                 raise ValueError("DAC quantization error exceeds half-LSB bound")
     return codes, reconstructed

@@ -6,9 +6,13 @@ pytestmark = _pytest.mark.integration
 
 import copy
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
+import time
 from types import SimpleNamespace
 import uuid
 
@@ -19,8 +23,10 @@ from sqvm.candidate_protocol import calibration_candidate, parameter_change
 
 import sqvm.circuits as circuits_module
 import sqvm.web.configuration as configuration_module
-from sqvm.circuits import QCISCircuit, run_circuits
+from sqvm.circuits import CircuitExecutionError, CircuitReasonCode, QCISCircuit, _setting_hash, compile_circuit, run_circuits
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_json
+from sqvm.qcis.compiler import _projected_record_hash
 from sqvm.web import (
     ConfigurationManagementError,
     PlatformAuthorityResolutionError,
@@ -28,10 +34,44 @@ from sqvm.web import (
 )
 from sqvm.web.configuration_schema import validate_editable
 from sqvm.web.configuration_schema import project_wave_indices
+from sqvm.web.configuration_transactions import ConfigurationTransactionManager
+from sqvm.web.runtime_contract import (
+    RUNTIME_CONFIGURATION_CONSUMERS,
+    assert_runtime_configuration_covered,
+)
+import sqvm.web.configuration_resolver as configuration_resolver_module
 from sqvm.runtime.calibration_model import calibration_model_configuration_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _reference_editable() -> dict:
+    current = json.loads(
+        (
+            ROOT
+            / "tests/fixtures/platform_configuration_reference_v1/platform-configurations/current/demo_2q1c2r.json"
+        ).read_text("utf-8")
+    )
+    return current["editable"]
+
+
+def test_every_active_editable_section_has_a_runtime_consumer() -> None:
+    editable = _reference_editable()
+    assert_runtime_configuration_covered(editable)
+    assert set(RUNTIME_CONFIGURATION_CONSUMERS) == {
+        f"{partition}.{name}"
+        for partition, values in editable.items()
+        for name in values
+    }
+    assert all(RUNTIME_CONFIGURATION_CONSUMERS.values())
+
+
+def test_new_unowned_editable_section_fails_closed() -> None:
+    editable = copy.deepcopy(_reference_editable())
+    editable["control_values"]["unowned_future_section"] = {}
+    with pytest.raises(ValueError, match="consumer coverage mismatch"):
+        assert_runtime_configuration_covered(editable)
 
 
 @pytest.fixture
@@ -181,6 +221,12 @@ def _published_store(tmp_path: Path):
     return store, snapshot
 
 
+def _committed_projection(store: PlatformConfigurationStore) -> Path:
+    return ConfigurationTransactionManager(store.root).committed_view(
+        "demo_2q1c2r"
+    ).projection_root
+
+
 def test_configuration_delete_rejects_real_symlink_without_touching_external_target(platform_root: Path):
     store = PlatformConfigurationStore(ROOT, platform_root / "platform-configurations")
     draft = store.create_draft(
@@ -206,7 +252,7 @@ def test_configuration_delete_rejects_real_symlink_without_touching_external_tar
 
 def test_configuration_snapshot_delete_rejects_real_symlink_without_touching_external_target(platform_root: Path):
     store, snapshot = _published_store(platform_root)
-    snapshot_root = store.snapshots_root / snapshot["snapshot_id"]
+    snapshot_root = _committed_projection(store) / "snapshots" / snapshot["snapshot_id"]
     external = platform_root / "external-snapshot"
     external.mkdir()
     sentinel = external / "sentinel.txt"
@@ -288,7 +334,15 @@ def test_configuration_delete_removes_normal_draft_and_snapshot(platform_root: P
     store.delete_draft(draft["draft_id"], actor_id="project.manager")
     assert not draft_root.exists()
 
-    published_store, snapshot = _published_store(platform_root / "published")
+    published_store, _current_snapshot = _published_store(platform_root / "published")
+    draft = published_store.draft(published_store.drafts()[0]["draft_id"])
+    snapshot = published_store.publish_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        expected_content_sha256=draft["content_sha256"],
+        name="Unreferenced snapshot",
+        reason="exercise snapshot deletion",
+    )
     snapshot_root = published_store.snapshots_root / snapshot["snapshot_id"]
     published_store.delete_snapshot(snapshot["snapshot_id"], actor_id="project.manager")
     assert not snapshot_root.exists()
@@ -404,10 +458,101 @@ def test_uninitialized_is_not_active_and_typed_snapshot_resolves_immutably(platf
         context.authorities["clock"]["dt_ns"] = 1.0
 
 
+def test_active_resolver_derives_only_selector_bound_xy2_amplitude_paths(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
+    context = store.resolve_active_context()
+    expected = frozenset({
+        "Q1.setting.active_xy2_setting.amplitude_GHz",
+        "Q2.setting.active_xy2_setting.amplitude_GHz",
+    })
+    assert context.settable_paths == expected
+    assert all("q1_xy2" not in path and "q2_xy2" not in path for path in context.settable_paths)
+    for forbidden in (
+        "Q1.setting.active_xy2_setting.length_samples",
+        "Q1.setting.active_xy2_setting.setting_hash",
+        "Q1.setting.active_xy2_setting.status",
+        "Q1.setting.active_xy2_setting.missing_numeric_field",
+        "Q1.setting.active_f012zbias_mapper.f01max_GHz",
+    ):
+        assert forbidden not in context.settable_paths
+    assert context.platform_configuration is not None
+    assert context.authority_context_sha256 == sha256_json({
+        "qcis_authorities": configuration_resolver_module._plain(context.authorities),
+        "platform_configuration": configuration_resolver_module._plain(context.platform_configuration),
+        "settable_paths": sorted(expected),
+    })
+    assert context.authority_context_sha256 != sha256_json({
+        "qcis_authorities": configuration_resolver_module._plain(context.authorities),
+        "calibration_model_configuration": configuration_resolver_module._plain(context.calibration_model_configuration),
+    })
+    for target, amplitude in (("Q1", 0.125), ("Q2", 0.175)):
+        setting_id = context.authorities["gate_configuration"][target]["active_xy2_setting"]
+        base_hash = context.authorities["waveform_registry"]["settings"][setting_id]["setting_hash"]
+        compiled = compile_circuit(
+            QCISCircuit(
+                f"rabi_set_{target.lower()}",
+                f"SET {target} setting.active_xy2_setting.amplitude_GHz {amplitude}\nX2P {target}\nX2P {target}\n",
+            ),
+            context,
+        )
+        assert compiled.overlays[0]["base_setting_hash"] == base_hash
+        assert compiled.overlays[0]["effective_setting_hash"] != base_hash
+        assert len(compiled.compilation.plan.drive_event_inventory) == 2
+        assert {event["setting_evidence"]["setting_hash"] for event in compiled.compilation.plan.drive_event_inventory} == {
+            compiled.overlays[0]["effective_setting_hash"],
+        }
+    for forbidden in (
+        "setting.active_xy2_setting.setting_hash",
+        "setting.active_xy2_setting.length_samples",
+    ):
+        with pytest.raises(CircuitExecutionError) as captured:
+            compile_circuit(
+                QCISCircuit(
+                    f"forbidden_{forbidden.rsplit('.', 1)[-1]}",
+                    f"SET Q1 {forbidden} 1\nX2P Q1\n",
+                ),
+                context,
+            )
+        assert captured.value.code is CircuitReasonCode.SET_PATH_NOT_ALLOWED
+
+
+def test_settable_path_is_selector_semantic_and_rejects_unaccepted_or_nonfinite_selected_records(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
+    context = store.resolve_active_context()
+    authorities = copy.deepcopy(configuration_resolver_module._plain(context.authorities))
+    alternate = copy.deepcopy(authorities["waveform_registry"]["settings"]["q1_xy2"])
+    alternate["setting_id"] = "q1_xy2_alt"
+    authorities["waveform_registry"]["settings"]["q1_xy2_alt"] = alternate
+    authorities["gate_configuration"]["Q1"]["active_xy2_setting"] = "q1_xy2_alt"
+    assert configuration_resolver_module.PlatformAuthorityResolver._settable_paths(authorities) == context.settable_paths
+
+    authorities["waveform_registry"]["settings"]["q1_xy2_alt"]["status"] = "draft"
+    with pytest.raises(PlatformAuthorityResolutionError, match="accepted XY2"):
+        configuration_resolver_module.PlatformAuthorityResolver._settable_paths(authorities)
+    authorities["waveform_registry"]["settings"]["q1_xy2_alt"]["status"] = "accepted"
+    authorities["waveform_registry"]["settings"]["q1_xy2_alt"]["amplitude_GHz"] = True
+    with pytest.raises(PlatformAuthorityResolutionError, match="finite numeric"):
+        configuration_resolver_module.PlatformAuthorityResolver._settable_paths(authorities)
+
+
+def test_circuit_overlay_hash_matches_qcis_projected_record_identity():
+    record = {
+        "setting_id": "q1_xy2",
+        "setting_hash": "A" * 64,
+        "wave_index": 2,
+        "waveforms": {
+            "q0": {"wave_index": 5, "parameters": {"wave_index": 1, "width_samples": 2}},
+        },
+    }
+    assert _setting_hash(record) == _projected_record_hash(record)
+
+
 def test_resolver_detects_record_and_pointer_tampering(platform_root: Path):
     store, snapshot = _published_store(platform_root)
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
-    path = store.snapshots_root / snapshot["snapshot_id"] / "snapshot.json"
+    path = _committed_projection(store) / "snapshots" / snapshot["snapshot_id"] / "snapshot.json"
     raw = __import__("json").loads(path.read_text("utf-8"))
     raw["editable"]["calibration_values"]["waveform_registry"]["settings"]["q1_xy"]["setting_hash"] = "0" * 64
     path.write_text(__import__("json").dumps(raw), "utf-8")
@@ -418,7 +563,7 @@ def test_resolver_detects_record_and_pointer_tampering(platform_root: Path):
 def test_resolver_detects_active_pointer_tampering(platform_root: Path):
     store, snapshot = _published_store(platform_root)
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
-    pointer = store.active_root / "demo_2q1c2r.json"
+    pointer = _committed_projection(store) / "active" / "demo_2q1c2r.json"
     raw = __import__("json").loads(pointer.read_text("utf-8"))
     raw["snapshot_content_sha256"] = "0" * 64
     pointer.write_text(__import__("json").dumps(raw), "utf-8")
@@ -516,6 +661,67 @@ def test_current_configuration_saves_snapshots_and_restores_versions(platform_ro
     ]
 
 
+def test_two_processes_with_same_expected_hash_commit_exactly_once(
+    platform_root: Path,
+):
+    store, _snapshot = _published_store(platform_root)
+    before = store.current_configuration("demo_2q1c2r")
+    coordination = platform_root / "concurrency"
+    coordination.mkdir()
+    go = coordination / "go"
+    environment = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    processes = []
+    result_paths = []
+    for index in range(2):
+        ready = coordination / f"ready-{index}"
+        result_path = coordination / f"result-{index}.json"
+        result_paths.append(result_path)
+        processes.append(
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(
+                        ROOT
+                        / "tests"
+                        / "support"
+                        / "configuration_store_concurrent_worker.py"
+                    ),
+                    str(ROOT),
+                    str(store.root),
+                    str(ready),
+                    str(go),
+                    str(result_path),
+                    str(uuid.uuid4()),
+                    f"worker-{index}",
+                ],
+                cwd=ROOT,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
+    deadline = time.monotonic() + 15
+    while not all((coordination / f"ready-{index}").is_file() for index in range(2)):
+        if time.monotonic() >= deadline:
+            for process in processes:
+                process.kill()
+            raise AssertionError("concurrent workers did not become ready")
+        time.sleep(0.02)
+    go.write_text("go", encoding="ascii")
+    diagnostics = [process.communicate(timeout=30) for process in processes]
+
+    assert [process.returncode for process in processes] == [0, 0], diagnostics
+    results = [json.loads(path.read_text("utf-8")) for path in result_paths]
+    assert sorted(row["status"] for row in results) == [200, 409]
+    failure = next(row for row in results if row["status"] == 409)
+    assert "changed since it was loaded" in failure["message"]
+    after = PlatformConfigurationStore(ROOT, store.root).current_configuration(
+        "demo_2q1c2r"
+    )
+    assert after["revision"] == before["revision"] + 1
+
+
 def test_draft_diff_uses_initial_checkpoint_and_groups_editable_changes(platform_root: Path):
     store, snapshot = _published_store(platform_root)
     draft = store.create_draft(snapshot, actor_id="project.manager", name="Workbench diff")
@@ -561,7 +767,7 @@ def test_draft_diff_uses_initial_checkpoint_and_groups_editable_changes(platform
 def test_resolver_detects_readonly_authority_tampering(platform_root: Path, field: str):
     store, snapshot = _published_store(platform_root)
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
-    path = store.snapshots_root / snapshot["snapshot_id"] / "snapshot.json"
+    path = _committed_projection(store) / "snapshots" / snapshot["snapshot_id"] / "snapshot.json"
     raw = __import__("json").loads(path.read_text("utf-8"))
     raw["readonly"]["authority_refs"][field] = "0" * 64
     path.write_text(__import__("json").dumps(raw), "utf-8")
@@ -720,6 +926,119 @@ def test_cz_q1_phase_candidate_separates_subject_from_configuration_owner(platfo
         )
 
 
+def test_candidate_override_only_bypasses_recommendation_gate(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    draft = store.create_draft(
+        snapshot, actor_id="project.manager", name="Ineligible candidate"
+    )
+    path = (
+        "calibration_values.qagents.Q1.reference_frequency_authority."
+        "reference_frequency_GHz"
+    )
+    current = draft["editable"]["calibration_values"]["qagents"]["Q1"][
+        "reference_frequency_authority"
+    ]["reference_frequency_GHz"]
+    candidate = calibration_candidate(
+        "Q1.override_frequency",
+        "Q1",
+        [parameter_change(path, current, current + 0.001, unit="GHz")],
+        recommendation_eligible=False,
+        candidate_type="qubit_reference_frequency",
+        reason="quality policy rejected this otherwise complete candidate",
+    )
+    arguments = {
+        "actor_id": "project.manager",
+        "experiment_run_id": str(uuid.uuid4()),
+        "recommendation_id": str(uuid.uuid4()),
+        "candidates": [candidate],
+    }
+    with pytest.raises(ConfigurationManagementError) as captured:
+        store.apply_candidates_to_draft(draft["draft_id"], **arguments)
+    assert captured.value.code == "candidate_not_recommended"
+
+    updated = store.apply_candidates_to_draft(
+        draft["draft_id"],
+        **arguments,
+        decision={
+            "mode": "override_recommendation",
+            "source": "web_user",
+            "reason": "Expert review approved the complete candidate.",
+        },
+    )
+    assert updated["source_candidate"]["decision"]["overrode_recommendation"] is True
+    assert updated["source_candidate"]["recommendation_snapshot"] == [
+        {
+            "candidate_id": candidate["candidate_id"],
+            "recommendation_eligible": False,
+            "reason": candidate["reason"],
+        }
+    ]
+    assert updated["source_candidate"]["old_content_sha256"] == draft["content_sha256"]
+    assert updated["source_candidate"]["new_content_sha256"] != draft["content_sha256"]
+
+
+def test_candidate_provenance_retention_filters_recommendation_snapshot(platform_root: Path):
+    store, snapshot = _published_store(platform_root)
+    draft = store.create_draft(
+        snapshot, actor_id="project.manager", name="Mixed candidate retention"
+    )
+    candidates = []
+    original_values = {}
+    for target, eligible in (("Q1", False), ("Q2", True)):
+        path = (
+            f"calibration_values.qagents.{target}.reference_frequency_authority."
+            "reference_frequency_GHz"
+        )
+        current = draft["editable"]["calibration_values"]["qagents"][target][
+            "reference_frequency_authority"
+        ]["reference_frequency_GHz"]
+        original_values[path] = current
+        candidates.append(
+            calibration_candidate(
+                f"{target}.retained_frequency",
+                target,
+                [parameter_change(path, current, current + 0.001, unit="GHz")],
+                recommendation_eligible=eligible,
+                candidate_type="qubit_reference_frequency",
+                reason=None if eligible else "quality gate rejected Q1",
+            )
+        )
+    updated = store.apply_candidates_to_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        experiment_run_id=str(uuid.uuid4()),
+        recommendation_id=str(uuid.uuid4()),
+        candidates=candidates,
+        decision={
+            "mode": "override_recommendation",
+            "source": "web_user",
+            "reason": "Reviewed the mixed candidate group.",
+        },
+    )
+    editable = copy.deepcopy(updated["editable"])
+    q1_path = next(path for path in original_values if ".Q1." in path)
+    current = editable
+    for part in q1_path.split(".")[:-1]:
+        current = current[part]
+    current[q1_path.split(".")[-1]] = original_values[q1_path]
+
+    retained = store.update_draft(
+        draft["draft_id"],
+        actor_id="project.manager",
+        expected_content_sha256=updated["content_sha256"],
+        name=updated["name"],
+        note="Q1 candidate reverted",
+        editable=editable,
+    )["source_candidate"]
+
+    assert retained["candidate_ids"] == ["Q2.retained_frequency"]
+    assert [row["candidate_id"] for row in retained["recommendation_snapshot"]] == [
+        "Q2.retained_frequency"
+    ]
+    assert retained["decision"]["mode"] == "override_recommendation"
+    assert retained["decision"]["overrode_recommendation"] is False
+
+
 def test_active_context_binds_circuit_execution_evidence(platform_root: Path, monkeypatch):
     store, snapshot = _published_store(platform_root)
     store.set_active(snapshot["snapshot_id"], actor_id="project.manager", confirmation_phrase=f"SET ACTIVE {snapshot['snapshot_id']}")
@@ -743,5 +1062,8 @@ def test_active_context_binds_circuit_execution_evidence(platform_root: Path, mo
         "authority_context_sha256": context.authority_context_sha256,
         "calibration_model_configuration_sha256": calibration_model_configuration_sha256(
             context.calibration_model_configuration
+        ),
+        "platform_configuration_sha256": sha256_json(
+            configuration_resolver_module._plain(context.platform_configuration)
         ),
     }
