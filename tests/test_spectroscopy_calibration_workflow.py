@@ -94,7 +94,7 @@ def _install_synthetic_runner(monkeypatch, calls, *, cross_excitation=0.005):
             p101 = 0.0
             p000 = 1.0 - leakage - q1 - q2 - p101
             result = _result(circuit.circuit_id, p000, q1, q2, p101)
-            circuit_evidence = evidence_root / "circuit-execution-evidence" / circuit.circuit_id
+            circuit_evidence = evidence_root / "circuit_execution" / circuit.circuit_id
             model_evidence = evidence_root / circuit.circuit_id
             circuit_evidence.mkdir(parents=True, exist_ok=True)
             model_evidence.mkdir(parents=True, exist_ok=True)

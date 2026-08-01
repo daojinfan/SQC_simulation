@@ -385,6 +385,120 @@ def build_spectroscopy_plot_spec(
     return spec
 
 
+def build_rabi_amplitude_plot_spec(
+    target: str,
+    dataset: Mapping[str, Any],
+    *,
+    candidate_amplitude_GHz: float | None = None,
+    fit_curve: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Adapt the published Rabi dataset without traversing execution evidence."""
+
+    if not isinstance(target, str) or not target:
+        raise PlotSpecError("Rabi target is required")
+    axis = _mapping(dataset.get("axis"), "Rabi axis")
+    if axis.get("name") != "amplitude_GHz" or axis.get("unit") != "GHz":
+        raise PlotSpecError("Rabi axis must be amplitude_GHz in GHz")
+    amplitudes = axis.get("values")
+    if not isinstance(amplitudes, list) or not amplitudes:
+        raise PlotSpecError("Rabi amplitude values are required")
+    xs = [_finite(value, "Rabi amplitude") for value in amplitudes]
+    if any(right <= left for left, right in zip(xs, xs[1:])):
+        raise PlotSpecError("Rabi amplitudes must be strictly increasing")
+    series_by_target = _mapping(dataset.get("series"), "Rabi series")
+    values = _mapping(series_by_target.get(target), f"Rabi {target} series")
+
+    metric_rows = [
+        {"id": "P0", "label": "P0", "unit": "", "default_visible": False},
+        {"id": "P1", "label": "P1", "unit": "", "default_visible": True},
+        {"id": "leakage", "label": "Leakage", "unit": "", "default_visible": False},
+        {"id": "norm_error", "label": "Norm error", "unit": "", "default_visible": False},
+        {"id": "P1_fit", "label": "P1 fit", "unit": "", "default_visible": True},
+    ]
+    series = []
+    for metric in ("P0", "P1", "leakage", "norm_error"):
+        ys = values.get(metric)
+        if not isinstance(ys, list) or len(ys) != len(xs):
+            raise PlotSpecError(f"Rabi {metric} length must match amplitude axis")
+        series.append(
+            {
+                "id": f"raw:{target}:{metric}",
+                "object_id": target,
+                "metric_id": metric,
+                "group_id": "raw",
+                "points": [
+                    {
+                        "id": f"raw:{target}:{metric}:{index}",
+                        "x": x_value,
+                        "y": _finite(y_value, f"Rabi {metric}"),
+                        "metadata": {"point_index": index, "metric": metric},
+                    }
+                    for index, (x_value, y_value) in enumerate(zip(xs, ys))
+                ],
+            }
+        )
+    fit_xs = xs
+    fit = values.get("P1_fit")
+    if fit_curve is not None:
+        fit_xs = fit_curve.get("amplitude_GHz")
+        fit = fit_curve.get("P1", fit_curve.get("P1_fit"))
+        if not isinstance(fit_xs, list) or not isinstance(fit, list):
+            raise PlotSpecError("Rabi fit curve is invalid")
+        fit_xs = [_finite(value, "Rabi fit amplitude") for value in fit_xs]
+    if fit is not None:
+        if not isinstance(fit, list) or len(fit) != len(fit_xs):
+            raise PlotSpecError("Rabi P1_fit length must match its amplitude axis")
+        series.append(
+            {
+                "id": f"fit:{target}:P1_fit",
+                "object_id": target,
+                "metric_id": "P1_fit",
+                "group_id": "fit",
+                "points": [
+                    {
+                        "id": f"fit:{target}:P1:{index}",
+                        "x": x_value,
+                        "y": _finite(y_value, "Rabi P1_fit"),
+                        "metadata": {"point_index": index, "metric": "P1_fit"},
+                    }
+                    for index, (x_value, y_value) in enumerate(zip(fit_xs, fit))
+                ],
+            }
+        )
+    markers = []
+    if candidate_amplitude_GHz is not None:
+        markers.append(
+            {
+                "id": "candidate_amplitude",
+                "label": "Candidate X2P amplitude",
+                "x": _finite(candidate_amplitude_GHz, "Rabi candidate amplitude"),
+            }
+        )
+    spec = {
+        "schema_version": PLOT_SPEC_SCHEMA_VERSION,
+        "plot_id": "qubit_rabi_x2p_amplitude",
+        "plot_type": "line",
+        "title": "X2P Rabi amplitude scan",
+        "objects": [{"id": target, "label": target, "default_visible": True}],
+        "metrics": metric_rows,
+        "groups": [{"id": "raw", "label": "Measured"}, {"id": "fit", "label": "Fit"}],
+        "axes": {
+            "x": {"label": "Drive amplitude", "unit": "GHz"},
+            "y": {"label": "Probability", "unit": "", "zero_baseline": True},
+        },
+        "series": series,
+        "markers": markers,
+        "interactions": {
+            "object_filter": True,
+            "metric_filter": True,
+            "point_selection": True,
+            "coordinate_readout": True,
+        },
+    }
+    validate_plot_spec(spec)
+    return spec
+
+
 def validate_plot_spec(spec: Mapping[str, Any]) -> None:
     """Fail closed on malformed line, scatter, or heatmap plot specifications."""
 
@@ -403,6 +517,14 @@ def validate_plot_spec(spec: Mapping[str, Any]) -> None:
         axis = _mapping(axes.get(axis_id), f"{axis_id} axis")
         if not isinstance(axis.get("label"), str) or not axis["label"]:
             raise PlotSpecError(f"{axis_id} axis label is required")
+    markers = spec.get("markers", [])
+    if not isinstance(markers, list):
+        raise PlotSpecError("plot markers are invalid")
+    for marker in markers:
+        row = _mapping(marker, "plot marker")
+        if not isinstance(row.get("id"), str) or not row["id"]:
+            raise PlotSpecError("plot marker ID is required")
+        _finite(row.get("x"), "plot marker x")
 
     if plot_type in _XY_PLOT_TYPES:
         series = spec.get("series")
@@ -547,6 +669,7 @@ __all__ = [
     "PLOT_SPEC_SCHEMA_VERSION",
     "PlotSpecError",
     "build_min_max_envelope",
+    "build_rabi_amplitude_plot_spec",
     "build_spectroscopy_plot_spec",
     "lookup_source_point",
     "min_max_envelope",

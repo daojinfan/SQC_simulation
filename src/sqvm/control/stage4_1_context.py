@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import math
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any, Mapping
 
+import numpy as np
+
 from sqvm.control.registry import load_control_channel_registry
 from sqvm.control.stage4_1_config import (
+    _control_config_payload,
     _runtime_idle_flux,
     _runtime_idle_flux_sha256,
     build_parameterized_control_context,
@@ -20,8 +25,10 @@ from sqvm.control.stage4_1_models import (
     ParameterizedControlError,
     ParameterizedControlReasonCode,
 )
-from sqvm.control.stage4_config import load_control_chain_config
+from sqvm.control.stage4_config import GROUP_CONTRACT, LANE_ORDER, load_control_chain_config
+from sqvm.control.stage4_models import ControlChainConfig
 from sqvm.hamiltonian.provenance import canonical_json_bytes, raw_file_sha256
+from sqvm.qcis.canonical import sha256_json
 
 
 _ROOT = "configs/control/stage41"
@@ -49,6 +56,7 @@ def production_parameterized_control_context(
     output_root: Path,
     *,
     idle_flux_phi0: Mapping[str, Any] | None = None,
+    control_values: Mapping[str, Any] | None = None,
 ) -> ParameterizedControlContext:
     """Build the only production Stage 4.1 context from tracked authorities.
 
@@ -83,7 +91,14 @@ def production_parameterized_control_context(
         registry_path = _safe_file(root, _CHANNEL_REGISTRY)
         control = load_control_chain_config(control_path)
         runtime_idle = None
-        if idle_flux_phi0 is not None:
+        runtime_control = None
+        if control_values is not None:
+            control = _runtime_control_chain_config(control, control_values)
+            runtime_control = _control_config_payload(control)
+            runtime_idle = _runtime_idle_flux(runtime_control["idle_flux_phi0"])
+            if idle_flux_phi0 is not None and _runtime_idle_flux(idle_flux_phi0) != runtime_idle:
+                _fail("runtime idle flux differs from Active control_values")
+        elif idle_flux_phi0 is not None:
             runtime_idle = _runtime_idle_flux(idle_flux_phi0)
             control = replace(control, idle_flux_phi0=runtime_idle)
         registry = load_control_channel_registry(registry_path)
@@ -102,6 +117,10 @@ def production_parameterized_control_context(
             authority_hash_values["stage4_1_runtime_idle_flux"] = (
                 _runtime_idle_flux_sha256(runtime_idle)
             )
+        if runtime_control is not None:
+            authority_hash_values["stage4_1_runtime_control"] = sha256_json(
+                runtime_control
+            )
         authority_hashes = MappingProxyType(authority_hash_values)
         return build_parameterized_control_context(
             control,
@@ -117,6 +136,7 @@ def production_parameterized_control_context(
             environment_snapshot=environment,
             publication_policy=publication,
             runtime_idle_flux_phi0=runtime_idle,
+            runtime_control_values=runtime_control,
         )
     except ParameterizedControlError:
         raise
@@ -125,6 +145,185 @@ def production_parameterized_control_context(
             ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID,
             str(exc)[:512],
         ) from exc
+
+
+def _runtime_control_chain_config(
+    base: ControlChainConfig,
+    value: Mapping[str, Any],
+) -> ControlChainConfig:
+    if not isinstance(value, Mapping):
+        raise ValueError("Active control_values must be a mapping")
+    required = {
+        "clock",
+        "dac",
+        "lane_order",
+        "lanes",
+        "static_mixing",
+        "idle_flux_phi0",
+        "acceptance",
+    }
+    actual = set(value)
+    if actual != required and actual != required | {"simulation"}:
+        raise ValueError("Active control_values sections are not exact")
+
+    clock = _runtime_mapping(value["clock"], {"sample_rate_Hz", "dt_ns"}, "clock")
+    rate = _runtime_integer(clock["sample_rate_Hz"], "clock.sample_rate_Hz", minimum=1)
+    dt = _runtime_decimal(clock["dt_ns"], "clock.dt_ns")
+    if dt <= 0 or not math.isclose(float(dt) * rate, 1e9, rel_tol=0.0, abs_tol=1e-6):
+        raise ValueError("Active clock sample rate and dt_ns must be reciprocal")
+
+    dac_raw = _runtime_mapping(
+        value["dac"],
+        {"bits", "full_scale_min_V", "full_scale_max_exclusive_V", "rounding"},
+        "dac",
+    )
+    bits = _runtime_integer(dac_raw["bits"], "dac.bits", minimum=1, maximum=32)
+    lower = _runtime_decimal(dac_raw["full_scale_min_V"], "dac.full_scale_min_V")
+    upper = _runtime_decimal(
+        dac_raw["full_scale_max_exclusive_V"],
+        "dac.full_scale_max_exclusive_V",
+    )
+    if lower >= upper or dac_raw["rounding"] != "half_even":
+        raise ValueError("Active DAC range or rounding mode is invalid")
+    lsb = (upper - lower) / Decimal(2**bits)
+    dac = {
+        "bits": bits,
+        "full_scale_min_V": lower,
+        "full_scale_max_exclusive_V": upper,
+        "rounding": "half_even",
+        "code_min": -(2 ** (bits - 1)),
+        "code_max": 2 ** (bits - 1) - 1,
+        "lsb_V": lsb,
+    }
+
+    order_raw = value["lane_order"]
+    if not isinstance(order_raw, (list, tuple)) or tuple(order_raw) != LANE_ORDER:
+        raise ValueError("Active lane_order differs from the formal lane order")
+    lanes_raw = _runtime_mapping(value["lanes"], set(LANE_ORDER), "lanes")
+    lanes: dict[str, Mapping[str, Any]] = {}
+    for lane in LANE_ORDER:
+        row = _runtime_mapping(
+            lanes_raw[lane], {"latency_samples", "fir"}, f"lanes.{lane}"
+        )
+        latency = _runtime_integer(
+            row["latency_samples"], f"lanes.{lane}.latency_samples", minimum=0
+        )
+        fir_raw = row["fir"]
+        if not isinstance(fir_raw, (list, tuple)) or not 1 <= len(fir_raw) <= 64:
+            raise ValueError(f"lanes.{lane}.fir must contain 1..64 values")
+        fir = tuple(_runtime_float(item, f"lanes.{lane}.fir") for item in fir_raw)
+        if (
+            not math.isclose(sum(fir), 1.0, rel_tol=0.0, abs_tol=1e-12)
+            or sum(abs(item) for item in fir) > 4.0
+            or fir[0] == 0.0
+        ):
+            raise ValueError(f"lanes.{lane}.fir is not an admitted normalized filter")
+        lanes[lane] = {"latency_samples": latency, "fir": fir}
+
+    acceptance_raw = _runtime_mapping(
+        value["acceptance"], set(base.acceptance), "acceptance"
+    )
+    acceptance: dict[str, Any] = {}
+    for name in base.acceptance:
+        acceptance[name] = (
+            _runtime_integer(acceptance_raw[name], f"acceptance.{name}", minimum=1)
+            if name == "max_formal_samples_per_scenario"
+            else _runtime_positive_float(acceptance_raw[name], f"acceptance.{name}")
+        )
+
+    mixing_raw = _runtime_mapping(
+        value["static_mixing"], set(GROUP_CONTRACT), "static_mixing"
+    )
+    mixing: dict[str, Mapping[str, Any]] = {}
+    max_condition = float(acceptance["max_condition_number"])
+    for group, (input_lanes, output_coordinates) in GROUP_CONTRACT.items():
+        row = _runtime_mapping(
+            mixing_raw[group],
+            {"input_lanes", "output_coordinates", "matrix"},
+            f"static_mixing.{group}",
+        )
+        if tuple(row["input_lanes"]) != input_lanes or tuple(row["output_coordinates"]) != output_coordinates:
+            raise ValueError(f"static_mixing.{group} coordinates are not exact")
+        matrix = np.asarray(row["matrix"], dtype="<f8")
+        expected = len(input_lanes)
+        condition = (
+            float(np.linalg.cond(matrix, 2))
+            if matrix.shape == (expected, expected) and np.isfinite(matrix).all()
+            else math.inf
+        )
+        if not math.isfinite(condition) or condition > max_condition:
+            raise ValueError(f"static_mixing.{group} is singular or ill-conditioned")
+        matrix.setflags(write=False)
+        mixing[group] = {
+            "input_lanes": input_lanes,
+            "output_coordinates": output_coordinates,
+            "matrix": matrix,
+            "condition_number_2": condition,
+        }
+
+    idle_raw = _runtime_mapping(
+        value["idle_flux_phi0"], {"q1", "q2", "c"}, "idle_flux_phi0"
+    )
+    idle = {
+        name: _runtime_decimal(idle_raw[name], f"idle_flux_phi0.{name}")
+        for name in ("q1", "q2", "c")
+    }
+    return ControlChainConfig(
+        base.source_path,
+        base.profile,
+        base.inputs,
+        rate,
+        dt,
+        dac,
+        LANE_ORDER,
+        MappingProxyType(lanes),
+        MappingProxyType(mixing),
+        MappingProxyType(idle),
+        MappingProxyType(acceptance),
+    )
+
+
+def _runtime_mapping(value: Any, keys: set[str], label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise ValueError(f"{label} fields are not exact")
+    return value
+
+
+def _runtime_integer(
+    value: Any,
+    label: str,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
+    if type(value) is not int or value < minimum or (maximum is not None and value > maximum):
+        raise ValueError(f"{label} is outside its admitted integer range")
+    return value
+
+
+def _runtime_decimal(value: Any, label: str) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise ValueError(f"{label} must be numeric")
+    try:
+        result = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError(f"{label} must be finite") from exc
+    if not result.is_finite():
+        raise ValueError(f"{label} must be finite")
+    return result
+
+
+def _runtime_float(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError(f"{label} must be finite")
+    return float(value)
+
+
+def _runtime_positive_float(value: Any, label: str) -> float:
+    result = _runtime_float(value, label)
+    if result <= 0.0:
+        raise ValueError(f"{label} must be positive")
+    return result
 
 
 def _verify_authority(

@@ -190,10 +190,34 @@ def test_z_crosstalk_inverse_uses_the_named_matrix_orientation():
 
 def test_half_lsb_ties_use_the_frozen_half_even_rule():
     config = _context().control_chain_config
-    dac = {**config.dac, "lsb_V": Decimal("0.5")}
+    dac = {
+        **config.dac,
+        "bits": 4,
+        "full_scale_min_V": Decimal("-4"),
+        "full_scale_max_exclusive_V": Decimal("4"),
+        "code_min": -8,
+        "code_max": 7,
+        "lsb_V": Decimal("0.5"),
+    }
     codes, reconstructed = _quantize_half_even(np.array([0.25, 0.75, -0.25]), dac)
     assert codes.tolist() == [0, 2, 0]
     assert reconstructed.tolist() == pytest.approx([0.0, 1.0, 0.0])
+
+
+def test_asymmetric_dac_range_uses_the_configured_voltage_offset():
+    config = _context().control_chain_config
+    dac = {
+        **config.dac,
+        "bits": 3,
+        "full_scale_min_V": Decimal("-1"),
+        "full_scale_max_exclusive_V": Decimal("3"),
+        "code_min": -4,
+        "code_max": 3,
+        "lsb_V": Decimal("0.5"),
+    }
+    codes, reconstructed = _quantize_half_even(np.array([-1.0, 0.0, 2.5]), dac)
+    assert codes.tolist() == [-4, -2, 3]
+    assert reconstructed.tolist() == pytest.approx([-1.0, 0.0, 2.5])
 
 
 def test_drive_event_frequency_relation_and_context_attacks_fail_closed():
@@ -367,6 +391,9 @@ def test_v03_dac_overflow_rejects_without_clipping():
         context = _context(bounds=(-2.0, 2.0))
         compile_qcis_waveform_plan(admit_qcis_v03_plan(_plan(q1_flux=1.0), context), context)
     assert captured.value.code == ParameterizedControlReasonCode.DAC_RANGE_EXCEEDED
+    assert "q1_z" in str(captured.value)
+    assert "requested" in str(captured.value)
+    assert "outside [-0.33, 0.33) V" in str(captured.value)
 
 
 def test_legacy_stage4_entry_remains_a_distinct_unchanged_api():

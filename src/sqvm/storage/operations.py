@@ -12,15 +12,14 @@ import json
 import os
 from pathlib import Path
 import stat
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 import uuid
 
-from sqvm.calibration.spectroscopy_run import verify_qubit_spectroscopy_scan
 from sqvm.storage.archive_format import DirectoryEvidenceReader, write_sqrun
 from sqvm.storage.archive_verify import ArchiveLimits, ZipEvidenceReader, verify_sqrun
 from sqvm.storage.lifecycle import LifecycleConflict, LifecycleError, append_event, read_head
-from sqvm.storage.references import build_reference_graph
-from sqvm.storage.workflow_verifiers import archive_evidence_verifier_registry, get_workflow_evidence_verifier
+from sqvm.storage.references import ReferenceGraph, build_reference_graph
+from sqvm.storage.workflow_verifiers import archive_evidence_verifier_registry, get_workflow_evidence_verifier, hot_alias_prefixes, valid_hot_alias, valid_hot_alias_for, workflow_hot_verifier_registry
 
 
 class StorageOperationError(RuntimeError):
@@ -67,6 +66,7 @@ class ExperimentStorageOperations:
         experiment_output_root: str | Path | None = None,
         archive_root: str | Path | None = None,
         pins_root: str | Path | None = None,
+        reference_graph_provider: Callable[[], object] | None = None,
         catalog_revision: int = 0,
         trash_retention_days: int = 7,
     ) -> None:
@@ -86,6 +86,7 @@ class ExperimentStorageOperations:
         self._catalog_revision = catalog_revision
         self._trash_retention_days = trash_retention_days
         self._archive_registry = dict(archive_evidence_verifier_registry())
+        self._reference_graph_provider = reference_graph_provider
 
     @_mutation
     def archive(self, run_id: str, request: StorageMutationRequest) -> StorageOperationResult:
@@ -188,7 +189,7 @@ class ExperimentStorageOperations:
         staging = self._hot_root / f".restore-{operation}"
         try:
             self._extract_archive(archive, bundle, staging)
-            self._verified_hot(staging, run_id, request.expected_workflow_sha256)
+            self._verified_hot(staging, run_id, request.expected_workflow_sha256, require_alias=False)
             _publish_new(staging, target)
             self._verified_hot(target, run_id, request.expected_workflow_sha256)
             _remove_carrier_safe(archive, "sqrun")
@@ -236,28 +237,46 @@ class ExperimentStorageOperations:
         request = _request(request, self._catalog_revision); run_id = _run_id(run_id)
         graph = self._fresh_references()
         head = self._head(run_id)
+        verified_hot: tuple[Path, dict[str, Any]] | None = None
+        original_fingerprint: tuple[str, int] | None = None
         if head.pending_event_type == "trash_started":
             return self._resume_published_trash(run_id, request, head)
         if head.state is None:
-            hot = self._find_hot(run_id, request.expected_workflow_sha256)
-            workflow = self._verified_hot(hot, run_id, request.expected_workflow_sha256)
+            hot, workflow = self._find_verified_hot(
+                run_id, request.expected_workflow_sha256
+            )
+            original_fingerprint = _carrier_fingerprint(hot, "hot_directory")
             discovered = str(uuid.uuid4())
-            self._event(run_id, "hot_discovered", None, "hot", workflow, hot, request, discovered)
+            self._event(
+                run_id, "hot_discovered", None, "hot", workflow, hot, request,
+                discovered, _carrier_hash=original_fingerprint[0],
+            )
+            verified_hot = (hot, workflow)
             head = self._head(run_id)
         if graph.scan_incomplete or graph.for_run(run_id) or head.manual_keep or head.pending_event_type is not None or head.state not in {"hot", "archived"}:
             raise StorageOperationError("referenced, kept, unknown, or nonterminal run cannot enter trash")
         if head.state == "hot":
-            carrier, kind = self._find_hot(run_id, request.expected_workflow_sha256), "hot_directory"
-            workflow = self._verified_hot(carrier, run_id, request.expected_workflow_sha256)
+            if verified_hot is None:
+                carrier, workflow = self._find_verified_hot(
+                    run_id, request.expected_workflow_sha256
+                )
+            else:
+                carrier, workflow = verified_hot
+            kind = "hot_directory"
         else:
             carrier, kind = self._archive_root / f"{run_id}.sqrun", "sqrun"
             bundle = self._verified_archive(carrier, run_id, request.expected_workflow_sha256)
             workflow = {"workflow_id": bundle.workflow_id, "workflow_sha256": bundle.workflow_sha256, "receipt_sha256": bundle.receipt_sha256}
         operation = str(uuid.uuid4())
-        self._event(run_id, "trash_started", head.state, head.state, workflow, carrier, request, operation)
+        if original_fingerprint is None:
+            original_fingerprint = _carrier_fingerprint(carrier, kind)
+        original_sha, original_bytes = original_fingerprint
+        self._event(
+            run_id, "trash_started", head.state, head.state, workflow, carrier,
+            request, operation, _carrier_hash=original_sha,
+        )
         trash = self._storage_root / "trash" / run_id
         payload = trash / "payload"
-        original_sha = _carrier_sha(carrier, kind)
         try:
             _mkdir(trash)
             graph = self._fresh_references()
@@ -266,11 +285,19 @@ class ExperimentStorageOperations:
             # Re-read both identity and bytes immediately before the destructive
             # move.  The initial verification must not authorize a replacement.
             self._verify_carrier(carrier, kind, run_id, request.expected_workflow_sha256)
-            if _carrier_sha(carrier, kind) != original_sha:
+            before_sha, before_bytes = _carrier_fingerprint(carrier, kind)
+            if (before_sha, before_bytes) != (original_sha, original_bytes):
                 raise StorageOperationError("carrier changed before trash publication")
             copied = _move_or_copy(carrier, payload, kind)
             self._verify_carrier(payload, kind, run_id, request.expected_workflow_sha256)
-            record = _trash_record(run_id, workflow, request, operation, head.state, kind, carrier.name, original_sha, payload, kind, self._head(run_id).tail_sha256, self._trash_retention_days)
+            payload_sha, payload_bytes = _carrier_fingerprint(payload, kind)
+            if (payload_sha, payload_bytes) != (original_sha, original_bytes):
+                raise StorageOperationError("trash payload does not match original carrier")
+            record = _trash_record(
+                run_id, workflow, request, operation, head.state, kind,
+                carrier.name, original_sha, payload_sha, payload_bytes,
+                self._head(run_id).tail_sha256, self._trash_retention_days,
+            )
             _write_new(trash / "trash-record.json", record)
             if copied:
                 graph = self._fresh_references()
@@ -285,7 +312,11 @@ class ExperimentStorageOperations:
             self._failure(run_id, "trash_failed", head.state, head.state, workflow, carrier if carrier.exists() else payload, request, operation)
             suffix = "" if rollback_error is None else "; recovery duplicate retained"
             raise StorageOperationError(f"trash move failed; source was retained or recoverable{suffix}: {exc}") from exc
-        self._event(run_id, "trashed", head.state, "trash", workflow, payload, request, operation, trash_previous_state=head.state)
+        self._event(
+            run_id, "trashed", head.state, "trash", workflow, payload,
+            request, operation, _carrier_hash=payload_sha,
+            trash_previous_state=head.state,
+        )
         return StorageOperationResult(run_id, "trash", operation, str(payload))
 
     def _resume_published_trash(self, run_id: str, request: StorageMutationRequest, head) -> StorageOperationResult:
@@ -373,20 +404,35 @@ class ExperimentStorageOperations:
         return StorageOperationResult(run_id, head.state, operation, str(pin))
 
     def _fresh_references(self):
-        return build_reference_graph(configuration_root=self._config_root, experiment_output_root=self._experiment_root, lifecycle_root=self._lifecycle_root, pins_root=self._pins_root)
+        graph = self._reference_graph_provider() if self._reference_graph_provider is not None else build_reference_graph(
+            configuration_root=self._config_root,
+            experiment_output_root=self._experiment_root,
+            lifecycle_root=self._lifecycle_root,
+            pins_root=self._pins_root,
+        )
+        if callable(getattr(graph, "for_run", None)):
+            return graph
+        if (
+            not isinstance(getattr(graph, "references", None), tuple)
+            or type(getattr(graph, "scan_incomplete", None)) is not bool
+            or not isinstance(getattr(graph, "blockers", None), tuple)
+        ):
+            raise StorageOperationError("reference graph provider returned invalid data")
+        return ReferenceGraph(graph.references, graph.scan_incomplete, graph.blockers)
 
     def _head(self, run_id: str): return read_head(self._storage_root, run_id)
-    def _find_hot(self, run_id: str, expected: str) -> Path:
+    def _find_verified_hot(
+        self, run_id: str, expected: str
+    ) -> tuple[Path, dict[str, Any]]:
         """Bind a run identity to exactly one verifier-approved published carrier."""
         candidates: list[Path] = []
         _safe_existing(self._hot_root, self._hot_root)
         try:
             entries = sorted(os.scandir(self._hot_root), key=lambda row: row.name)
-            prefix = "qubit_spectroscopy_"
             for entry in entries:
-                if entry.name.lower().startswith(prefix) and not entry.name.startswith(prefix):
+                if any(entry.name.lower().startswith(prefix) for prefix in hot_alias_prefixes()) and not valid_hot_alias(entry.name):
                     raise StorageOperationError("hot carrier candidate uses an invalid alias case")
-                if not entry.name.startswith(prefix):
+                if not valid_hot_alias(entry.name):
                     continue
                 path = Path(entry.path)
                 info = path.lstat()
@@ -397,22 +443,13 @@ class ExperimentStorageOperations:
                 if not stat.S_ISREG(workflow_info.st_mode) or workflow_info.st_nlink > 1 or _is_link_or_reparse(workflow_info):
                     raise StorageOperationError("hot carrier candidate workflow is unsafe")
                 workflow = _workflow_identity(workflow_path)
-                # Every published-looking carrier is authority.  A corrupted
-                # sibling might otherwise hide a duplicate run identity.
-                version = workflow.get("artifact_version")
-                if version in {"0.1", "0.2"}:
+                verifier = workflow_hot_verifier_registry().get((workflow.get("workflow_id"), workflow.get("artifact_version")))
+                if verifier is None:
                     if workflow.get("run_id") == run_id:
-                        raise StorageOperationError("legacy hot carrier is not archive eligible")
+                        raise StorageOperationError("hot carrier is not explicitly registered")
                     continue
-                if version != "0.3":
-                    raise StorageOperationError("hot carrier candidate has an unknown artifact version")
-                try:
-                    verify_qubit_spectroscopy_scan(path)
-                except Exception as exc:
-                    raise StorageOperationError("hot carrier candidate verifier rejected run") from exc
                 if workflow.get("run_id") != run_id:
                     continue
-                self._verified_hot(path, run_id, expected)
                 candidates.append(path)
         except StorageOperationError:
             raise
@@ -420,28 +457,36 @@ class ExperimentStorageOperations:
             raise StorageOperationError("hot carrier scan could not be completed") from exc
         if len(candidates) != 1:
             raise StorageOperationError("hot carrier identity is missing or ambiguous")
-        return candidates[0]
+        candidate = candidates[0]
+        return candidate, self._verified_hot(candidate, run_id, expected)
 
-    def _restored_hot_path(self, run_id: str) -> Path:
-        return self._hot_alias_path(f"qubit_spectroscopy_restored_{run_id.replace('-', '')}")
+    def _find_hot(self, run_id: str, expected: str) -> Path:
+        return self._find_verified_hot(run_id, expected)[0]
 
     def _hot_alias_path(self, alias: str) -> Path:
-        if not _safe_hot_alias(alias):
+        if not valid_hot_alias(alias):
             raise StorageOperationError("hot carrier alias is invalid")
         return self._hot_root / alias
     def _source_verifier(self, workflow: Mapping[str, Any]):
         value = get_workflow_evidence_verifier(workflow.get("workflow_id"), workflow.get("artifact_version"))
         if value is None: raise StorageOperationError("only registered v0.3 evidence is archivable")
         return value
-    def _verified_hot(self, path: Path, run_id: str, expected: str) -> dict[str, Any]:
+    def _verified_hot(self, path: Path, run_id: str, expected: str, *, require_alias: bool = True) -> dict[str, Any]:
         _safe_existing(path, path)
-        try: verify_qubit_spectroscopy_scan(path)
-        except Exception as exc: raise StorageOperationError("hot carrier verifier rejected run") from exc
         try:
             workflow = json.loads((path / "workflow.json").read_text("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise StorageOperationError("workflow cannot be read") from exc
-        if workflow.get("run_id") != run_id or workflow.get("artifact_version") != "0.3" or workflow.get("archive_eligible") is not True or _sha_file(path / "workflow.json") != expected:
+        verifier = workflow_hot_verifier_registry().get((workflow.get("workflow_id"), workflow.get("artifact_version")))
+        if verifier is None:
+            raise StorageOperationError("hot carrier is not explicitly registered")
+        if require_alias and not valid_hot_alias_for(
+            workflow.get("workflow_id"), workflow.get("artifact_version"), run_id, path.name
+        ):
+            raise StorageOperationError("hot carrier alias does not bind run identity")
+        try: verifier(path)
+        except Exception as exc: raise StorageOperationError("hot carrier verifier rejected run") from exc
+        if workflow.get("run_id") != run_id or workflow.get("archive_eligible") is not True or _sha_file(path / "workflow.json") != expected:
             raise StorageOperationError("hot carrier identity is invalid")
         self._source_verifier(workflow)
         return {"workflow_id": workflow["workflow_id"], "artifact_version": workflow["artifact_version"], "workflow_sha256": expected, "receipt_sha256": _sha_file(path / "receipt.json")}
@@ -449,10 +494,13 @@ class ExperimentStorageOperations:
         _safe_existing(path, path)
         try: bundle = verify_sqrun(path, verifier_registry=self._archive_registry, require_source_verified=True)
         except Exception as exc: raise StorageOperationError("archive verifier rejected carrier") from exc
-        if bundle.run_id != run_id or bundle.workflow_sha256 != expected or bundle.source_artifact_version != "0.3": raise StorageOperationError("archive identity is invalid")
+        if bundle.run_id != run_id or bundle.workflow_sha256 != expected or get_workflow_evidence_verifier(bundle.workflow_id, bundle.source_artifact_version) is None: raise StorageOperationError("archive identity is invalid")
         return bundle
     def _verify_carrier(self, path: Path, kind: str, run: str, expected: str):
-        return self._verified_hot(path, run, expected) if kind == "hot_directory" else self._verified_archive(path, run, expected)
+        # Trash payloads are intentionally named ``payload``; semantic
+        # evidence still verifies, while final hot aliases are checked at the
+        # hot discovery/publication boundary.
+        return self._verified_hot(path, run, expected, require_alias=path.name != "payload") if kind == "hot_directory" else self._verified_archive(path, run, expected)
     def _carrier_for_state(self, run: str, state: str, expected: str) -> Path:
         if state in {"hot", "archived_duplicate"}: return self._find_hot(run, expected)
         if state == "archived": return self._archive_root / f"{run}.sqrun"
@@ -464,8 +512,12 @@ class ExperimentStorageOperations:
         if kind == "sqrun":
             return {"workflow_id": verified.workflow_id, "workflow_sha256": verified.workflow_sha256, "receipt_sha256": verified.receipt_sha256}
         return verified
-    def _event(self, run, event, before, after, workflow, carrier, request, operation, **extra):
-        head = self._head(run); carrier_hash = _carrier_sha(carrier, "hot_directory" if stat.S_ISDIR(carrier.lstat().st_mode) else "sqrun")
+    def _event(self, run, event, before, after, workflow, carrier, request, operation, _carrier_hash=None, **extra):
+        head = self._head(run)
+        carrier_hash = _carrier_hash or _carrier_sha(
+            carrier,
+            "hot_directory" if stat.S_ISDIR(carrier.lstat().st_mode) else "sqrun",
+        )
         payload = {"from_state": before, "to_state": after, "workflow_sha256": workflow["workflow_sha256"], "carrier_path": carrier.name, "carrier_sha256": carrier_hash, "catalog_revision": request.expected_catalog_revision, **extra}
         try: append_event(self._storage_root, run, event, payload, actor_id=request.actor_id, operation_id=operation, expected_revision=head.revision, expected_tail_sha256=head.tail_sha256)
         except (LifecycleError, LifecycleConflict, OSError) as exc: raise StorageOperationError("lifecycle concurrency conflict") from exc
@@ -519,7 +571,7 @@ def _contains_path(parent: Path, child: Path) -> bool:
 def _is_link_or_reparse(info: os.stat_result) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_reparse_tag", 0))
 def _safe_hot_alias(alias: Any) -> bool:
-    return isinstance(alias, str) and alias.startswith("qubit_spectroscopy_") and 1 <= len(alias) <= 128 and "\x00" not in alias and "/" not in alias and "\\" not in alias and ":" not in alias and alias not in {".", ".."}
+    return valid_hot_alias(alias)
 def _safe_existing(path: Path, root: Path):
     if not os.path.lexists(path): raise StorageOperationError("trusted path is missing")
     try: path.relative_to(root)
@@ -646,16 +698,18 @@ def _rollback_trash_payload(carrier: Path, payload: Path, trash: Path, kind: str
         return exc
 def _same_volume(source: Path, destination_directory: Path) -> bool:
     return source.stat().st_dev == destination_directory.stat().st_dev
-def _carrier_sha(path: Path, kind: str) -> str:
+def _carrier_fingerprint(path: Path, kind: str) -> tuple[str, int]:
     if kind == "sqrun":
         _safe_existing(path, path.parent)
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
             raise StorageOperationError("unsafe archive carrier")
-        return _sha_file(path)
+        return _sha_file(path), info.st_size
     digest = hashlib.sha256()
+    logical_bytes = 0
     _safe_existing(path, path)
     def visit(current: Path):
+        nonlocal logical_bytes
         for entry in sorted(os.scandir(current), key=lambda row: row.name):
             item = Path(entry.path)
             info = item.lstat()
@@ -672,12 +726,15 @@ def _carrier_sha(path: Path, kind: str) -> str:
                 with item.open("rb") as stream:
                     while chunk := stream.read(64 * 1024):
                         digest.update(chunk)
+                logical_bytes += info.st_size
             else:
                 raise StorageOperationError("special carrier cannot be hashed")
     visit(path)
-    return digest.hexdigest().upper()
-def _trash_record(run, workflow, request, operation, state, kind, alias, original_sha, payload, payload_kind, started_sha, days):
-    value = {"schema_version":"0.1","artifact_type":"sqvm_experiment_trash_record","artifact_version":"0.1","run_id":run,"workflow_id":workflow["workflow_id"],"workflow_sha256":workflow["workflow_sha256"],"receipt_sha256":workflow["receipt_sha256"],"operation_id":operation,"actor_id":request.actor_id,"reason":request.reason,"previous_storage_state":state,"original_carrier_kind":kind,"original_carrier_alias":alias,"original_carrier_sha256":original_sha,"payload_kind":payload_kind,"payload_sha256":_carrier_sha(payload,payload_kind),"payload_logical_bytes":_carrier_bytes(payload,payload_kind),"trashed_utc":_utc(),"purge_after_utc":_utc(days),"trash_started_event_sha256":started_sha,"record_sha256":""}
+    return digest.hexdigest().upper(), logical_bytes
+def _carrier_sha(path: Path, kind: str) -> str:
+    return _carrier_fingerprint(path, kind)[0]
+def _trash_record(run, workflow, request, operation, state, kind, alias, original_sha, payload_sha, payload_bytes, started_sha, days):
+    value = {"schema_version":"0.1","artifact_type":"sqvm_experiment_trash_record","artifact_version":"0.1","run_id":run,"workflow_id":workflow["workflow_id"],"workflow_sha256":workflow["workflow_sha256"],"receipt_sha256":workflow["receipt_sha256"],"operation_id":operation,"actor_id":request.actor_id,"reason":request.reason,"previous_storage_state":state,"original_carrier_kind":kind,"original_carrier_alias":alias,"original_carrier_sha256":original_sha,"payload_kind":kind,"payload_sha256":payload_sha,"payload_logical_bytes":payload_bytes,"trashed_utc":_utc(),"purge_after_utc":_utc(days),"trash_started_event_sha256":started_sha,"record_sha256":""}
     value["record_sha256"] = _sha(_canonical({k:v for k,v in value.items() if k != "record_sha256"})); return value
 def _read_trash_record(path: Path, run: str):
     value = _json(path); keys={"schema_version","artifact_type","artifact_version","run_id","workflow_id","workflow_sha256","receipt_sha256","operation_id","actor_id","reason","previous_storage_state","original_carrier_kind","original_carrier_alias","original_carrier_sha256","payload_kind","payload_sha256","payload_logical_bytes","trashed_utc","purge_after_utc","trash_started_event_sha256","record_sha256"}

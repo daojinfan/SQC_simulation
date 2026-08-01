@@ -6,6 +6,7 @@ pytestmark = _pytest.mark.integration
 
 import copy
 from dataclasses import replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,14 @@ from sqvm.web import (
     create_calibration_web_server,
 )
 from sqvm.web.server import ExperimentStorageWebService, StorageWebError
+from sqvm.web.index import _rabi_web_candidates, _web_candidate_read_model
+from sqvm.web.plotting import build_rabi_amplitude_plot_spec
+from sqvm.web.server import _candidate_application_decision, _selected_candidates
+from sqvm.candidate_protocol import (
+    calibration_candidate,
+    parameter_change,
+    set_parameter_value,
+)
 from tests.support.contexts import spectroscopy_context as _context, spectroscopy_result as _result, single_spectroscopy_request as _single_request
 from tests.support.calibration_requests import spectroscopy_calibration_request as _request
 from tests.support.synthetic_runners import install_synthetic_spectroscopy_runner as _install_synthetic_runner
@@ -38,6 +47,252 @@ PARENT = Path(__file__).resolve().parents[1] / "configs" / "calibration" / "plat
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _rabi_dataset() -> dict[str, object]:
+    return {
+        "experiment_id": "qubit_rabi_x2p_amplitude_v1",
+        "target": "Q1",
+        "axis": {"name": "amplitude_GHz", "unit": "GHz", "values": [0.0, 0.05, 0.1]},
+        "series": {"Q1": {
+            "P0": [1.0, 0.75, 0.1], "P1": [0.0, 0.25, 0.9],
+            "leakage": [0.0, 0.0, 0.01], "norm_error": [0.0, 0.0, 0.0],
+            "P1_fit": [0.0, 0.3, 0.85],
+        }},
+        "points": [{
+            "point_index": 0,
+            "phase_audit": {
+                "passed": True,
+                "first_start_sample": 0,
+                "second_start_sample": 32,
+                "lab_phase_advance_unwrapped_rad": 10.5,
+                "lab_phase_advance_wrapped_rad": -2.0663706143591725,
+            },
+        }, {"point_index": 1}, {"point_index": 2}],
+    }
+
+
+def _rabi_candidate() -> dict[str, object]:
+    return calibration_candidate(
+        "Q1.xy2_amplitude", "Q1", [parameter_change(
+            "calibration_values.waveform_registry.settings.q1_xy2.amplitude_GHz",
+            0.08, 0.091, unit="GHz", configuration_resource={
+                "owner": "Q1", "resource_type": "waveform_setting", "resource_id": "q1_xy2",
+            },
+        )], candidate_type="xy2_amplitude", recommendation_eligible=True,
+        source_dataset_sha256s=["D" * 64],
+    )
+
+
+def _unrecommended_rabi_candidate() -> dict[str, object]:
+    return calibration_candidate(
+        "Q1.xy2_amplitude",
+        "Q1",
+        _rabi_candidate()["changes"],
+        candidate_type="xy2_amplitude",
+        recommendation_eligible=False,
+        source_dataset_sha256s=["D" * 64],
+        quality_metrics={"normalized_rmse": 0.12},
+        reason="fit residual exceeds the policy limit",
+    )
+
+
+def test_rabi_plot_adapter_exposes_raw_fit_and_candidate_marker():
+    spec = build_rabi_amplitude_plot_spec("Q1", _rabi_dataset(), candidate_amplitude_GHz=0.091)
+
+    assert spec["plot_id"] == "qubit_rabi_x2p_amplitude"
+    assert [row["id"] for row in spec["objects"]] == ["Q1"]
+    assert [row["id"] for row in spec["metrics"]] == ["P0", "P1", "leakage", "norm_error", "P1_fit"]
+    assert {row["group_id"] for row in spec["series"]} == {"raw", "fit"}
+    assert spec["markers"] == [{"id": "candidate_amplitude", "label": "Candidate X2P amplitude", "x": 0.091}]
+
+
+def test_rabi_candidate_change_updates_only_the_active_waveform_setting_amplitude():
+    editable = {"calibration_values": {"waveform_registry": {"settings": {
+        "q1_xy2": {"amplitude_GHz": 0.08, "length_samples": 32},
+    }}}}
+    change = _rabi_candidate()["changes"][0]
+
+    set_parameter_value(editable, change)
+
+    assert editable["calibration_values"]["waveform_registry"]["settings"]["q1_xy2"] == {
+        "amplitude_GHz": 0.091,
+        "length_samples": 32,
+    }
+
+
+def test_rabi_web_hides_legacy_fallback_candidate_when_fit_has_no_proposal():
+    workflow = {
+        "analysis": {"fit_converged": False, "x2p_amplitude_GHz": None},
+        "candidates": [_rabi_candidate()],
+    }
+
+    assert _rabi_web_candidates(workflow) == []
+
+
+def test_web_candidate_read_model_keeps_unrecommended_candidates_available_for_confirmation():
+    candidate = _unrecommended_rabi_candidate()
+
+    row = _web_candidate_read_model([candidate])[0]
+
+    assert row["application_status"] == "manual_confirmation_required"
+    assert row["recommendation_reason"] == "fit residual exceeds the policy limit"
+    assert row["quality_metrics"] == {"normalized_rmse": 0.12}
+
+
+def test_web_decision_validation_requires_explicit_human_override_reason():
+    candidate = _unrecommended_rabi_candidate()
+    detail = {"candidates": [candidate]}
+    payload = {
+        "candidate_ids": [candidate["candidate_id"]],
+        "decision_mode": "override_recommendation",
+        "decision_source": "web_user",
+        "decision_reason": "Reviewed the fit and the companion measurement.",
+    }
+
+    decision = _candidate_application_decision(payload)
+    assert decision.mode == "override_recommendation"
+    assert decision.source == "web_user"
+    assert decision.reason == "Reviewed the fit and the companion measurement."
+    assert _selected_candidates(detail, payload, decision=decision) == [candidate]
+
+    recommended = _candidate_application_decision({
+        "decision_source": "web_user",
+        "decision_reason": "Operator note retained for the audit.",
+    })
+    assert recommended.mode == "recommended_only"
+    assert recommended.reason == "Operator note retained for the audit."
+
+    with pytest.raises(ConfigurationManagementError) as captured:
+        _candidate_application_decision({**payload, "decision_reason": "  "})
+    assert captured.value.code == "candidate_override_reason_required"
+    with pytest.raises(ConfigurationManagementError) as captured:
+        _candidate_application_decision({
+            "decision_mode": "override_recommendation",
+            "decision_source": "web_user",
+        })
+    assert captured.value.code == "candidate_override_selection_required"
+    with pytest.raises(ConfigurationManagementError, match="selected candidate is not recommended") as captured:
+        _selected_candidates(
+            detail,
+            {"candidate_ids": [candidate["candidate_id"]]},
+            decision=_candidate_application_decision({}),
+        )
+    assert captured.value.code == "candidate_not_recommended"
+    with pytest.raises(ConfigurationManagementError) as captured:
+        _selected_candidates(
+            detail,
+            {"candidate_ids": [candidate["candidate_id"]], "targets": ["Q1"]},
+            decision=decision,
+        )
+    assert captured.value.code == "candidate_update_invalid"
+    for malicious_ids in ([{"candidate_id": candidate["candidate_id"]}], [[candidate["candidate_id"]]], [""]):
+        with pytest.raises(ConfigurationManagementError) as captured:
+            _selected_candidates(
+                detail, {"candidate_ids": malicious_ids}, decision=decision
+            )
+        assert captured.value.status == 422
+        assert captured.value.code == "candidate_update_invalid"
+    with pytest.raises(ConfigurationManagementError) as captured:
+        _candidate_application_decision({**payload, "decision_reason": "valid\u0085reason"})
+    assert captured.value.code == "candidate_decision_invalid"
+
+
+def test_rabi_web_renderer_reuses_the_unified_plot_and_candidate_confirmation():
+    source = (ROOT / "src" / "sqvm" / "web" / "static" / "app.js").read_text("utf-8")
+
+    assert '["qubit_rabi_x2p_amplitude_scan_v1", renderRabiAmplitude]' in source
+    assert "function renderRabiAmplitude(detail, routeContext = null)" in source
+    assert "function rabiCsv(dataset)" in source
+    assert "installUnifiedPlots(detail.plot_specs || [], routeContext)" in source
+    assert "openCandidateUpdate(detail, detail.candidates)" in source
+    assert "for (const marker of controller.spec.markers || [])" in source
+    assert "QCIS source" in source
+    assert "相位审计摘要" in source
+    assert "扫描步进" in source
+    assert "当前 / 候选" in source
+
+
+def test_rabi_projection_keeps_evidence_out_of_detail_and_preserves_apply_change(tmp_path):
+    repository = tmp_path / "repository"
+    output = repository / "output"
+    run_root = output / "experiments" / "rabi-run"
+    run_root.mkdir(parents=True)
+    candidate = _rabi_candidate()
+    workflow = {
+        "artifact_version": "0.1", "workflow_id": "qubit_rabi_x2p_amplitude_scan_v1",
+        "run_id": "rabi-run", "status": "completed",
+        "parent_configuration": {"path": "configs/calibration/parent.json", "sha256": "P" * 64},
+        "request": {
+            "target": "Q1", "axis": {"name": "amplitude_GHz", "unit": "GHz", "values": [0.0, 0.05, 0.1]},
+            "setting_id": "q1_xy2", "setting_hash": "S" * 64, "setting_amplitude_GHz": 0.08,
+            "analysis_policy_id": "rabi-policy", "analysis_policy_approved": True,
+        },
+        "analysis": {
+            "fit_converged": True, "phase_audit_passed": True, "x2p_amplitude_GHz": 0.091,
+            "offset": 0.01, "contrast": 0.9, "r_squared": 0.99, "normalized_rmse": 0.02,
+        }, "gates": [{"name": "fit", "passed": True}],
+        "claim": {"execution_profile": "calibration_scan"},
+        "recommendation_eligible": True, "candidates": [candidate],
+    }
+    dataset_raw = json.dumps(_rabi_dataset()).encode("utf-8")
+    dataset_sha256 = hashlib.sha256(dataset_raw).hexdigest().upper()
+    workflow["dataset"] = {"path": "dataset.json", "sha256": dataset_sha256}
+    workflow_raw = json.dumps(workflow).encode("utf-8")
+    workflow_sha256 = hashlib.sha256(workflow_raw).hexdigest().upper()
+    (run_root / "workflow.json").write_bytes(workflow_raw)
+    (run_root / "dataset.json").write_bytes(dataset_raw)
+    receipt = {
+        "run_id": "rabi-run", "status": "completed", "workflow_sha256": workflow_sha256,
+        "dataset_sha256": dataset_sha256,
+    }
+    report = {**receipt, "ok": True}
+    (run_root / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    (run_root / "verification_report.json").write_text(json.dumps(report), encoding="utf-8")
+    evidence = run_root / "execution" / "point-0000"
+    evidence.mkdir(parents=True)
+    (evidence / "must_not_be_read.bin").write_bytes(b"evidence")
+
+    index = CalibrationWebIndex(repository, output)
+    summary = index.experiments()[0]
+    detail = index.experiment("rabi-run")
+
+    assert summary["experiment_kind"] == "X2P Rabi 幅度校准"
+    assert summary["targets"] == ["Q1"]
+    assert isinstance(summary["created_utc"], str)
+    assert summary["created_utc"].endswith("Z")
+    assert summary["gate_summary"] == {"passed": 4, "failed": 0, "total": 4}
+    assert summary["execution_mode"] == "calibration_scan"
+    assert summary["recommendation_applicable"] is True
+    assert detail["renderer"] == "qubit_rabi_x2p_amplitude"
+    assert detail["evidence_paths"] == []
+    assert detail["plot_specs"][0]["markers"][0]["x"] == 0.091
+    projection = detail["rabi_detail"]
+    assert projection["scan"] == {"range_GHz": [0.0, 0.1], "step_GHz": 0.05, "point_count": 3}
+    assert projection["parent_configuration"]["path"] == "configs/calibration/parent.json"
+    assert projection["active_setting"]["setting_id"] == "q1_xy2"
+    assert projection["qcis_source"] == (
+        "SET Q1 setting.active_xy2_setting.amplitude_GHz 0\nX2P Q1\nX2P Q1\n"
+    )
+    assert projection["phase_audit"] == {
+        "point_index": 0, "passed": True, "first_start_sample": 0,
+        "second_start_sample": 32, "lab_phase_advance_unwrapped_rad": 10.5,
+        "lab_phase_advance_wrapped_rad": -2.0663706143591725,
+    }
+    assert projection["fit"]["contrast"] == 0.9
+    assert [row["name"] for row in projection["quality_gates"]] == [
+        "analysis_policy_approved", "fit_converged", "phase_audit", "recommendation_eligible",
+    ]
+    assert projection["candidate_values"] == [{
+        "candidate_id": "Q1.xy2_amplitude",
+        "parameter_path": "calibration_values.waveform_registry.settings.q1_xy2.amplitude_GHz",
+        "current_value": 0.08, "proposed_value": 0.091, "unit": "GHz",
+        "recommendation_eligible": True,
+    }]
+    selected = _selected_candidates(detail, {"candidate_ids": ["Q1.xy2_amplitude"]})
+    assert selected[0]["changes"][0]["parameter_path"] == (
+        "calibration_values.waveform_registry.settings.q1_xy2.amplitude_GHz"
+    )
 
 
 @pytest.fixture
@@ -363,15 +618,24 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
             method="POST",
             payload={
                 "actor_id": "project.manager",
-                    "candidate_ids": [
+                "candidate_ids": [
                         "Q1.reference_frequency_GHz",
                         "Q2.reference_frequency_GHz",
                     ],
+                "decision_mode": "recommended_only",
+                "decision_source": "web_user",
+                "decision_reason": "Reviewed both candidate frequency shifts.",
                 "name": "Candidate draft",
                 "note": "from Web API",
             },
         )
         assert created["source_candidate"]["targets"] == ["Q1", "Q2"]
+        assert created["source_candidate"]["decision"] == {
+            "mode": "recommended_only",
+            "source": "web_user",
+            "reason": "Reviewed both candidate frequency shifts.",
+            "overrode_recommendation": False,
+        }
         diff = _http_json(
             f"{base_url}/api/v1/drafts/{created['draft_id']}/diff?against=parent"
         )
@@ -408,8 +672,26 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
                     "candidate_ids": ["Q1.reference_frequency_GHz"],
                     "confirmation_phrase": "APPLY",
                 },
+        )
+        assert captured.value.code == 422
+        with pytest.raises(HTTPError) as captured:
+            _http_json(
+                f"{base_url}/api/v1/experiments/{run.run_id}/apply-current",
+                method="POST",
+                payload={
+                    "actor_id": "project.manager",
+                    "device_id": "demo_2q1c2r",
+                    "expected_content_sha256": current["content_sha256"],
+                    "candidate_ids": [{"candidate_id": "Q1.reference_frequency_GHz"}],
+                    "confirmation_phrase": (
+                        f"APPLY CALIBRATION CANDIDATES {run.run_id}"
+                    ),
+                },
             )
         assert captured.value.code == 422
+        assert json.loads(captured.value.read().decode("utf-8"))["code"] == (
+            "candidate_update_invalid"
+        )
         current = _http_json(
             f"{base_url}/api/v1/experiments/{run.run_id}/apply-current",
             method="POST",
@@ -418,6 +700,9 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
                 "device_id": "demo_2q1c2r",
                 "expected_content_sha256": current["content_sha256"],
                 "candidate_ids": ["Q1.reference_frequency_GHz"],
+                "decision_mode": "recommended_only",
+                "decision_source": "web_user",
+                "decision_reason": "Reviewed the Q1 frequency candidate.",
                 "confirmation_phrase": (
                     f"APPLY CALIBRATION CANDIDATES {run.run_id}"
                 ),
@@ -425,6 +710,12 @@ def test_http_api_serves_console_and_configuration_mutations(web_workspace):
         )
         assert current["source_candidate"]["experiment_run_id"] == run.run_id
         assert current["source_candidate"]["targets"] == ["Q1"]
+        assert current["source_candidate"]["decision"] == {
+            "mode": "recommended_only",
+            "source": "web_user",
+            "reason": "Reviewed the Q1 frequency candidate.",
+            "overrode_recommendation": False,
+        }
         operation_id = str(uuid.uuid4())
         update_payload = {
             "actor_id": "project.manager",
@@ -541,6 +832,9 @@ def test_experiment_storage_http_contract_uses_server_authority_only(web_workspa
         def trash(self): return {"schema_version": "0.1", "catalog_revision": 7, "items": []}
         def mutate(self, identifier, action, payload):
             self.calls.append((identifier, action, payload)); return {"schema_version": "0.1", "operation_id": "op", "catalog_revision": 8, "item": row}
+        def batch_trash(self, payload):
+            self.calls.append(("batch", "trash", payload))
+            return {"schema_version": "0.1", "operation_count": 1, "catalog_revision": 8, "items": [row]}
 
     server = create_calibration_web_server(ROOT, output_root=output, configuration_storage_root=storage, port=0)
     server.storage = StorageStub()
@@ -557,6 +851,19 @@ def test_experiment_storage_http_contract_uses_server_authority_only(web_workspa
         assert captured.value.code == 404
         result = _http_json(f"{base_url}/api/v1/experiments/{run_id}/archive", method="POST", payload=payload)
         assert result["catalog_revision"] == 8 and server.storage.calls[0][1] == "archive"
+        batch = _http_json(
+            f"{base_url}/api/v1/experiment-storage/batch-trash",
+            method="POST",
+            payload={
+                "actor_id": "project.manager",
+                "expected_catalog_revision": 7,
+                "items": [{
+                    "run_id": run_id,
+                    "expected_workflow_sha256": "A" * 64,
+                }],
+            },
+        )
+        assert batch["operation_count"] == 1 and server.storage.calls[1][0] == "batch"
         with pytest.raises(HTTPError) as captured:
             _http_json(f"{base_url}/api/v1/experiments/{run_id}/archive", method="POST", payload={**payload, "client_path": "C:/unsafe"})
         assert captured.value.code == 422
@@ -720,6 +1027,14 @@ def test_web_storage_reads_operations_lifecycle_keep_and_trash(tmp_path: Path, m
         assert release_result["catalog_revision"] == kept["catalog_revision"] + 1
         unkept = release_result["item"]
         assert unkept["retention_state"] == "normal" and unkept["storage_state"] == "hot"
+        original_rebuild = service.rebuild
+        monkeypatch.setattr(
+            service,
+            "rebuild",
+            lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("trash must not trigger a full catalog rebuild")
+            ),
+        )
         original_same_volume = operations_module._same_volume
         def simulate_cross_volume(source, destination):
             source = Path(source)
@@ -739,14 +1054,107 @@ def test_web_storage_reads_operations_lifecycle_keep_and_trash(tmp_path: Path, m
         assert service.run(scan.run_id)["catalog_revision"] == trashed["catalog_revision"]
         assert service.run(scan.run_id)["catalog_revision"] == trashed["catalog_revision"]
         assert catalog.stat().st_mtime_ns == trash_mtime
+        monkeypatch.setattr(service, "rebuild", original_rebuild)
+        reconciled_revision = service.rebuild()
+        reconciled = service.run(scan.run_id)
+        assert reconciled_revision == trashed["catalog_revision"] + 1
+        assert reconciled["storage_state"] == "trash"
+        assert "trash_carrier_invalid" not in reconciled["blockers"]
         restored_result = service.mutate(scan.run_id, "restore", {"actor_id": "web.test",
-            "expected_catalog_revision": trashed["catalog_revision"], "expected_workflow_sha256": trashed["workflow_sha256"],
+            "expected_catalog_revision": reconciled["catalog_revision"], "expected_workflow_sha256": reconciled["workflow_sha256"],
             "reason": "Web restore original carrier"})
-        assert restored_result["catalog_revision"] == trashed["catalog_revision"] + 1
+        assert restored_result["catalog_revision"] == reconciled["catalog_revision"] + 1
         restored = restored_result["item"]
         assert restored["storage_state"] == "hot" and (hot / scan.root.name).is_dir()
         assert not (storage / "trash" / scan.run_id).exists()
         assert not any(key.endswith("_path") for key in restored.get("carrier", {}))
+    finally:
+        shutil.rmtree(writer, ignore_errors=True)
+
+
+def test_web_storage_batch_trash_moves_two_runs_with_one_catalog_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(circuits, _context_value, output_root, _repository_root, **kwargs):
+        root = Path(output_root)
+        rows = []
+        for circuit in circuits:
+            evidence = root / "circuits" / circuit.circuit_id
+            evidence.mkdir(parents=True)
+            (evidence / "result.bin").write_bytes(circuit.circuit_id.encode("ascii"))
+            rows.append(replace(
+                _result(circuit.circuit_id, .8, .19, 0, 0),
+                circuit_sha256=sha256_bytes(circuit.source.encode("utf-8")),
+                readout_qubit=tuple(tuple(group) for group in kwargs["readout_qubit"]),
+                evidence_root=evidence,
+                model_evidence_root=evidence,
+            ))
+        return tuple(rows)
+
+    monkeypatch.setattr(spectroscopy_module, "run_circuits", fake_run)
+    writer = ROOT / "tmp" / f"web_batch_trash_{uuid.uuid4().hex}"
+    try:
+        scans = [
+            run_qubit_spectroscopy_scan(
+                replace(_single_request(), run_phase="scan"),
+                _context(),
+                ROOT / "configs" / "calibration" / "platform_uncalibrated_v1.json",
+                writer / f"qubit_spectroscopy_{uuid.uuid4().hex}",
+                ROOT,
+                timeout_s=10,
+            )
+            for _index in range(2)
+        ]
+        hot = tmp_path / "experiments"
+        hot.mkdir()
+        for scan in scans:
+            shutil.copytree(scan.root, hot / scan.root.name)
+        storage = tmp_path / "storage"
+        references = tmp_path / "reference-authority"
+        references.mkdir()
+        service = ExperimentStorageWebService(
+            hot_root=hot,
+            storage_root=storage,
+            configuration_root=references,
+            experiment_output_root=hot,
+        )
+        from sqvm.storage.catalog import CatalogReferenceGraph
+        from sqvm.storage.references import ReferenceGraph
+        import sqvm.storage.operations as operations_module
+
+        monkeypatch.setattr(service, "_reference_graph", lambda: CatalogReferenceGraph((), False, ()))
+        monkeypatch.setattr(operations_module, "build_reference_graph", lambda **_kwargs: ReferenceGraph((), False, ()))
+        overview = service.overview()
+        rows = {row["run_id"]: row for row in overview["items"]}
+        revision = overview["catalog_revision"]
+        monkeypatch.setattr(
+            service,
+            "rebuild",
+            lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("batch trash must not trigger a full catalog rebuild")
+            ),
+        )
+        result = service.batch_trash({
+            "actor_id": "web.test",
+            "expected_catalog_revision": revision,
+            "items": [
+                {
+                    "run_id": scan.run_id,
+                    "expected_workflow_sha256": rows[scan.run_id]["workflow_sha256"],
+                }
+                for scan in scans
+            ],
+        })
+
+        assert result["operation_count"] == 2
+        assert result["catalog_revision"] == revision + 1
+        assert all(item["storage_state"] == "trash" for item in result["items"])
+        assert {row["run_id"] for row in service.trash()["items"]} == {scan.run_id for scan in scans}
+        for scan in scans:
+            record = json.loads((storage / "trash" / scan.run_id / "trash-record.json").read_text("utf-8"))
+            assert record["reason"] == "Web batch move to trash"
+            assert (storage / "trash" / scan.run_id / "payload").exists()
     finally:
         shutil.rmtree(writer, ignore_errors=True)
 

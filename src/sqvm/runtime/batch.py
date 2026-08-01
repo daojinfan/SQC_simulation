@@ -29,6 +29,8 @@ from sqvm.circuits import (
 )
 from sqvm.hamiltonian.provenance import canonical_json_bytes
 from sqvm.qcis.canonical import sha256_bytes, sha256_json
+from sqvm.control.stage4_1_models import ParameterizedControlError
+from sqvm.runtime.calibration_scan import preflight_calibration_scan_control
 from sqvm.runtime.journal import utc_now_text
 from sqvm.runtime.lifecycle import CancellationToken
 from sqvm.runtime.storage import flush_directory, write_canonical_new
@@ -148,6 +150,35 @@ def run_circuit_batch(
 
     # Precompile the complete batch before reserving filesystem state.
     compiled = tuple(compile_circuit(circuit, context) for circuit in normalized_circuits)
+    if (
+        execution_profile is CircuitExecutionProfile.CALIBRATION_SCAN
+        and circuit_runner is None
+        and context.platform_configuration is not None
+    ):
+        control_values = context.platform_configuration.get("control_values")
+        if not isinstance(control_values, Mapping):
+            raise CircuitBatchError(
+                "invalid_batch_request",
+                422,
+                "Active platform control_values are unavailable",
+                batch_id=identifier,
+            )
+        for value in compiled:
+            try:
+                preflight_calibration_scan_control(
+                    value.compilation,
+                    value.circuit.circuit_id,
+                    root,
+                    idle_flux_phi0=context.idle_flux_phi0,
+                    control_values=control_values,
+                )
+            except ParameterizedControlError as exc:
+                raise CircuitBatchError(
+                    "circuit_control_preflight_failed",
+                    422,
+                    f"{value.circuit.circuit_id}: {exc}",
+                    batch_id=identifier,
+                ) from exc
     context_payload = _context_payload(context)
     resource_key = sha256_json(
         {
@@ -910,6 +941,11 @@ def _context_payload(context: CircuitExecutionContext) -> dict[str, Any]:
         "calibration_model_configuration_sha256": (
             sha256_json(_plain(context.calibration_model_configuration))
             if context.calibration_model_configuration is not None
+            else None
+        ),
+        "platform_configuration_sha256": (
+            sha256_json(_plain(context.platform_configuration))
+            if context.platform_configuration is not None
             else None
         ),
     }

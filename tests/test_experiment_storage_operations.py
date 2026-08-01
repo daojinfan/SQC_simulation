@@ -535,14 +535,14 @@ def test_set_keep_transitions_for_archived_and_trash(service):
 def test_duplicate_or_unrelated_invalid_hot_candidate_fails_closed(service):
     ops, run, request, hot, _storage = service
     shutil.copytree(_hot(ops, hot), hot / "qubit_spectroscopy_duplicate")
-    with pytest.raises(StorageOperationError, match="ambiguous"):
+    with pytest.raises(StorageOperationError, match="alias|ambiguous"):
         ops.archive(run, request)
 
 
 def test_unrelated_broken_published_candidate_fails_closed(service):
     ops, run, request, hot, _storage = service
     (hot / "qubit_spectroscopy_broken").mkdir()
-    with pytest.raises(StorageOperationError, match="hot carrier scan could not be completed"):
+    with pytest.raises(StorageOperationError, match="invalid alias|hot carrier scan could not be completed"):
         ops.archive(run, request)
 
 

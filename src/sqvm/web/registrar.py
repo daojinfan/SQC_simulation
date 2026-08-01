@@ -49,6 +49,12 @@ class PublicationRegistrarConflict(RuntimeError):
     """Raised when an event ID is already bound to different content."""
 
 
+class _WindowsExclusiveLockCreateError(Exception):
+    def __init__(self, error: PermissionError) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
 @dataclass(frozen=True, slots=True)
 class PublicationRegistration:
     """Result of one idempotent inbox enqueue operation."""
@@ -457,15 +463,21 @@ def _acquire_event_lock(
     deadline = time.monotonic() + _LOCK_WAIT_SECONDS
     while True:
         try:
-            _write_new_flushed(lock_path, token)
+            _write_new_flushed(lock_path, token, windows_lock_open=True)
             return None
-        except FileExistsError:
+        except (FileExistsError, _WindowsExclusiveLockCreateError) as lock_error:
+            permission_error = getattr(lock_error, "error", None)
             existing = _existing_event(target, root, raw, event_id)
             if existing is not None:
                 return existing
             try:
                 _assert_regular_file(lock_path, root, "index inbox lock")
             except PublicationRegistrarError as exc:
+                if permission_error is not None:
+                    existing = _existing_event(target, root, raw, event_id)
+                    if existing is not None:
+                        return existing
+                    raise permission_error from exc
                 raise PublicationRegistrarConflict(
                     "index inbox event lock is unsafe"
                 ) from exc
@@ -492,9 +504,19 @@ def _release_event_lock(path: Path, root: Path, token: bytes) -> None:
         raise PublicationRegistrarError("index inbox lock could not be released") from exc
 
 
-def _write_new_flushed(path: Path, raw: bytes) -> None:
+def _write_new_flushed(
+    path: Path,
+    raw: bytes,
+    *,
+    windows_lock_open: bool = False,
+) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    descriptor = os.open(path, flags, 0o600)
+    try:
+        descriptor = _open_new_file(path, flags, 0o600)
+    except PermissionError as exc:
+        if not windows_lock_open or os.name != "nt":
+            raise
+        raise _WindowsExclusiveLockCreateError(exc) from exc
     try:
         view = memoryview(raw)
         while view:
@@ -506,6 +528,10 @@ def _write_new_flushed(path: Path, raw: bytes) -> None:
     finally:
         os.close(descriptor)
     flush_directory(path.parent)
+
+
+def _open_new_file(path: Path, flags: int, mode: int) -> int:
+    return os.open(path, flags, mode)
 
 
 def _remove_owned_temporary(path: Path) -> None:

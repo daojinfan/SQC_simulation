@@ -1698,3 +1698,84 @@ Next:
 Commit and push the reviewed compiler tranche.
 Continue Stage 7.0 with fake-only evidence ledger and runtime-schema 0.2 integration without opening physics gates.
 ```
+
+## 2026-07-29: Calibration candidate decision override completed
+
+Stage:
+
+```text
+Stage 7 calibration candidate application policy
+```
+
+Completed work:
+
+```text
+Separated experiment recommendation from the final candidate-application decision.
+Added recommended-only and explicit-override decisions to Python, Store, transaction, audit, and Web paths.
+Kept workflow, receipt, hash, synthetic, stale, schema, resource, concurrency, and atomicity boundaries fail-closed.
+Added strict old/new source-candidate reference validation and candidate-provenance retention handling.
+Added Web warning, failed-gate evidence, explicit override reason, and two confirmation controls.
+```
+
+Verification:
+
+```text
+Independent candidate/API/configuration/transaction, Web, references, Rabi, spectroscopy, and Notebook tests passed.
+Published recommended spectroscopy and non-recommended Rabi artifacts passed isolated end-to-end application.
+Current, snapshot sidecar, active pointer, audit, transaction request SHA, and references were mutually consistent.
+Independent review conclusion: GO.
+```
+
+Result:
+
+```text
+docs/results/2026-07-29-candidate-decision-override.md
+docs/reviews/07_1_14_candidate_decision_override_acceptance_matrix.md
+```
+
+## 2026-07-31: Rabi/X2P 开发基线与 v0.1.0 发布准备完成
+
+阶段：
+
+```text
+文档、代码基线与发布证据收口
+```
+
+完成工作：
+
+```text
+校正 README 与 calibration README 中已经过时的 Rabi/X2P 实现状态。
+在路线图中只追加当前进度，不改变既有阶段目标或验收条件。
+新增 development baseline release closeout，绑定 PR #9、计数修复 825b24d 与首轮候选 0835842f。
+825b24d 与首版文档提交形成 0835842f；Release Gate run 为 30601295041。
+Windows/Linux physics 均通过，证明 206 testcase 计数锁已关闭。
+qualification/hosted evidence 除 Windows integration 外均通过；Windows integration 为 592 passed/1 failed。
+唯一失败是 registrar 的 O_EXCL Windows PermissionError 未被旧协议识别为既存锁竞争。
+5d0f7a1c 完成 fail-closed Windows 锁竞争修复并通过独立 QA。
+最终 PR head 0fbf7181 的 Release Gate 30602658456 全绿，release-gate-main 成功。
+PR #9 已 squash merge；main 合并提交为 c267e84f。
+合并提交的精确候选 Release Gate 30608406905 全绿，release-gate-main 成功。
+产品版本固定为 0.1.0；QCIS/Runtime v0.3 是子协议版本，不作为产品 tag。
+```
+
+发布边界：
+
+```text
+首轮候选 0835842f 不是全绿，不得作为发布证据。
+最终 PR 候选 0fbf7181 与 main 合并提交 c267e84f 的门禁均已形成完整成功证据。
+v0.1.0 仍是 bounded pilot：Ramsey、DRAG、coupler/CZ 和硬件式 shot/IQ/readout 不在本次范围。
+Git tag 必须指向 main 历史中的最终发布提交；正式状态以 GitHub Release v0.1.0 为准。
+```
+
+本地验证：
+
+```text
+git diff --check passed。
+py -3.12 -m compileall -q src tests passed。
+py -3.12 tools/verify_authority_drift.py passed。
+tests/test_user_notebooks.py 与 tests/test_test_taxonomy.py：6 passed。
+5d0f7a1c 独立 QA：registrar 11 passed；相关 Web integration 83 passed；并发用例连续 30 次通过。
+5d0f7a1c 附加检查：taxonomy 3 passed；monkeypatch 恢复为 True；compileall、authority drift、diff check passed。
+PR Release Gate 30602658456：success。
+main Release Gate 30608406905：success。
+```

@@ -81,8 +81,15 @@ MODULE_PRIMARY_MARKERS = {
     "test_mode_participation.py": "physics_slow",
     "test_platform_configuration_v02.py": "integration",
     "test_qubit_spectroscopy.py": "integration",
+    "test_rabi_phase_audit.py": "contract",
+    "test_rabi_calibration.py": "contract",
+    "test_rabi_runtime_adapter.py": "integration",
     "test_runtime_publication.py": "integration",
     "test_runtime_v03_batch.py": "integration",
+    "test_rabi_acceptance_vectors.py": "contract",
+    "test_rabi_public_api_acceptance.py": "integration",
+    "test_rabi_real_qutip_acceptance.py": "physics_slow",
+    "test_rabi_storage_lifecycle.py": "physics_slow",
     "test_run_circuits.py": "integration",
     "test_solver_validation_gate.py": "evidence",
     "test_spectroscopy_calibration_workflow.py": "integration",
@@ -127,6 +134,7 @@ MODULE_PRIMARY_MARKERS = {
     "test_web_publication_registrar.py": "integration",
     "test_web_storage_catalog_refresh.py": "integration",
     "test_web_visualization_read_model.py": "integration",
+    "test_web_waveforms.py": "integration",
 }
 
 # Mixed modules retain a module-level audit owner, with these exact nodeids

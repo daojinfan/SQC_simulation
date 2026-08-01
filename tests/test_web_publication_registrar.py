@@ -144,6 +144,75 @@ def test_concurrent_enqueue_publishes_exactly_one_event(tmp_path: Path) -> None:
     assert not list((storage / "index-inbox").glob(".*.tmp"))
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows O_EXCL error mapping")
+def test_windows_permission_error_for_verified_lock_is_contention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inbox = tmp_path / "index-inbox"
+    inbox.mkdir()
+    event_id = "A" * 64
+    lock_path = inbox / f".{event_id}.lock"
+    lock_path.write_bytes(b"competing owner")
+    denied = PermissionError("simulated Windows O_EXCL sharing denial")
+    original_open = registrar._open_new_file
+    attempts = 0
+
+    def contend_once(path: Path, flags: int, mode: int = 0o777) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise denied
+        lock_path.unlink()
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(registrar, "_open_new_file", contend_once)
+    token = b"owner token"
+
+    acquired = registrar._acquire_event_lock(
+        lock_path,
+        inbox / f"{event_id}.json",
+        tmp_path,
+        b"event",
+        event_id,
+        token,
+    )
+
+    assert acquired is None
+    assert attempts == 2
+    assert lock_path.read_bytes() == token
+    registrar._release_event_lock(lock_path, tmp_path, token)
+
+
+@pytest.mark.parametrize("lock_state", ["missing", "directory"])
+def test_permission_error_without_verified_regular_lock_fails_closed(
+    lock_state: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inbox = tmp_path / "index-inbox"
+    inbox.mkdir()
+    event_id = "B" * 64
+    lock_path = inbox / f".{event_id}.lock"
+    if lock_state == "directory":
+        lock_path.mkdir()
+    denied = PermissionError("simulated inbox permission denial")
+
+    def fail_exclusive_create(_path: Path, _flags: int, _mode: int) -> int:
+        raise denied
+
+    monkeypatch.setattr(registrar, "_open_new_file", fail_exclusive_create)
+
+    with pytest.raises(PermissionError, match="permission denial") as raised:
+        registrar._acquire_event_lock(
+            lock_path,
+            inbox / f"{event_id}.json",
+            tmp_path,
+            b"event",
+            event_id,
+            b"owner token",
+        )
+
+    assert raised.value is denied
+
+
 def test_existing_event_identity_conflict_fails_closed(tmp_path: Path) -> None:
     source, _ = _published_run(tmp_path)
     result = registrar.enqueue_published_run(tmp_path, source)

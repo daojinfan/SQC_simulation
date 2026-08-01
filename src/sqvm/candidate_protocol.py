@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 import math
 import re
 from typing import Any, Mapping, Sequence
+import unicodedata
 
 
 CALIBRATION_CANDIDATE_SCHEMA = "calibration_candidate_v1"
@@ -34,6 +36,102 @@ _FORBIDDEN_PATH_SEGMENTS = {
 
 class CalibrationCandidateProtocolError(ValueError):
     """Raised when a calibration candidate does not satisfy the common protocol."""
+
+
+class CandidateApplicationDecisionError(CalibrationCandidateProtocolError):
+    """Raised when a caller's candidate application decision is invalid."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateApplicationDecision:
+    """Normalized, auditable authority for applying calibration candidates."""
+
+    mode: str = "recommended_only"
+    source: str = "automation"
+    reason: str | None = None
+
+    def to_dict(
+        self, *, overrode_recommendation: bool | None = None
+    ) -> dict[str, Any]:
+        result = {
+            "mode": self.mode,
+            "source": self.source,
+            "reason": self.reason,
+        }
+        if overrode_recommendation is not None:
+            result["overrode_recommendation"] = overrode_recommendation
+        return result
+
+
+_DECISION_MODES = frozenset({"recommended_only", "override_recommendation"})
+_DECISION_SOURCES = frozenset(
+    {"automation", "notebook_user", "web_user", "ai_assisted"}
+)
+
+
+def normalize_candidate_application_decision(
+    decision: CandidateApplicationDecision | Mapping[str, Any] | None = None,
+    *,
+    mode: str = "recommended_only",
+    source: str = "automation",
+    reason: str | None = None,
+) -> CandidateApplicationDecision:
+    """Validate and normalize the authority to apply selected candidates.
+
+    The optional keyword form keeps callers that have not yet adopted the
+    decision object on the conservative ``recommended_only`` default.
+    """
+
+    if decision is not None:
+        if isinstance(decision, CandidateApplicationDecision):
+            mode, source, reason = decision.mode, decision.source, decision.reason
+        elif isinstance(decision, Mapping):
+            if set(decision).difference({"mode", "source", "reason", "overrode_recommendation"}):
+                raise CandidateApplicationDecisionError(
+                    "candidate_decision_invalid", "candidate decision fields are invalid"
+                )
+            mode = decision.get("mode", mode)
+            source = decision.get("source", source)
+            reason = decision.get("reason", reason)
+        else:
+            raise CandidateApplicationDecisionError(
+                "candidate_decision_invalid", "candidate decision is invalid"
+            )
+    if (
+        not isinstance(mode, str)
+        or not isinstance(source, str)
+        or mode not in _DECISION_MODES
+        or source not in _DECISION_SOURCES
+    ):
+        raise CandidateApplicationDecisionError(
+            "candidate_decision_invalid", "candidate decision mode or source is invalid"
+        )
+    if reason is not None:
+        if not isinstance(reason, str):
+            raise CandidateApplicationDecisionError(
+                "candidate_decision_invalid", "candidate decision reason is invalid"
+            )
+        reason = reason.strip()
+        if len(reason) > 2048 or any(unicodedata.category(char) == "Cc" for char in reason):
+            raise CandidateApplicationDecisionError(
+                "candidate_decision_invalid", "candidate decision reason is invalid"
+            )
+    if mode == "override_recommendation":
+        if source == "automation":
+            raise CandidateApplicationDecisionError(
+                "candidate_override_source_invalid",
+                "automation cannot override a candidate recommendation",
+            )
+        if not reason:
+            raise CandidateApplicationDecisionError(
+                "candidate_override_reason_required",
+                "candidate override reason is required",
+            )
+    return CandidateApplicationDecision(mode=mode, source=source, reason=reason)
 
 
 def parameter_change(
@@ -411,9 +509,12 @@ def _finite_json_value(value: Any, label: str) -> None:
 
 __all__ = [
     "CALIBRATION_CANDIDATE_SCHEMA",
+    "CandidateApplicationDecision",
+    "CandidateApplicationDecisionError",
     "CalibrationCandidateProtocolError",
     "calibration_candidate",
     "candidate_values_equal",
+    "normalize_candidate_application_decision",
     "normalize_calibration_candidate",
     "normalize_parameter_path",
     "parameter_change",
