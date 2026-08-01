@@ -6,11 +6,16 @@ import json
 from pathlib import Path
 import threading
 import time
+from types import MappingProxyType
 import uuid
 
 import pytest
 
 from sqvm.circuits import CircuitResult, DressedPopulations, QCISCircuit
+from sqvm.control.stage4_1_models import (
+    ParameterizedControlError,
+    ParameterizedControlReasonCode,
+)
 from sqvm.qcis.canonical import sha256_bytes
 from sqvm.runtime.batch import (
     CircuitBatchCancelledError,
@@ -98,6 +103,49 @@ def test_contract_vector_matches_runtime_artifact_fields():
     assert vectors["schema_version"] == "0.3"
     assert vectors["terminal_statuses"] == ["completed", "cancelled"]
     assert vectors["stable_errors"]["batch_idempotency_conflict"] == 409
+
+
+def test_calibration_batch_preflights_every_control_point_before_reserving_output(
+    monkeypatch,
+    tmp_path: Path,
+):
+    context = replace(
+        circuit_execution_context(),
+        platform_configuration=MappingProxyType(
+            {
+                "control_values": MappingProxyType({"sentinel": True}),
+                "calibration_values": MappingProxyType({}),
+            }
+        ),
+    )
+    seen: list[str] = []
+
+    def reject(_compilation, point_id, *_args, **_kwargs):
+        seen.append(point_id)
+        if point_id == "runtime_point_1":
+            raise ParameterizedControlError(
+                ParameterizedControlReasonCode.DAC_RANGE_EXCEEDED,
+                "q1_xy_i: requested 3.5 V outside [-3, 3) V at sample 2",
+            )
+
+    monkeypatch.setattr(batch_module, "preflight_calibration_scan_control", reject)
+    output = tmp_path / "execution"
+
+    with pytest.raises(CircuitBatchError) as captured:
+        run_circuit_batch(
+            _circuits(),
+            context,
+            output,
+            tmp_path,
+            batch_id=str(uuid.uuid4()),
+            experiment_request={"experiment_id": "preflight_fixture"},
+        )
+
+    assert captured.value.code == "circuit_control_preflight_failed"
+    assert "runtime_point_1" in captured.value.detail
+    assert "requested 3.5 V outside [-3, 3) V" in captured.value.detail
+    assert seen == ["runtime_point_0", "runtime_point_1"]
+    assert not output.exists()
 
 
 def test_completed_batch_replays_without_executing_any_point(tmp_path: Path):

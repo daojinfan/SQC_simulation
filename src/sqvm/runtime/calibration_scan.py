@@ -54,7 +54,11 @@ from sqvm.runtime.storage import (
 
 
 SCHEMA_VERSION = "0.1"
-POLICY_PATH = "configs/runtime/calibration_scan/execution_policy_v1.json"
+POLICY_PATH = "configs/runtime/calibration_scan/execution_policy_v2.json"
+_KNOWN_POLICY_PATHS = (
+    POLICY_PATH,
+    "configs/runtime/calibration_scan/execution_policy_v1.json",
+)
 QUALIFICATION_SCOPE = "local_calibration_scan_v1"
 RESULT_NAME = "scan_result.json"
 INVENTORY_NAME = "array_inventory.json"
@@ -103,6 +107,7 @@ def run_calibration_scan_point(
     timeout_s: float = 600.0,
     model_configuration: Mapping[str, Any] | None = None,
     idle_flux_phi0: Mapping[str, Any] | None = None,
+    control_values: Mapping[str, Any] | None = None,
 ) -> CalibrationScanHandle:
     """Run one point through Stage 4.1 and an isolated projected-charge worker."""
 
@@ -130,6 +135,7 @@ def run_calibration_scan_point(
             staging,
             root,
             resolved_idle_flux,
+            control_values,
         )
         coefficients, numerical = _run_worker(
             control,
@@ -161,7 +167,13 @@ def run_calibration_scan_point(
         write_canonical_new(staging / EVIDENCE_NAME, evidence)
         _write_terminal_documents(staging, evidence)
         _verify_scan_tree(
-            staging, compilation, policy, root, point_id, model_authority
+            staging,
+            compilation,
+            policy,
+            root,
+            point_id,
+            model_authority,
+            control_values,
         )
         publish_calibration_directory(staging, target)
         return verify_calibration_scan_point(
@@ -170,6 +182,7 @@ def run_calibration_scan_point(
             root,
             model_configuration=resolved_configuration,
             idle_flux_phi0=resolved_idle_flux,
+            control_values=control_values,
         )
     except Exception:
         if staging.exists():
@@ -184,6 +197,7 @@ def verify_calibration_scan_point(
     *,
     model_configuration: Mapping[str, Any] | None = None,
     idle_flux_phi0: Mapping[str, Any] | None = None,
+    control_values: Mapping[str, Any] | None = None,
 ) -> CalibrationScanHandle:
     """Structurally verify a scan point without rerunning numerical evolution."""
 
@@ -195,10 +209,16 @@ def verify_calibration_scan_point(
     )
     point_root = Path(artifact_root).resolve()
     _inside(point_root, root, "artifact root")
-    policy = _load_policy(root)
+    policy = _load_bound_policy(point_root, root)
     _admit(compilation, point_root.name, policy["max_worker_wall_seconds"], policy)
     _verify_scan_tree(
-        point_root, compilation, policy, root, point_root.name, model_authority
+        point_root,
+        compilation,
+        policy,
+        root,
+        point_root.name,
+        model_authority,
+        control_values,
     )
     return CalibrationScanHandle(
         point_root,
@@ -213,6 +233,7 @@ def _publish_control(
     staging: Path,
     root: Path,
     idle_flux_phi0: Mapping[str, Any],
+    control_values: Mapping[str, Any] | None,
 ):
     stage41_root = staging / "stage41"
     stage41_root.mkdir()
@@ -221,6 +242,7 @@ def _publish_control(
         root,
         stage41_root,
         idle_flux_phi0=idle_flux_phi0,
+        control_values=control_values,
     )
     expected = adapt_qcis_v03_compilation(compilation, point_id, context)
     built = compile_qcis_waveform_plan(expected, context)
@@ -234,6 +256,28 @@ def _publish_control(
         context,
         expected,
     )
+
+
+def preflight_calibration_scan_control(
+    compilation: QCISCompilation,
+    point_id: str,
+    repository_root: str | Path,
+    *,
+    idle_flux_phi0: Mapping[str, Any],
+    control_values: Mapping[str, Any],
+) -> None:
+    """Validate one point through Stage 4.1 without publishing artifacts."""
+
+    root = Path(repository_root).resolve(strict=True)
+    context = production_parameterized_control_context(
+        compilation.plan.authority_sha256,
+        root,
+        root / "output" / ".calibration-scan-preflight",
+        idle_flux_phi0=idle_flux_phi0,
+        control_values=control_values,
+    )
+    expected = adapt_qcis_v03_compilation(compilation, point_id, context)
+    compile_qcis_waveform_plan(expected, context)
 
 
 def _run_worker(
@@ -470,6 +514,7 @@ def _verify_scan_tree(
     root: Path,
     expected_point_id: str,
     model_authority: Mapping[str, Any],
+    control_values: Mapping[str, Any] | None,
 ) -> None:
     model_id = model_authority["model"]["model_id"]
     expected_top = {
@@ -518,7 +563,7 @@ def _verify_scan_tree(
         or evidence.get("point_id") != expected_point_id
         or evidence.get("profile_id") != policy["profile_id"]
         or evidence.get("qualification_scope") != QUALIFICATION_SCOPE
-        or evidence.get("policy_sha256") != raw_file_sha256(root / POLICY_PATH)
+        or evidence.get("policy_sha256") != _canonical_sha(policy)
         or evidence.get("qcis_binding", {}).get("concrete_qcis_sha256")
         != compilation.concrete_source_sha256
         or evidence.get("claim") != expected_claim
@@ -569,6 +614,7 @@ def _verify_scan_tree(
         root,
         point_root / "stage41",
         idle_flux_phi0=model_authority["model"]["idle_flux_phi0"],
+        control_values=control_values,
     )
     expected_plan = adapt_qcis_v03_compilation(
         compilation,
@@ -734,7 +780,7 @@ def _verify_scan_result(
         != calibration_model_configuration_sha256(
             model_configuration_from_authority(model_authority)
         )
-        or result.get("policy_sha256") != raw_file_sha256(root / POLICY_PATH)
+        or result.get("policy_sha256") != _canonical_sha(policy)
         or result.get("array_inventory_sha256")
         != raw_file_sha256(target / INVENTORY_NAME)
         or result.get("numerical_replay")
@@ -847,7 +893,23 @@ def _admit(
 
 
 def _load_policy(root: Path) -> dict[str, Any]:
-    path = root / POLICY_PATH
+    return _load_policy_path(root, POLICY_PATH)
+
+
+def _load_bound_policy(point_root: Path, root: Path) -> dict[str, Any]:
+    evidence = _canonical(point_root / EVIDENCE_NAME)
+    policy_sha256 = evidence.get("policy_sha256")
+    if not isinstance(policy_sha256, str):
+        raise CalibrationScanExecutionError("execution policy binding is invalid")
+    for relative_path in _KNOWN_POLICY_PATHS:
+        path = root / relative_path
+        if path.is_file() and raw_file_sha256(path) == policy_sha256:
+            return _load_policy_path(root, relative_path)
+    raise CalibrationScanExecutionError("execution policy is not recognized")
+
+
+def _load_policy_path(root: Path, relative_path: str) -> dict[str, Any]:
+    path = root / relative_path
     policy = _canonical(path)
     expected = {
         "schema_version",
@@ -867,6 +929,7 @@ def _load_policy(root: Path) -> dict[str, Any]:
         or policy.get("schema_version") != SCHEMA_VERSION
         or policy.get("artifact_type")
         != "stage_07_calibration_scan_execution_policy"
+        or policy.get("artifact_version") not in {"0.1", "0.2"}
         or policy.get("status") != "local_simulation_enabled"
         or policy.get("profile_id") != QUALIFICATION_SCOPE
         or policy.get("numerical_replay_policy") != "deferred_batch_review"

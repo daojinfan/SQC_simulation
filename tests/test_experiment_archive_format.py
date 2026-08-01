@@ -18,6 +18,7 @@ import pytest
 from sqvm.storage.archive_format import canonical_archive_json_bytes, write_sqrun
 from sqvm.storage.archive_verify import (
     ArchiveLimits,
+    ZipEvidenceReader,
     archive_raw_sha256,
     read_sqrun_payload,
     validate_archive_entry_name,
@@ -406,6 +407,20 @@ def test_structural_payload_verification_never_uses_zipfile_read(tmp_path: Path,
 
     monkeypatch.setattr(zipfile.ZipFile, "read", guarded_read)
     assert verify_sqrun(archive).logical_bytes > 0
+
+
+def test_zip_evidence_stream_rejects_reads_beyond_the_declared_member_boundary(tmp_path: Path) -> None:
+    run, payload = _source_run(tmp_path)
+    archive = tmp_path / "source.sqrun"
+    _write(run, archive)
+    bundle = verify_sqrun(archive)
+    reader = ZipEvidenceReader(archive, bundle.entries, ArchiveLimits())
+
+    with reader.open_binary("workflow.json") as stream:
+        with pytest.raises(ArchiveFormatError, match="byte limit"):
+            stream.read(64 * 1024)
+        assert stream.read(len(payload["workflow.json"])) == payload["workflow.json"]
+        assert stream.read(1) == b""
 
 
 def test_verifier_performs_two_independent_reopen_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

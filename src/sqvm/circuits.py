@@ -10,6 +10,7 @@ import hashlib
 from itertools import product
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -75,8 +76,11 @@ _RESULT_ARRAYS = {
     "norm_error": ("<f8", "observables/norm_error.bin"),
 }
 _MAX_CIRCUITS_PER_CALL = 64
+_DEFAULT_CIRCUIT_SAMPLE_BUDGET = 64
 _EXECUTION_EVIDENCE_DIR = "circuit_execution"
 _EXECUTION_SCHEMA_VERSION = "0.2"
+_WINDOWS_DIRECTORY_PATH_LIMIT = 248
+_STAGING_UUID_HEX = "f" * 32
 
 
 class CircuitReasonCode(StrEnum):
@@ -93,6 +97,7 @@ class CircuitReasonCode(StrEnum):
     CONFIG_AUTHORITY_INVALID = "CIRCUIT_CONFIG_AUTHORITY_INVALID"
     READOUT_QUBIT_INVALID = "CIRCUIT_READOUT_QUBIT_INVALID"
     RESULT_EVIDENCE_INVALID = "CIRCUIT_RESULT_EVIDENCE_INVALID"
+    OUTPUT_PATH_TOO_LONG = "CIRCUIT_OUTPUT_PATH_TOO_LONG"
 
 
 class CircuitExecutionProfile(StrEnum):
@@ -124,6 +129,7 @@ class CircuitExecutionContext:
     platform_snapshot_content_sha256: str | None = None
     authority_context_sha256: str | None = None
     calibration_model_configuration: Mapping[str, Any] | None = None
+    platform_configuration: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,7 +268,7 @@ def compile_circuit(
     circuit: QCISCircuit,
     context: CircuitExecutionContext,
     *,
-    max_samples: int = 64,
+    max_samples: int | None = None,
 ) -> CompiledCircuit:
     """Compile one QCIS circuit after applying its non-persistent SET preamble."""
 
@@ -307,7 +313,7 @@ def compile_circuit(
         program,
         authorities,
         idle_flux={name: float(context.idle_flux_phi0[name]) for name in ("q1", "q2", "c")},
-        max_samples=max_samples,
+        max_samples=_circuit_sample_budget(context, max_samples),
     )
     return CompiledCircuit(
         circuit,
@@ -326,6 +332,11 @@ def compile_circuit(
             "calibration_model_configuration_sha256": calibration_model_configuration_sha256(
                 context.calibration_model_configuration
             ) if context.calibration_model_configuration is not None else None,
+            "platform_configuration_sha256": (
+                sha256_json(_plain(context.platform_configuration))
+                if context.platform_configuration is not None
+                else None
+            ),
         }) if context.platform_snapshot_id is not None else None,
     )
 
@@ -349,6 +360,8 @@ def run_circuits(
     if any(not isinstance(circuit, QCISCircuit) for circuit in circuits):
         _fail(CircuitReasonCode.INVALID_ID, "each item must be QCISCircuit")
     ids = [circuit.circuit_id for circuit in circuits]
+    for circuit_id in ids:
+        _validate_circuit_id(circuit_id)
     if len(ids) != len(set(ids)):
         _fail(CircuitReasonCode.DUPLICATE_ID, "circuit_id values must be unique")
     if (
@@ -367,6 +380,7 @@ def run_circuits(
     if progress_callback is not None and not callable(progress_callback):
         _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "progress callback is invalid")
     readout_selection = _normalize_readout_qubit(readout_qubit, context)
+    _preflight_windows_path_budget(output_root, ids, execution_profile)
     compiled_circuits = tuple(compile_circuit(circuit, context) for circuit in circuits)
     results: list[CircuitResult] = []
     for index, compiled in enumerate(compiled_circuits):
@@ -391,6 +405,9 @@ def run_circuits(
         if execution_profile is CircuitExecutionProfile.CALIBRATION_SCAN:
             runner_kwargs["model_configuration"] = context.calibration_model_configuration
             runner_kwargs["idle_flux_phi0"] = context.idle_flux_phi0
+            control_values = _platform_control_values(context)
+            if control_values is not None:
+                runner_kwargs["control_values"] = control_values
         handle = runner(
             compiled.compilation,
             circuit.circuit_id,
@@ -478,6 +495,9 @@ def verify_circuit_result(
         if qualification_scope == CALIBRATION_SCAN_SCOPE:
             verifier_kwargs["model_configuration"] = context.calibration_model_configuration
             verifier_kwargs["idle_flux_phi0"] = context.idle_flux_phi0
+            control_values = _platform_control_values(context)
+            if control_values is not None:
+                verifier_kwargs["control_values"] = control_values
         handle = verifier(
             model_root,
             compiled.compilation,
@@ -559,10 +579,70 @@ def _validate_context(context: CircuitExecutionContext) -> None:
                 CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
                 str(exc),
             ) from exc
+    if context.platform_configuration is not None:
+        configuration = context.platform_configuration
+        if (
+            not isinstance(configuration, Mapping)
+            or set(configuration) != {"control_values", "calibration_values"}
+            or not isinstance(configuration.get("control_values"), Mapping)
+            or not isinstance(configuration.get("calibration_values"), Mapping)
+        ):
+            _fail(
+                CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
+                "platform_configuration must contain control_values and calibration_values",
+            )
+        if (
+            context.platform_snapshot_content_sha256 is not None
+            and sha256_json(_plain(configuration))
+            != context.platform_snapshot_content_sha256
+        ):
+            _fail(
+                CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
+                "platform configuration hash does not match the Active snapshot",
+            )
     platform = (context.platform_snapshot_id, context.platform_snapshot_content_sha256, context.authority_context_sha256)
     if any(value is not None for value in platform):
         if not all(isinstance(value, str) and re.fullmatch(r"[0-9A-Fa-f]{64}", value) is not None for value in platform[1:]) or not isinstance(platform[0], str) or not platform[0]:
             _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, "platform context binding is invalid")
+
+
+def _platform_control_values(
+    context: CircuitExecutionContext,
+) -> Mapping[str, Any] | None:
+    configuration = context.platform_configuration
+    if configuration is None:
+        return None
+    control = configuration.get("control_values")
+    if not isinstance(control, Mapping):
+        _fail(
+            CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
+            "Active platform control_values are unavailable",
+        )
+    return control
+
+
+def _circuit_sample_budget(
+    context: CircuitExecutionContext, override: int | None
+) -> int:
+    value: Any = override
+    if value is None:
+        value = _DEFAULT_CIRCUIT_SAMPLE_BUDGET
+        configuration = context.platform_configuration
+        if configuration is not None:
+            control = configuration.get("control_values")
+            acceptance = (
+                control.get("acceptance") if isinstance(control, Mapping) else None
+            )
+            if isinstance(acceptance, Mapping) and (
+                "max_formal_samples_per_scenario" in acceptance
+            ):
+                value = acceptance["max_formal_samples_per_scenario"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        _fail(
+            CircuitReasonCode.CONFIG_AUTHORITY_INVALID,
+            "circuit sample budget must be a positive integer",
+        )
+    return value
 
 
 def _normalize_readout_qubit(
@@ -689,7 +769,10 @@ def _apply_overlays(
             base_hash = touched[str(setting_id)]
         else:
             base_hash = setting.get("setting_hash")
-            if not isinstance(base_hash, str) or base_hash != _setting_hash(setting):
+            if not isinstance(base_hash, str) or base_hash not in {
+                _setting_hash(setting),
+                _legacy_setting_hash(setting),
+            }:
                 _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, f"{setting_id} base setting hash")
             if setting.get("status") != "accepted" or setting.get("target") != target:
                 _fail(CircuitReasonCode.CONFIG_AUTHORITY_INVALID, f"{setting_id} is not an accepted target setting")
@@ -860,6 +943,75 @@ def _validate_dressed_populations(populations: DressedPopulations, leakage: floa
         _fail(CircuitReasonCode.RESULT_EVIDENCE_INVALID, "computational population normalization")
 
 
+def _preflight_windows_path_budget(
+    output_root: str | Path,
+    circuit_ids: Sequence[str],
+    execution_profile: CircuitExecutionProfile,
+    *,
+    platform_name: str | None = None,
+) -> None:
+    """Reject legacy-Windows output roots before compilation starts."""
+
+    if (os.name if platform_name is None else platform_name) != "nt":
+        return
+    root = Path(output_root).resolve()
+    longest = max(
+        (
+            path
+            for circuit_id in circuit_ids
+            for path in _planned_execution_paths(root, circuit_id, execution_profile)
+        ),
+        key=lambda path: len(str(path)),
+    )
+    if len(str(longest)) >= _WINDOWS_DIRECTORY_PATH_LIMIT:
+        _fail(
+            CircuitReasonCode.OUTPUT_PATH_TOO_LONG,
+            "shorten output_root; planned execution path exceeds the Windows "
+            f"{_WINDOWS_DIRECTORY_PATH_LIMIT}-character directory budget: {longest}",
+        )
+
+
+def _planned_execution_paths(
+    root: Path,
+    circuit_id: str,
+    execution_profile: CircuitExecutionProfile,
+) -> tuple[Path, ...]:
+    if execution_profile is CircuitExecutionProfile.CALIBRATION_SCAN:
+        point_staging = root / f".cs_{'0' * 8}"
+        worker = ".calibration-worker"
+    else:
+        point_staging = root / f".{circuit_id}.staging.{_STAGING_UUID_HEX}"
+        worker = ".stage51-worker"
+    return (
+        point_staging
+        / "stage41"
+        / f".control.staging.{_STAGING_UUID_HEX}"
+        / "arrays"
+        / "logical.xy_delta_GHz.q1.i.bin",
+        point_staging
+        / "stage51"
+        / f".coefficient.staging.{_STAGING_UUID_HEX}"
+        / "arrays"
+        / "absolute_flux_q2.bin",
+        point_staging
+        / "stage51"
+        / f"{worker}.{_STAGING_UUID_HEX}"
+        / "result"
+        / "observables"
+        / "population_000.bin",
+        root
+        / _EXECUTION_EVIDENCE_DIR
+        / f".p.{_STAGING_UUID_HEX}"
+        / "verification_report.json",
+        root / circuit_id / "stage51" / "evolution" / "observables" / "population_000.bin",
+        root / _EXECUTION_EVIDENCE_DIR / circuit_id / "receipt.json",
+    )
+
+
+def _circuit_execution_staging(root: Path, token: str) -> Path:
+    return root / f".p.{token}"
+
+
 def _publish_circuit_execution_evidence(
     output_root: Path,
     compiled: CompiledCircuit,
@@ -876,7 +1028,7 @@ def _publish_circuit_execution_evidence(
     if target.exists():
         _fail(CircuitReasonCode.RESULT_EVIDENCE_INVALID, "circuit execution evidence already exists")
     root.mkdir(parents=True, exist_ok=True)
-    staging = root / f".{compiled.circuit.circuit_id}.staging.{uuid.uuid4().hex}"
+    staging = _circuit_execution_staging(root, uuid.uuid4().hex)
     try:
         staging.mkdir()
         model_manifest = _raw_sha256(handle.artifact_root / "manifest.json")
@@ -1127,7 +1279,38 @@ def _reject_link(path: Path) -> None:
 
 
 def _setting_hash(setting: Mapping[str, Any]) -> str:
-    return sha256_json({name: _plain(value) for name, value in setting.items() if name != "setting_hash"})
+    """Match QCIS's accepted-record identity after resolver wave-index projection."""
+
+    payload = {
+        str(name): _plain(value)
+        for name, value in setting.items()
+        if name != "setting_hash"
+    }
+    return sha256_json(_without_generated_wave_index(payload))
+
+
+def _legacy_setting_hash(setting: Mapping[str, Any]) -> str:
+    """Accept historical records whose persisted hash predates wave-index projection."""
+
+    return sha256_json({
+        str(name): _plain(value)
+        for name, value in setting.items()
+        if name != "setting_hash"
+    })
+
+
+def _without_generated_wave_index(value: Any) -> Any:
+    """Exclude resolver-only waveform compatibility fields at every nesting level."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(name): _without_generated_wave_index(item)
+            for name, item in value.items()
+            if name != "wave_index"
+        }
+    if isinstance(value, (tuple, list)):
+        return [_without_generated_wave_index(item) for item in value]
+    return value
 
 
 def _plain(value: Any) -> Any:

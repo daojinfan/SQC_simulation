@@ -15,6 +15,7 @@ from sqvm.control.registry import CHANNEL_ORDER, load_control_channel_registry
 from sqvm.control.stage4_config import GROUP_CONTRACT, LANE_ORDER, load_control_chain_config
 from sqvm.control.stage4_models import ControlChainConfig
 from sqvm.hamiltonian.provenance import canonical_json_bytes
+from sqvm.qcis.canonical import sha256_json
 
 from .models import ControlChannelRegistry
 from .stage4_1_models import (
@@ -45,6 +46,7 @@ def build_parameterized_control_context(
     environment_snapshot: Mapping[str, Any],
     publication_policy: Mapping[str, Any],
     runtime_idle_flux_phi0: Mapping[str, Any] | None = None,
+    runtime_control_values: Mapping[str, Any] | None = None,
 ) -> ParameterizedControlContext:
     """Bind accepted electronics and an explicitly authorized idle operating point."""
 
@@ -66,12 +68,25 @@ def build_parameterized_control_context(
     for name, value in (("compiler_source_snapshot", compiler_source_snapshot), ("environment_snapshot", environment_snapshot), ("publication_policy", publication_policy)):
         if not isinstance(value, Mapping):
             _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, f"{name} must be a mapping")
-    if float(control_chain_config.dt_ns) != 0.5 or control_chain_config.sample_rate_Hz != 2_000_000_000:
-        _fail(ParameterizedControlReasonCode.CLOCK_MISMATCH, "Stage 4.1 binds the accepted 0.5 ns clock")
+    if (
+        float(control_chain_config.dt_ns) <= 0.0
+        or control_chain_config.sample_rate_Hz <= 0
+        or not math.isclose(
+            float(control_chain_config.dt_ns)
+            * float(control_chain_config.sample_rate_Hz),
+            1e9,
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        )
+    ):
+        _fail(ParameterizedControlReasonCode.CLOCK_MISMATCH, "Stage 4.1 clock is inconsistent")
     if tuple(control_chain_config.lane_order) != LANE_ORDER or set(control_chain_config.lanes) != set(LANE_ORDER):
         _fail(ParameterizedControlReasonCode.NAMED_MAPPING_INVALID, "AWG lane order differs from accepted Stage 4")
     dac = control_chain_config.dac
-    if set(dac) != {"bits", "full_scale_min_V", "full_scale_max_exclusive_V", "rounding", "code_min", "code_max", "lsb_V"} or dac["bits"] != 16 or dac["rounding"] != "half_even" or dac["code_min"] != -32768 or dac["code_max"] != 32767 or float(dac["lsb_V"]) <= 0.0:
+    bits = dac.get("bits")
+    expected_code_min = -(2 ** (bits - 1)) if type(bits) is int and bits > 0 else None
+    expected_code_max = 2 ** (bits - 1) - 1 if type(bits) is int and bits > 0 else None
+    if set(dac) != {"bits", "full_scale_min_V", "full_scale_max_exclusive_V", "rounding", "code_min", "code_max", "lsb_V"} or type(bits) is not int or not 1 <= bits <= 32 or dac["rounding"] != "half_even" or dac["code_min"] != expected_code_min or dac["code_max"] != expected_code_max or float(dac["lsb_V"]) <= 0.0:
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "DAC contract differs from accepted Stage 4")
     for lane, row in control_chain_config.lanes.items():
         if set(row) != {"latency_samples", "fir"} or type(row["latency_samples"]) is not int or row["latency_samples"] < 0 or not isinstance(row["fir"], tuple) or not row["fir"] or any(not math.isfinite(float(value)) for value in row["fir"]):
@@ -102,7 +117,21 @@ def build_parameterized_control_context(
         _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "idle flux names are not exact")
     source_control = load_control_chain_config(control_chain_config.source_path)
     authority_hashes = _hashes(authority_sha256, "control authority")
-    if runtime_idle_flux_phi0 is None:
+    normalized_runtime_control = None
+    if runtime_control_values is not None:
+        normalized_runtime_control = _control_config_payload(control_chain_config)
+        if _plain_runtime(runtime_control_values) != normalized_runtime_control:
+            _fail(
+                ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID,
+                "runtime control values differ from the admitted control context",
+            )
+        expected_hash = sha256_json(normalized_runtime_control)
+        if authority_hashes.get("stage4_1_runtime_control") != expected_hash:
+            _fail(
+                ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID,
+                "runtime control authority hash mismatch",
+            )
+    elif runtime_idle_flux_phi0 is None:
         if not _same_control_config(control_chain_config, source_control):
             _fail(ParameterizedControlReasonCode.CONTROL_AUTHORITY_INVALID, "control config differs from its admitted source")
     else:
@@ -135,6 +164,11 @@ def build_parameterized_control_context(
         compiler_source_snapshot=freeze_mapping(compiler_source_snapshot),
         environment_snapshot=freeze_mapping(environment_snapshot),
         publication_policy=freeze_mapping(publication_policy),
+        runtime_control_values=(
+            freeze_mapping(normalized_runtime_control)
+            if normalized_runtime_control is not None
+            else None
+        ),
     )
 
 
@@ -148,6 +182,7 @@ def validate_parameterized_control_context(context: ParameterizedControlContext)
         if "stage4_1_runtime_idle_flux" in context.authority_sha256
         else None
     )
+    runtime_control = context.runtime_control_values
     build_parameterized_control_context(
         context.control_chain_config,
         context.channel_registry,
@@ -162,7 +197,59 @@ def validate_parameterized_control_context(context: ParameterizedControlContext)
         environment_snapshot=context.environment_snapshot,
         publication_policy=context.publication_policy,
         runtime_idle_flux_phi0=runtime_idle,
+        runtime_control_values=runtime_control,
     )
+
+
+def _control_config_payload(config: ControlChainConfig) -> dict[str, Any]:
+    return {
+        "clock": {
+            "sample_rate_Hz": int(config.sample_rate_Hz),
+            "dt_ns": float(config.dt_ns),
+        },
+        "dac": {
+            "bits": int(config.dac["bits"]),
+            "full_scale_min_V": float(config.dac["full_scale_min_V"]),
+            "full_scale_max_exclusive_V": float(
+                config.dac["full_scale_max_exclusive_V"]
+            ),
+            "rounding": str(config.dac["rounding"]),
+        },
+        "lane_order": list(config.lane_order),
+        "lanes": {
+            lane: {
+                "latency_samples": int(config.lanes[lane]["latency_samples"]),
+                "fir": [float(item) for item in config.lanes[lane]["fir"]],
+            }
+            for lane in config.lane_order
+        },
+        "static_mixing": {
+            group: {
+                "input_lanes": list(config.static_mixing[group]["input_lanes"]),
+                "output_coordinates": list(
+                    config.static_mixing[group]["output_coordinates"]
+                ),
+                "matrix": np.asarray(
+                    config.static_mixing[group]["matrix"], dtype="<f8"
+                ).tolist(),
+            }
+            for group in GROUP_CONTRACT
+        },
+        "idle_flux_phi0": {
+            name: float(config.idle_flux_phi0[name]) for name in _FLUX_NAMES
+        },
+        "acceptance": {
+            name: config.acceptance[name] for name in sorted(config.acceptance)
+        },
+    }
+
+
+def _plain_runtime(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_runtime(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_plain_runtime(item) for item in value]
+    return value
 
 
 def _limits(value: Mapping[str, Mapping[str, Any] | tuple[float, float]]) -> dict[str, tuple[float, float]]:

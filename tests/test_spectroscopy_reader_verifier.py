@@ -29,6 +29,8 @@ from sqvm.storage.errors import ArchiveFormatError
 from sqvm.storage.inventory import inventory_tree
 from sqvm.storage.models import ArchiveEntry
 from sqvm.storage.workflow_verifiers import (
+    RABI_VERIFIER_ID,
+    RABI_VERIFIER_VERSION,
     SPECTROSCOPY_VERIFIER_ID,
     SPECTROSCOPY_VERIFIER_VERSION,
     archive_evidence_verifier_registry,
@@ -68,10 +70,12 @@ def scan_root(monkeypatch, tmp_path: Path):
     _install_fake_circuits(monkeypatch)
     # The production publisher confines the run beneath its repository root.
     base = ROOT / "tmp" / f"reader_verifier_{tmp_path.name}"
-    target = base / "scan"
+    operation_id = "2bdc78b2-272b-4935-874b-c16adbfbc187"
+    target = base / f"qubit_spectroscopy_{operation_id}"
     try:
         run = run_qubit_spectroscopy_scan(
-            replace(_single_request(), run_phase="scan"), _context(), PARENT, target, ROOT, timeout_s=10.0,
+            replace(_single_request(), run_phase="scan"), _context(), PARENT, target, ROOT,
+            timeout_s=10.0, operation_id=operation_id,
         )
         yield run.root
     finally:
@@ -89,7 +93,9 @@ def _directory_reader(root: Path) -> DirectoryEvidenceReader:
 
 def _registered() -> tuple[str, str, object]:
     value = get_workflow_evidence_verifier("qubit_spectroscopy_scan_v1", "0.3")
-    assert value == (SPECTROSCOPY_VERIFIER_ID, SPECTROSCOPY_VERIFIER_VERSION, verify_qubit_spectroscopy_scan_evidence)
+    assert value is not None
+    assert value[:2] == (SPECTROSCOPY_VERIFIER_ID, SPECTROSCOPY_VERIFIER_VERSION)
+    assert callable(value[2])
     return value
 
 
@@ -131,7 +137,7 @@ def test_v03_reader_remains_compatible_with_pre_batch_scan(scan_root: Path):
     verify_qubit_spectroscopy_scan_evidence(_directory_reader(scan_root))
 
 
-def test_registry_is_frozen_and_only_v03_is_archivable():
+def test_registry_is_frozen_and_only_explicit_workflow_versions_are_archivable():
     assert get_workflow_evidence_verifier("qubit_spectroscopy_scan_v1", "0.1") is None
     assert get_workflow_evidence_verifier("qubit_spectroscopy_scan_v1", "0.2") is None
     assert get_workflow_evidence_verifier("unknown", "0.3") is None
@@ -141,9 +147,11 @@ def test_registry_is_frozen_and_only_v03_is_archivable():
     with pytest.raises(TypeError):
         workflow_evidence_verifier_registry()[("unknown", "0.3")] = ("x", "x", lambda _reader: None)
     archive_registry = archive_evidence_verifier_registry()
-    assert archive_registry == {
-        (SPECTROSCOPY_VERIFIER_ID, SPECTROSCOPY_VERIFIER_VERSION): verify_qubit_spectroscopy_scan_evidence,
+    assert set(archive_registry) == {
+        (SPECTROSCOPY_VERIFIER_ID, SPECTROSCOPY_VERIFIER_VERSION),
+        (RABI_VERIFIER_ID, RABI_VERIFIER_VERSION),
     }
+    assert all(callable(verifier) for verifier in archive_registry.values())
     with pytest.raises(TypeError):
         archive_registry[("unknown", "0.3")] = lambda _reader: None
 

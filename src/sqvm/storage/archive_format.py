@@ -143,8 +143,14 @@ def write_sqrun(
         DirectoryEvidenceReader(source, entries).read_bytes("workflow.json"), "workflow"
     )
     run_id, workflow_id, source_artifact_version = _workflow_identity(workflow)
-    if source.name != f"qubit_spectroscopy_{run_id}":
-        _safe_single_component(source.name, "original directory name")
+    from sqvm.storage.workflow_verifiers import get_workflow_evidence_verifier, valid_hot_alias_for
+    # This generic writer is also used by tests and future verifier owners;
+    # operations decide whether a workflow is archivable.  Known production
+    # workflows additionally bind their carrier name to the registry.
+    if get_workflow_evidence_verifier(workflow_id, source_artifact_version) is not None:
+        if not valid_hot_alias_for(workflow_id, source_artifact_version, run_id, source.name):
+            raise ArchiveFormatError("source directory name does not match registered workflow")
+    _safe_single_component(source.name, "original directory name")
     manifest = _manifest(run_id, workflow_id, source_artifact_version, source.name, entries)
     manifest_raw = canonical_archive_json_bytes(manifest)
     report = _report(run_id, sha256_bytes(manifest_raw), source_verifier_id, source_verifier_version)
